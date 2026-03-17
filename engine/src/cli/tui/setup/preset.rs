@@ -1,0 +1,76 @@
+#[derive(Debug, Clone)]
+pub struct ModelPreset {
+    pub label: String,
+    pub description: String,
+    pub provider_name: String,
+    pub protocol: String,
+    pub base_url: String,
+    pub model: String,
+    pub secret_key: String,
+    pub needs_api_key: bool,
+}
+
+pub fn presets() -> Vec<ModelPreset> {
+    vec![
+        ModelPreset {
+            label: "Gemini (AI Studio)".into(),
+            description: "Free tier, fast".into(),
+            provider_name: "gemini".into(),
+            protocol: "gemini".into(),
+            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            model: "gemini-2.5-flash".into(),
+            secret_key: "gemini_api_key".into(),
+            needs_api_key: true,
+        },
+        ModelPreset {
+            label: "OpenAI (GPT-4o-mini)".into(),
+            description: "Requires API key".into(),
+            provider_name: "openai".into(),
+            protocol: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o-mini".into(),
+            secret_key: "openai_api_key".into(),
+            needs_api_key: true,
+        },
+        ModelPreset {
+            label: "Anthropic (Claude)".into(),
+            description: "Requires API key".into(),
+            provider_name: "anthropic".into(),
+            protocol: "anthropic".into(),
+            base_url: "https://api.anthropic.com/v1".into(),
+            model: "claude-sonnet-4-5-20250514".into(),
+            secret_key: "anthropic_api_key".into(),
+            needs_api_key: true,
+        },
+        ModelPreset {
+            label: "Ollama (Local)".into(),
+            description: "Free, runs locally".into(),
+            provider_name: "ollama".into(),
+            protocol: "openai".into(),
+            base_url: "http://localhost:11434".into(),
+            model: "llama3.1:8b".into(),
+            secret_key: "".into(),
+            needs_api_key: false,
+        },
+        ModelPreset {
+            label: "Custom endpoint".into(),
+            description: "Any OpenAI-compatible, Gemini, or Anthropic endpoint".into(),
+            provider_name: "custom".into(),
+            protocol: "openai".into(),
+            base_url: "".into(),
+            model: "".into(),
+            secret_key: "".into(),
+            needs_api_key: true,
+        },
+        ModelPreset {
+            label: "Skip for now".into(),
+            description: "Configure later".into(),
+            provider_name: "".into(),
+            protocol: "".into(),
+            base_url: "".into(),
+            model: "".into(),
+            secret_key: "".into(),
+            needs_api_key: false,
+        },
+    ]
+}
