@@ -1,0 +1,97 @@
+[workspace]
+members = [
+    "tools/file-watcher",
+    "tools/app-launcher",
+    "tools/notification",
+    "tools/screenshot",
+    "brain",
+    "engine",
+    "sdk",
+    "tools/telegram",
+    "tools/ui-server",
+    "tools/remote",
+
+
+]
+exclude = []
+resolver = "2"
+
+[workspace.package]
+version = "0.0.3"
+edition = "2021"
+authors = ["Rove Team"]
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
+
+# Cryptography
+ed25519-dalek = "2.0"
+chacha20poly1305 = "0.10"
+blake3 = "1.5"
+sha2 = "0.10"
+
+# WASM runtime
+extism = "1.0"
+wasmparser = "0.216"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# HTTP
+reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+
+# Secret management (macOS Keychain only; other platforms use env-var fallback)
+# keyring = "2.0"  — moved to engine/Cargo.toml as target-specific
+
+# Configuration
+toml = "0.8"
+
+# System directories
+dirs = "5.0"
+
+# Telegram bot
+teloxide = { version = "0.12", features = ["macros"] }
+
+# Regex
+regex = "1.10"
+
+# Dynamic library loading
+libloading = "0.8"
+
+[profile.release]
+opt-level = "z"          # Optimize for size
+lto = true               # Link-time optimization
+codegen-units = 1        # Better optimization
+strip = true             # Strip symbols
+panic = "abort"          # Smaller binary
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+clone_on_ref_ptr = "warn"
+
+[workspace.lints.rust]
+missing_docs = "allow"
