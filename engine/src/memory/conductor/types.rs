@@ -77,3 +77,106 @@ impl Default for MemoryBudget {
         }
     }
 }
+
+/// Determines which memory layers are active for a given task domain.
+#[derive(Debug, Clone, Copy)]
+pub struct ContextLayers {
+    pub episodic: bool,
+    pub insights: bool,
+    pub task_trace: bool,
+    pub project: bool,
+}
+
+impl ContextLayers {
+    pub fn for_domain(domain: &TaskDomain) -> Self {
+        match domain {
+            TaskDomain::Code => Self {
+                episodic: true,
+                insights: true,
+                task_trace: true,
+                project: true,
+            },
+            TaskDomain::Git => Self {
+                episodic: true,
+                insights: true,
+                task_trace: true,
+                project: false,
+            },
+            TaskDomain::Shell => Self {
+                episodic: false,
+                insights: false,
+                task_trace: true,
+                project: false,
+            },
+            TaskDomain::General => Self {
+                episodic: true,
+                insights: true,
+                task_trace: false,
+                project: false,
+            },
+            TaskDomain::Browser | TaskDomain::Data => Self {
+                episodic: true,
+                insights: false,
+                task_trace: false,
+                project: false,
+            },
+        }
+    }
+}
+
+/// Type of memory hit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum HitType {
+    Episodic,
+    Insight,
+    TaskTrace,
+}
+
+/// Result of a memory query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHit {
+    pub id: String,
+    pub source: String,
+    pub content: String,
+    pub rank: f64,
+    pub hit_type: HitType,
+    pub importance: f32,
+    pub created_at: i64,
+    pub final_score: f32,
+}
+
+/// Result of an ingest operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestResult {
+    pub memory_id: String,
+    pub summary: String,
+    pub entities: Vec<String>,
+    pub topics: Vec<String>,
+    pub importance: f64,
+}
+
+/// Result of a consolidation operation.
+#[derive(Debug, Clone)]
+pub enum ConsolidationResult {
+    Skipped { reason: String },
+    Completed {
+        memories_processed: usize,
+        insights_generated: usize,
+    },
+}
+
+/// Structured extraction from the ingest prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct IngestExtraction {
+    pub summary: String,
+    pub entities: Vec<String>,
+    pub topics: Vec<String>,
+    pub importance: f64,
+}
+
+/// Structured insight from the consolidation prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ConsolidationInsight {
+    pub insight: String,
+    pub source_ids: Vec<String>,
+}
