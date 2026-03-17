@@ -1,0 +1,100 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "rove_engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rove"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7.5", features = ["ws", "macros"] }
+tower-http = { version = "0.5.2", features = ["cors", "trace", "fs"] }
+tower = "0.4.13"
+tokio-stream = "0.1.15"
+
+sdk = { path = "../sdk" }
+brain = { path = "../brain" }
+
+# Workspace dependencies
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+sqlx.workspace = true
+ed25519-dalek.workspace = true
+chacha20poly1305.workspace = true
+blake3.workspace = true
+extism.workspace = true
+wasmparser.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+toml.workspace = true
+regex.workspace = true
+libloading.workspace = true
+dirs.workspace = true
+notify = "6.1"
+
+# Hashing
+sha2.workspace = true
+
+# Additional dependencies
+async-trait = "0.1"
+which = "6.0"
+futures = "0.3"
+hex = "0.4"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = "0.4"
+self-replace = "1.5"
+zeroize = "1.8"
+rpassword = "5.0"
+semver = "1.0"
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+ratatui = "0.29"
+crossterm = "0.28"
+keyring = "3.6.3"
+dashmap = "6.1"
+bincode = "1.3"
+
+# Unix-specific dependencies for daemon management
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal", "process"] }
+libc = "0.2"
+hyperlocal = "0.9"  # UDS transport for brain comms
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2"  # OS keychain access
+
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "3", features = ["crypto-rust"] }  # Linux keychain
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Security_Credentials",   # Credential Manager (secrets)
+    "Win32_System_Pipes",           # Named Pipes (brain comms)
+] }
+
+
+[dev-dependencies]
+proptest = "1.10.0"
+tempfile = "3.25"
+wiremock = "0.6"
+
+[features]
+default = []
+production = []
+
+[build-dependencies]
+# For embedding team public key at compile time
+hex = "0.4"
+chrono = "0.4"
+base64 = "0.22"
