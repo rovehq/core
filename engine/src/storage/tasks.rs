@@ -422,7 +422,8 @@ impl TaskRepository {
                 let task_id_str: String = r.get("task_id");
                 TaskStep {
                     id: Some(r.get("id")),
-                    task_id: uuid::Uuid::parse_str(&task_id_str).unwrap_or_else(|_| uuid::Uuid::nil()),
+                    task_id: uuid::Uuid::parse_str(&task_id_str)
+                        .unwrap_or_else(|_| uuid::Uuid::nil()),
                     step_order: r.get("step_order"),
                     step_type: match r.get::<String, _>("step_type").as_str() {
                         "user_message" => StepType::UserMessage,

@@ -49,7 +49,10 @@ impl McpSpawner {
             last_activity: std::time::Instant::now(),
         };
 
-        self.servers.write().await.insert(name.to_string(), instance);
+        self.servers
+            .write()
+            .await
+            .insert(name.to_string(), instance);
         info!(server = name, "MCP server started successfully");
         Ok(())
     }

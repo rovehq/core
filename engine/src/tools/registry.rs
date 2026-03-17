@@ -104,7 +104,10 @@ impl ToolRegistry {
                 continue;
             }
 
-            let description = tool["description"].as_str().unwrap_or("WASM tool").to_string();
+            let description = tool["description"]
+                .as_str()
+                .unwrap_or("WASM tool")
+                .to_string();
             let parameters = tool
                 .get("parameters")
                 .cloned()

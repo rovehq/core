@@ -1,7 +1,6 @@
 use anyhow::Result;
 use crossterm::{
-    cursor,
-    execute,
+    cursor, execute,
     terminal::{self, ClearType},
 };
 use std::io::{self, Write};
@@ -38,7 +37,8 @@ fn run_wizard_inner() -> Result<SetupResult> {
     let preset = select_preset(&mut stdout)?;
     let skipped = preset.provider_name.is_empty();
 
-    let (provider_name, protocol, base_url, model, secret_key) = if preset.provider_name == "custom" {
+    let (provider_name, protocol, base_url, model, secret_key) = if preset.provider_name == "custom"
+    {
         prompt_custom_provider(&mut stdout)?
     } else {
         (

@@ -14,18 +14,21 @@ impl NativeRuntime {
 
         let tool_path = PathBuf::from(&tool_entry.path);
 
-        self.crypto.verify_file(&tool_path, &tool_entry.hash).map_err(|error| {
-            tracing::error!(
-                "Gate 2 FAILED: Hash verification failed for '{}': {}",
-                name,
+        self.crypto
+            .verify_file(&tool_path, &tool_entry.hash)
+            .map_err(|error| {
+                tracing::error!(
+                    "Gate 2 FAILED: Hash verification failed for '{}': {}",
+                    name,
+                    error
+                );
                 error
-            );
-            error
-        })?;
+            })?;
         tracing::info!("Gate 2 PASSED: File hash verified for '{}'", name);
 
-        let manifest_bytes = serde_json::to_vec(&self.manifest)
-            .map_err(|error| EngineError::Config(format!("Failed to serialize manifest: {}", error)))?;
+        let manifest_bytes = serde_json::to_vec(&self.manifest).map_err(|error| {
+            EngineError::Config(format!("Failed to serialize manifest: {}", error))
+        })?;
         self.crypto
             .verify_manifest(&manifest_bytes, &self.manifest.signature)
             .map_err(|error| {

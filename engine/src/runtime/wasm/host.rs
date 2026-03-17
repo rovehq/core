@@ -26,9 +26,8 @@ impl WasmRuntime {
                     extism::Error::msg(format!("FileSystemGuard lock poisoned: {}", error))
                 })?;
                 let content = match guard.validate_path(std::path::Path::new(&path_str)) {
-                    Ok(path) => {
-                        std::fs::read_to_string(path).unwrap_or_else(|error| format!("Error: {}", error))
-                    }
+                    Ok(path) => std::fs::read_to_string(path)
+                        .unwrap_or_else(|error| format!("Error: {}", error)),
                     Err(error) => format!("Error: {}", error),
                 };
                 let out_handle = plugin.memory_new(&content)?;

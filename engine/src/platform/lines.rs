@@ -31,7 +31,9 @@ pub fn to_windows_line_endings(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_line_endings, to_unix_line_endings, to_windows_line_endings, LINE_ENDING};
+    use super::{
+        normalize_line_endings, to_unix_line_endings, to_windows_line_endings, LINE_ENDING,
+    };
 
     #[test]
     fn test_line_ending_constant() {

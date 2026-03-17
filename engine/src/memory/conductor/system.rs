@@ -18,9 +18,7 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 use tracing::{debug, error, info};
 
-use crate::conductor::types::{
-    ConsolidationResult, IngestResult, MemoryHit, TaskDomain,
-};
+use crate::conductor::types::{ConsolidationResult, IngestResult, MemoryHit, TaskDomain};
 use crate::llm::router::LLMRouter;
 
 // ─────────────────────────────────────────────────────────────────────
@@ -108,9 +106,12 @@ impl MemorySystem {
     pub async fn consolidate(&self) -> Result<ConsolidationResult> {
         let min_to_consolidate = 3; // Default min_to_consolidate
 
-        let result =
-            crate::conductor::consolidation::consolidate(&self.pool, &self.router, min_to_consolidate)
-                .await?;
+        let result = crate::conductor::consolidation::consolidate(
+            &self.pool,
+            &self.router,
+            min_to_consolidate,
+        )
+        .await?;
 
         // Apply importance decay after consolidation
         crate::conductor::decay::decay_importance(&self.pool, true).await?;

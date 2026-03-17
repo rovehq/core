@@ -47,7 +47,12 @@ impl AgentCore {
         Ok(TaskContext { domain_str })
     }
 
-    async fn apply_steering(&mut self, task_input: &str, risk_tier: RiskTier, system_prompt: &mut String) {
+    async fn apply_steering(
+        &mut self,
+        task_input: &str,
+        risk_tier: RiskTier,
+        system_prompt: &mut String,
+    ) {
         let Some(steering) = self.steering.as_mut() else {
             return;
         };
@@ -67,7 +72,10 @@ impl AgentCore {
             *system_prompt = format!("{}\n\n{}", system_prompt, directives.system_suffix);
         }
 
-        debug!("Active steering directives: {:?}", steering.active_skills().await);
+        debug!(
+            "Active steering directives: {:?}",
+            steering.active_skills().await
+        );
     }
 
     async fn inject_memory_context(

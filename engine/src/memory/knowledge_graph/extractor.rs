@@ -2,7 +2,7 @@
 //!
 //! Extracts entities and relationships from memory entries using LLM
 
-use super::{Entity, EntityType, ExtractionResult, Relationship, RelationType};
+use super::{Entity, EntityType, ExtractionResult, RelationType, Relationship};
 use crate::llm::router::LLMRouter;
 use crate::llm::Message;
 use anyhow::{Context, Result};
@@ -224,32 +224,6 @@ fn parse_relation_type(s: &str) -> RelationType {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_entity_type() {
-        assert_eq!(parse_entity_type("file"), EntityType::File);
-        assert_eq!(parse_entity_type("FILE"), EntityType::File);
-        assert_eq!(parse_entity_type("concept"), EntityType::Concept);
-        assert_eq!(parse_entity_type("unknown"), EntityType::Other("unknown".to_string()));
-    }
-
-    #[test]
-    fn test_parse_relation_type() {
-        assert_eq!(parse_relation_type("calls"), RelationType::Calls);
-        assert_eq!(parse_relation_type("CALLS"), RelationType::Calls);
-        assert_eq!(parse_relation_type("depends_on"), RelationType::DependsOn);
-        assert_eq!(parse_relation_type("unknown"), RelationType::Other("unknown".to_string()));
-    }
-
-    #[test]
-    fn test_default_weight() {
-        assert_eq!(default_weight(), 0.7);
-    }
-}
-
 /// Extract entities and relationships from task result and store in knowledge graph
 ///
 /// This function is called fire-and-forget after task completion.
@@ -272,23 +246,23 @@ pub async fn extract_and_store(
     task_id: &str,
 ) -> Result<()> {
     use std::time::{SystemTime, UNIX_EPOCH};
-    
+
     // Create extractor
     let extractor = EntityExtractor::new(Arc::clone(router));
-    
+
     // Extract entities and relationships
     let extraction = extractor.extract(task_result).await?;
-    
+
     // If nothing extracted, return early
     if extraction.entities.is_empty() && extraction.relationships.is_empty() {
         debug!(task_id = %task_id, "no entities or relationships extracted");
         return Ok(());
     }
-    
+
     // Get knowledge graph instance
     let graph = crate::knowledge_graph::KnowledgeGraph::new(db.pool().clone());
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
-    
+
     // Store entities
     for entity in &extraction.entities {
         let node_id = uuid::Uuid::new_v4().to_string();
@@ -301,9 +275,12 @@ pub async fn extract_and_store(
             last_updated: now,
             access_count: 0,
         };
-        graph.upsert_node(&node).await.context("Failed to upsert graph node")?;
+        graph
+            .upsert_node(&node)
+            .await
+            .context("Failed to upsert graph node")?;
     }
-    
+
     // Store relationships
     for rel in &extraction.relationships {
         // Find node IDs by label (simplified - in production, use proper lookup)
@@ -316,13 +293,45 @@ pub async fn extract_and_store(
             "relationship extracted (storage TODO)"
         );
     }
-    
+
     debug!(
         task_id = %task_id,
         entities = extraction.entities.len(),
         relationships = extraction.relationships.len(),
         "knowledge graph extraction complete"
     );
-    
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_entity_type() {
+        assert_eq!(parse_entity_type("file"), EntityType::File);
+        assert_eq!(parse_entity_type("FILE"), EntityType::File);
+        assert_eq!(parse_entity_type("concept"), EntityType::Concept);
+        assert_eq!(
+            parse_entity_type("unknown"),
+            EntityType::Other("unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_relation_type() {
+        assert_eq!(parse_relation_type("calls"), RelationType::Calls);
+        assert_eq!(parse_relation_type("CALLS"), RelationType::Calls);
+        assert_eq!(parse_relation_type("depends_on"), RelationType::DependsOn);
+        assert_eq!(
+            parse_relation_type("unknown"),
+            RelationType::Other("unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn test_default_weight() {
+        assert_eq!(default_weight(), 0.7);
+    }
 }

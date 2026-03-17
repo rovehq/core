@@ -47,7 +47,9 @@ impl OllamaProvider {
             client: Client::builder()
                 .timeout(Duration::from_secs(300))
                 .build()
-                .map_err(|e| sdk::errors::EngineError::LLMProvider(format!("Ollama client error: {}", e)))?,
+                .map_err(|e| {
+                    sdk::errors::EngineError::LLMProvider(format!("Ollama client error: {}", e))
+                })?,
         })
     }
 

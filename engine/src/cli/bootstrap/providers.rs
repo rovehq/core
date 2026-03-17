@@ -3,9 +3,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use brain::reasoning::LocalBrain;
 
-use crate::config::{
-    metadata::SERVICE_NAME, AnthropicConfig, Config, GeminiConfig, OpenAIConfig,
-};
+use crate::config::{metadata::SERVICE_NAME, AnthropicConfig, Config, GeminiConfig, OpenAIConfig};
 use crate::llm::anthropic::AnthropicProvider;
 use crate::llm::gemini::GeminiProvider;
 use crate::llm::nvidia_nim::NvidiaNimProvider;
@@ -15,7 +13,10 @@ use crate::security::secrets::{SecretCache, SecretManager};
 
 pub async fn build(
     config: &Config,
-) -> Result<(Vec<Box<dyn crate::llm::LLMProvider>>, Option<Arc<LocalBrain>>)> {
+) -> Result<(
+    Vec<Box<dyn crate::llm::LLMProvider>>,
+    Option<Arc<LocalBrain>>,
+)> {
     let secret_manager = Arc::new(SecretManager::new(SERVICE_NAME));
     let secret_cache = Arc::new(SecretCache::new(secret_manager.clone()));
 

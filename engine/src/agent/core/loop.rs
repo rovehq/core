@@ -82,12 +82,19 @@ impl AgentCore {
 
                     self.memory
                         .add_message(self.assistant_tool_message(task_id, &tool_call));
-                    self.insert_tool_call_event(task_id, &tool_call, iteration, &context.domain_str)
-                        .await?;
+                    self.insert_tool_call_event(
+                        task_id,
+                        &tool_call,
+                        iteration,
+                        &context.domain_str,
+                    )
+                    .await?;
 
                     let execution = self.execute_tool_call(&task_id_str, &tool_call).await?;
-                    self.memory
-                        .add_message(crate::llm::Message::tool_result(&execution.safe_result, &tool_call.id));
+                    self.memory.add_message(crate::llm::Message::tool_result(
+                        &execution.safe_result,
+                        &tool_call.id,
+                    ));
                     self.insert_observation_event(
                         task_id,
                         &execution.safe_result,
@@ -124,8 +131,13 @@ impl AgentCore {
                         .into());
                     }
 
-                    self.insert_answer_event(task_id, &answer.content, iteration, &context.domain_str)
-                        .await?;
+                    self.insert_answer_event(
+                        task_id,
+                        &answer.content,
+                        iteration,
+                        &context.domain_str,
+                    )
+                    .await?;
 
                     return Ok(TaskResult::success(
                         task_id.to_string(),
@@ -156,7 +168,7 @@ impl AgentCore {
         iteration: usize,
         confirm_after: usize,
     ) -> Result<()> {
-        if confirm_after == 0 || iteration <= 1 || (iteration - 1) % confirm_after != 0 {
+        if confirm_after == 0 || iteration <= 1 || !(iteration - 1).is_multiple_of(confirm_after) {
             return Ok(());
         }
 
@@ -183,7 +195,11 @@ impl AgentCore {
         Ok(())
     }
 
-    async fn call_llm(&self, task_id: &uuid::Uuid, iteration: usize) -> Result<(LLMResponse, String)> {
+    async fn call_llm(
+        &self,
+        task_id: &uuid::Uuid,
+        iteration: usize,
+    ) -> Result<(LLMResponse, String)> {
         let llm_result = timeout(
             Duration::from_secs(LLM_TIMEOUT_SECS),
             self.router.call(self.memory.messages()),
@@ -232,7 +248,10 @@ impl AgentCore {
         let count = tool_call_counts.entry(hasher.finish()).or_insert(0);
         *count += 1;
         if *count >= 3 {
-            let error = format!("Tool '{}' with identical arguments called 3 times.", tool_call.name);
+            let error = format!(
+                "Tool '{}' with identical arguments called 3 times.",
+                tool_call.name
+            );
             warn!(
                 task_id = %task_id,
                 iteration,

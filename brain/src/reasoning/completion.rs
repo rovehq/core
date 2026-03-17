@@ -28,18 +28,24 @@ impl Brain for LocalBrain {
             self.base_url.trim_end_matches('/')
         );
 
-        let response = self.client.post(&url).json(&request).send().await.map_err(|error| {
-            if error.is_timeout() {
-                EngineError::LLMProvider("llama-server timeout".to_string())
-            } else if error.is_connect() {
-                EngineError::LLMProvider(format!(
-                    "Cannot connect to llama-server at {}. Is it running?",
-                    self.base_url
-                ))
-            } else {
-                EngineError::LLMProvider(format!("llama-server error: {}", error))
-            }
-        })?;
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| {
+                if error.is_timeout() {
+                    EngineError::LLMProvider("llama-server timeout".to_string())
+                } else if error.is_connect() {
+                    EngineError::LLMProvider(format!(
+                        "Cannot connect to llama-server at {}. Is it running?",
+                        self.base_url
+                    ))
+                } else {
+                    EngineError::LLMProvider(format!("llama-server error: {}", error))
+                }
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();

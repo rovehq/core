@@ -14,7 +14,10 @@ impl ToolRegistry {
             .iter()
             .filter(|tool| {
                 tool.domains.is_empty()
-                    || tool.domains.iter().any(|domain| query_lower.contains(domain.as_str()))
+                    || tool
+                        .domains
+                        .iter()
+                        .any(|domain| query_lower.contains(domain.as_str()))
                     || query_lower.contains(&tool.name.to_lowercase())
             })
             .collect();
@@ -35,7 +38,10 @@ impl ToolRegistry {
 
         let mut out = String::new();
         for tool in tools {
-            out.push_str(&format!("\n## {} (plugin: {})\n", tool.name, tool.plugin_name));
+            out.push_str(&format!(
+                "\n## {} (plugin: {})\n",
+                tool.name, tool.plugin_name
+            ));
             out.push_str(&tool.description);
             out.push_str(&format!("\nArguments: {}\n", tool.parameters));
         }
@@ -66,8 +72,12 @@ impl ToolRegistry {
 
             parts.push(String::new());
             parts.push("## write_file".to_string());
-            parts.push("Write content to a file (creates parent directories if needed).".to_string());
-            parts.push(r#"Arguments: {"path": "file/path", "content": "file contents"}"#.to_string());
+            parts.push(
+                "Write content to a file (creates parent directories if needed).".to_string(),
+            );
+            parts.push(
+                r#"Arguments: {"path": "file/path", "content": "file contents"}"#.to_string(),
+            );
 
             parts.push(String::new());
             parts.push("## list_dir".to_string());
@@ -79,7 +89,9 @@ impl ToolRegistry {
 
             parts.push(String::new());
             parts.push("## file_exists".to_string());
-            parts.push(r#"Check if a file or directory exists. Returns "true" or "false"."#.to_string());
+            parts.push(
+                r#"Check if a file or directory exists. Returns "true" or "false"."#.to_string(),
+            );
             parts.push(r#"Arguments: {"path": "file/path"}"#.to_string());
         }
 

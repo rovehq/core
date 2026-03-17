@@ -45,7 +45,9 @@ impl TelegramBot {
 
         if !self.allowed_users.contains(&user_id) && !self.allowed_users.is_empty() {
             warn!("Unauthorized user {} attempted to use the bot", user_id);
-            let _ = self.send_message(chat_id, "Unauthorized. Access denied.").await;
+            let _ = self
+                .send_message(chat_id, "Unauthorized. Access denied.")
+                .await;
             return;
         }
 
@@ -66,7 +68,10 @@ impl TelegramBot {
             }
             if !limits.check_tier2() {
                 let _ = self
-                    .send_message(chat_id, "Tier 2 rate limit exceeded (10/10min). Please wait.")
+                    .send_message(
+                        chat_id,
+                        "Tier 2 rate limit exceeded (10/10min). Please wait.",
+                    )
                     .await;
                 return;
             }
@@ -150,7 +155,10 @@ impl TelegramBot {
                         }
                     }
                 });
-            } else if let Err(error) = self.send_message(chat_id, &format!("Task accepted: {}", text)).await {
+            } else if let Err(error) = self
+                .send_message(chat_id, &format!("Task accepted: {}", text))
+                .await
+            {
                 error!("Failed to send reply to {}: {}", chat_id, error);
             }
         }

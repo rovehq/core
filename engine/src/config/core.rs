@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::defaults::{default_data_dir, default_log_level, default_true};
 use super::agent::AgentConfig;
 use super::brain::BrainsConfig;
+use super::defaults::{default_data_dir, default_log_level, default_true};
 use super::gateway::GatewayFileConfig;
 use super::llm::LLMConfig;
 use super::memory::MemoryConfig;
@@ -15,7 +15,7 @@ use super::transport::{McpConfig, WsClientConfig};
 use super::webui::WebUIConfig;
 
 /// Main configuration structure loaded from `~/.rove/config.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     pub core: CoreConfig,
     pub llm: LLMConfig,
@@ -38,26 +38,6 @@ pub struct Config {
     pub webui: WebUIConfig,
     #[serde(default)]
     pub mcp: McpConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            core: CoreConfig::default(),
-            llm: LLMConfig::default(),
-            tools: ToolsConfig::default(),
-            plugins: PluginsConfig::default(),
-            security: SecurityConfig::default(),
-            agent: AgentConfig::default(),
-            memory: MemoryConfig::default(),
-            brains: BrainsConfig::default(),
-            steering: SteeringConfig::default(),
-            ws_client: WsClientConfig::default(),
-            gateway: GatewayFileConfig::default(),
-            webui: WebUIConfig::default(),
-            mcp: McpConfig::default(),
-        }
-    }
 }
 
 /// Core engine configuration.

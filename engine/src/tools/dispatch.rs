@@ -16,7 +16,9 @@ impl ToolRegistry {
         };
 
         if let Some(tool) = self.wasm_tools.iter().find(|tool| tool.name == name) {
-            return self.dispatch_wasm_tool(tool.plugin_name.as_str(), name, arguments_json).await;
+            return self
+                .dispatch_wasm_tool(tool.plugin_name.as_str(), name, arguments_json)
+                .await;
         }
 
         match name {
@@ -55,7 +57,10 @@ impl ToolRegistry {
             return "ERROR: read_file tool is not enabled".to_string();
         };
 
-        let path = args.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+        let path = args
+            .get("path")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
         match fs.read_file(path).await {
             Ok(content) => content,
             Err(error) => format!("ERROR: {}", error),
@@ -67,7 +72,10 @@ impl ToolRegistry {
             return "ERROR: write_file tool is not enabled".to_string();
         };
 
-        let path = args.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+        let path = args
+            .get("path")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
         let content = args
             .get("content")
             .and_then(|value| value.as_str())
@@ -84,7 +92,10 @@ impl ToolRegistry {
             return "ERROR: list_dir tool is not enabled".to_string();
         };
 
-        let path = args.get("path").and_then(|value| value.as_str()).unwrap_or(".");
+        let path = args
+            .get("path")
+            .and_then(|value| value.as_str())
+            .unwrap_or(".");
         match fs.list_dir(path).await {
             Ok(listing) => listing,
             Err(error) => format!("ERROR: {}", error),
@@ -96,7 +107,10 @@ impl ToolRegistry {
             return "ERROR: file_exists tool is not enabled".to_string();
         };
 
-        let path = args.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+        let path = args
+            .get("path")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
         match fs.file_exists(path).await {
             Ok(true) => "true".to_string(),
             Ok(false) => "false".to_string(),
@@ -138,7 +152,9 @@ impl ToolRegistry {
 
     async fn dispatch_dynamic_tool(&self, name: &str, args: serde_json::Value) -> String {
         if let Some(mcp_tool) = self.mcp_tools.iter().find(|tool| tool.name == name) {
-            return self.dispatch_mcp_tool(mcp_tool.server_name.as_str(), name, args).await;
+            return self
+                .dispatch_mcp_tool(mcp_tool.server_name.as_str(), name, args)
+                .await;
         }
 
         warn!("Unknown tool requested: {}", name);
@@ -156,7 +172,10 @@ impl ToolRegistry {
         args: serde_json::Value,
     ) -> String {
         let Some(spawner) = &self.mcp_spawner else {
-            return format!("ERROR: MCP spawner not initialized for tool '{}'", tool_name);
+            return format!(
+                "ERROR: MCP spawner not initialized for tool '{}'",
+                tool_name
+            );
         };
 
         match spawner.call_tool(server_name, tool_name, args).await {

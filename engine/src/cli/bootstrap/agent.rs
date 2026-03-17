@@ -60,7 +60,8 @@ pub async fn init_agent_with_db(database: Arc<Database>) -> Result<Arc<RwLock<Ag
 }
 
 async fn load_steering() -> Result<SteeringEngine> {
-    let home_dir = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let steering_dir = home_dir.join(".rove").join("steering");
     let mut steering = SteeringEngine::new(&steering_dir).await?;
     steering.load_all_skills().await?;

@@ -100,15 +100,15 @@ fn test_all_dangerous_flags_detected() {
 fn test_remote_escalation_for_all_tiers() {
     let assessor = RiskAssessor::new();
 
-    // Tier 0 remote -> Tier 1
+    // Remote source always escalates to Tier 2
     let op = Operation::new("read_file", vec![], OperationSource::Remote);
-    assert_eq!(assessor.assess(&op).unwrap(), RiskTier::Tier1);
+    assert_eq!(assessor.assess(&op).unwrap(), RiskTier::Tier2);
 
     // Tier 1 remote -> Tier 2
     let op = Operation::new("write_file", vec![], OperationSource::Remote);
     assert_eq!(assessor.assess(&op).unwrap(), RiskTier::Tier2);
 
-    // Tier 2 remote -> Tier 2 (max)
+    // Tier 2 remote -> Tier 2
     let op = Operation::new("delete_file", vec![], OperationSource::Remote);
     assert_eq!(assessor.assess(&op).unwrap(), RiskTier::Tier2);
 }
@@ -234,16 +234,15 @@ fn test_realistic_command_execution() {
 fn test_telegram_bot_scenario() {
     let assessor = RiskAssessor::new();
 
-    // Telegram bot requests are remote
-    // Read file from Telegram -> Tier 1 (escalated from Tier 0)
+    // Telegram bot requests are remote and always require Tier 2 handling.
     let op = Operation::new(
         "read_file",
         vec!["log.txt".to_string()],
         OperationSource::Remote,
     );
-    assert_eq!(assessor.assess(&op).unwrap(), RiskTier::Tier1);
+    assert_eq!(assessor.assess(&op).unwrap(), RiskTier::Tier2);
 
-    // Write file from Telegram -> Tier 2 (escalated from Tier 1)
+    // Write file from Telegram -> Tier 2
     let op = Operation::new(
         "write_file",
         vec!["note.txt".to_string()],
@@ -251,7 +250,7 @@ fn test_telegram_bot_scenario() {
     );
     assert_eq!(assessor.assess(&op).unwrap(), RiskTier::Tier2);
 
-    // Delete file from Telegram -> Tier 2 (already max)
+    // Delete file from Telegram -> Tier 2
     let op = Operation::new(
         "delete_file",
         vec!["temp.txt".to_string()],

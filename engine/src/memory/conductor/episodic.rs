@@ -32,6 +32,7 @@ use crate::llm::router::LLMRouter;
 /// * `task_id` - The task identifier
 /// * `domain` - The task domain for domain-gated queries
 /// * `sensitive` - Whether the memory contains sensitive information
+#[allow(clippy::too_many_arguments)]
 pub async fn ingest(
     pool: &SqlitePool,
     router: &LLMRouter,

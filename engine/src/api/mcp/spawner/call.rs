@@ -41,8 +41,9 @@ impl McpSpawner {
             method: tool_name.to_string(),
             params,
         };
-        let request_json = serde_json::to_string(&request)
-            .map_err(|error| EngineError::Plugin(format!("failed to serialize request: {}", error)))?;
+        let request_json = serde_json::to_string(&request).map_err(|error| {
+            EngineError::Plugin(format!("failed to serialize request: {}", error))
+        })?;
 
         let mut servers = self.servers.write().await;
         let instance = servers
@@ -54,7 +55,11 @@ impl McpSpawner {
             .write_all(request_json.as_bytes())
             .await
             .map_err(EngineError::Io)?;
-        instance.stdin.write_all(b"\n").await.map_err(EngineError::Io)?;
+        instance
+            .stdin
+            .write_all(b"\n")
+            .await
+            .map_err(EngineError::Io)?;
         instance.stdin.flush().await.map_err(EngineError::Io)?;
 
         let mut response_line = String::new();
@@ -75,7 +80,11 @@ impl McpSpawner {
                     )));
                 }
 
-                warn!(server = server_name, attempt = crash_count, "Attempting to restart MCP server");
+                warn!(
+                    server = server_name,
+                    attempt = crash_count,
+                    "Attempting to restart MCP server"
+                );
                 self.stop_server(server_name).await?;
                 self.start_server(server_name).await?;
                 return Err(EngineError::Plugin("connection lost".to_string()));
@@ -106,8 +115,9 @@ impl McpSpawner {
             ));
         }
 
-        let response: JsonRpcResponse = serde_json::from_str(&response_line)
-            .map_err(|error| EngineError::Plugin(format!("failed to parse JSON-RPC response: {}", error)))?;
+        let response: JsonRpcResponse = serde_json::from_str(&response_line).map_err(|error| {
+            EngineError::Plugin(format!("failed to parse JSON-RPC response: {}", error))
+        })?;
         if let Some(error) = response.error {
             return Err(EngineError::Plugin(format!(
                 "MCP tool error: {} (code {})",

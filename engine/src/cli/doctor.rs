@@ -68,7 +68,13 @@ pub async fn handle_doctor(config: &Config, format: OutputFormat) -> Result<()> 
                 Some("Ollama is not running. Start Ollama to use local inference."),
                 &mut issues,
             );
-            push_provider_check(&mut checks, "OpenAI API key", status.providers.openai, None, &mut issues);
+            push_provider_check(
+                &mut checks,
+                "OpenAI API key",
+                status.providers.openai,
+                None,
+                &mut issues,
+            );
             push_provider_check(
                 &mut checks,
                 "Anthropic API key",
@@ -76,7 +82,13 @@ pub async fn handle_doctor(config: &Config, format: OutputFormat) -> Result<()> 
                 None,
                 &mut issues,
             );
-            push_provider_check(&mut checks, "Gemini API key", status.providers.gemini, None, &mut issues);
+            push_provider_check(
+                &mut checks,
+                "Gemini API key",
+                status.providers.gemini,
+                None,
+                &mut issues,
+            );
             push_provider_check(
                 &mut checks,
                 "NVIDIA NIM API key",
@@ -91,7 +103,9 @@ pub async fn handle_doctor(config: &Config, format: OutputFormat) -> Result<()> 
                 && !status.providers.gemini
                 && !status.providers.nvidia_nim
             {
-                issues.push("No LLM providers available. Configure at least one provider.".to_string());
+                issues.push(
+                    "No LLM providers available. Configure at least one provider.".to_string(),
+                );
             }
         }
         Err(error) => {
@@ -159,8 +173,15 @@ fn manifest_check(issues: &mut Vec<String>) -> (&'static str, String) {
         Ok(()) => {
             let placeholder = serde_json::from_slice::<serde_json::Value>(&bytes)
                 .ok()
-                .and_then(|manifest| manifest.get("signature").and_then(|value| value.as_str()).map(str::to_string))
-                .map(|signature| signature.contains("PLACEHOLDER") || signature.contains("LOCAL_DEV"))
+                .and_then(|manifest| {
+                    manifest
+                        .get("signature")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+                .map(|signature| {
+                    signature.contains("PLACEHOLDER") || signature.contains("LOCAL_DEV")
+                })
                 .unwrap_or(false);
 
             if placeholder {

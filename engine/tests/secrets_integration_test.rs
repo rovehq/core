@@ -1,9 +1,13 @@
 use rove_engine::secrets::SecretManager;
 
+fn keychain_tests_enabled() -> bool {
+    std::env::var("ROVE_TEST_KEYCHAIN").is_ok_and(|value| value == "1")
+}
+
 #[tokio::test]
 async fn test_secret_manager_integration() {
-    if std::env::var("CI").is_ok() {
-        return; // Skip: no keyring in CI
+    if !keychain_tests_enabled() {
+        return;
     }
     let manager = SecretManager::new("rove-integration-test");
 
@@ -18,7 +22,10 @@ async fn test_secret_manager_integration() {
         .expect("Failed to store secret");
 
     // Retrieve the secret
-    let retrieved = manager.get_secret(key).await.expect("Failed to retrieve secret");
+    let retrieved = manager
+        .get_secret(key)
+        .await
+        .expect("Failed to retrieve secret");
 
     assert_eq!(
         retrieved, value,
@@ -26,13 +33,16 @@ async fn test_secret_manager_integration() {
     );
 
     // Clean up
-    manager.delete_secret(key).await.expect("Failed to delete secret");
+    manager
+        .delete_secret(key)
+        .await
+        .expect("Failed to delete secret");
 }
 
 #[tokio::test]
 async fn test_secret_manager_multiple_keys() {
-    if std::env::var("CI").is_ok() {
-        return; // Skip: no keyring in CI
+    if !keychain_tests_enabled() {
+        return;
     }
     let manager = SecretManager::new("rove-integration-test");
 
@@ -70,8 +80,8 @@ async fn test_secret_manager_multiple_keys() {
 
 #[tokio::test]
 async fn test_secret_manager_overwrite() {
-    if std::env::var("CI").is_ok() {
-        return; // Skip: no keyring in CI
+    if !keychain_tests_enabled() {
+        return;
     }
     let manager = SecretManager::new("rove-integration-test");
     let key = "test_overwrite_key";
@@ -89,14 +99,20 @@ async fn test_secret_manager_overwrite() {
         .expect("Failed to overwrite value");
 
     // Verify new value is retrieved
-    let retrieved = manager.get_secret(key).await.expect("Failed to retrieve value");
+    let retrieved = manager
+        .get_secret(key)
+        .await
+        .expect("Failed to retrieve value");
     assert_eq!(
         retrieved, "new_value",
         "Should retrieve the overwritten value"
     );
 
     // Clean up
-    manager.delete_secret(key).await.expect("Failed to delete secret");
+    manager
+        .delete_secret(key)
+        .await
+        .expect("Failed to delete secret");
 }
 
 #[test]

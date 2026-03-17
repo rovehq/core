@@ -39,19 +39,24 @@ impl WasmRuntime {
             .join(".rove/plugins")
             .join(manifest_path);
 
-        self.crypto.verify_file(&plugin_path, &plugin_entry.hash).map_err(|error| {
-            tracing::error!(
-                "Gate 2 FAILED: Hash verification failed for '{}': {}",
-                name,
+        self.crypto
+            .verify_file(&plugin_path, &plugin_entry.hash)
+            .map_err(|error| {
+                tracing::error!(
+                    "Gate 2 FAILED: Hash verification failed for '{}': {}",
+                    name,
+                    error
+                );
                 error
-            );
-            error
-        })?;
+            })?;
         tracing::info!("Gate 2 PASSED: File hash verified for '{}'", name);
 
         tracing::info!("Gate 2.5: Checking WASM import allowlist for '{}'", name);
         let wasm_bytes_for_check = std::fs::read(&plugin_path).map_err(|error| {
-            EngineError::Plugin(format!("Failed to read WASM file for import check: {}", error))
+            EngineError::Plugin(format!(
+                "Failed to read WASM file for import check: {}",
+                error
+            ))
         })?;
 
         if let Err(error) = self.validate_wasm_imports(
@@ -71,7 +76,11 @@ impl WasmRuntime {
 
         tracing::info!("Both gates passed for '{}', loading WASM module...", name);
         let wasm_bytes = std::fs::read(&plugin_path).map_err(|error| {
-            tracing::error!("Failed to read WASM file {}: {}", plugin_path.display(), error);
+            tracing::error!(
+                "Failed to read WASM file {}: {}",
+                plugin_path.display(),
+                error
+            );
             EngineError::Plugin(format!("Failed to read WASM file: {}", error))
         })?;
 

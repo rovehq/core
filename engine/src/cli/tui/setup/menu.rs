@@ -22,7 +22,10 @@ pub fn select_menu_default(
     stdout.flush()?;
 
     loop {
-        if let Event::Key(KeyEvent { code, modifiers, .. }) = event::read()? {
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        {
             if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
                 terminal::disable_raw_mode()?;
                 std::process::exit(0);

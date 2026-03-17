@@ -55,8 +55,9 @@ pub struct Gateway {
 
 impl Gateway {
     pub fn new(db: Arc<Database>, config: GatewayConfig) -> anyhow::Result<Self> {
-        let injection_detector = InjectionDetector::new()
-            .map_err(|error| anyhow::anyhow!("Failed to initialize injection detector: {}", error))?;
+        let injection_detector = InjectionDetector::new().map_err(|error| {
+            anyhow::anyhow!("Failed to initialize injection detector: {}", error)
+        })?;
         let dispatch_brain = DispatchBrain::init()
             .map_err(|error| anyhow::anyhow!("Failed to initialize dispatch brain: {}", error))?;
 
@@ -81,7 +82,10 @@ pub async fn recover_crashed_tasks(db: &Database) -> anyhow::Result<usize> {
     let recovered = repo.recover_crashed_tasks().await?;
 
     if recovered > 0 {
-        info!("Recovered {} crashed task(s) — marked as pending", recovered);
+        info!(
+            "Recovered {} crashed task(s) — marked as pending",
+            recovered
+        );
     }
 
     Ok(recovered)

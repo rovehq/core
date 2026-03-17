@@ -48,7 +48,8 @@ fn test_estimate_tokens() {
     assert!(short_tokens > 0);
     assert!(short_tokens < 20);
 
-    let long_msg = Message::user("This is a much longer message with many more words and characters");
+    let long_msg =
+        Message::user("This is a much longer message with many more words and characters");
     let long_tokens = WorkingMemory::estimate_tokens(&long_msg);
     assert!(long_tokens > short_tokens);
 }

@@ -33,10 +33,7 @@ async fn test_multiple_subscribers() {
     .await;
 
     match (rx1.recv().await.unwrap(), rx2.recv().await.unwrap()) {
-        (
-            Event::TaskCompleted { task_id: id1, .. },
-            Event::TaskCompleted { task_id: id2, .. },
-        ) => {
+        (Event::TaskCompleted { task_id: id1, .. }, Event::TaskCompleted { task_id: id2, .. }) => {
             assert_eq!(id1, "task-2");
             assert_eq!(id2, "task-2");
         }
@@ -56,11 +53,11 @@ async fn test_all_event_type() {
     })
     .await;
 
-    match (rx_all.recv().await.unwrap(), rx_specific.recv().await.unwrap()) {
-        (
-            Event::TaskStarted { task_id: id1, .. },
-            Event::TaskStarted { task_id: id2, .. },
-        ) => {
+    match (
+        rx_all.recv().await.unwrap(),
+        rx_specific.recv().await.unwrap(),
+    ) {
+        (Event::TaskStarted { task_id: id1, .. }, Event::TaskStarted { task_id: id2, .. }) => {
             assert_eq!(id1, "task-3");
             assert_eq!(id2, "task-3");
         }

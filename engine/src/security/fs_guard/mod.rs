@@ -119,7 +119,7 @@ impl FileSystemGuard {
     /// use std::path::PathBuf;
     /// use rove_engine::fs_guard::FileSystemGuard;
     ///
-    /// let guard = FileSystemGuard::new(PathBuf::from("/home/user/workspace"));
+    /// let guard = FileSystemGuard::new(PathBuf::from("/home/user/workspace")).unwrap();
     ///
     /// // Valid path within workspace
     /// let valid = guard.validate_path(&PathBuf::from("/home/user/workspace/file.txt"));
@@ -132,7 +132,10 @@ impl FileSystemGuard {
     pub fn validate_path(&self, path: &Path) -> Result<PathBuf, EngineError> {
         // Convert path to string for validation
         let path_str = path.to_str().ok_or_else(|| {
-            EngineError::PathCanonicalization(path.to_path_buf(), "Invalid UTF-8 in path".to_string())
+            EngineError::PathCanonicalization(
+                path.to_path_buf(),
+                "Invalid UTF-8 in path".to_string(),
+            )
         })?;
 
         // Gate 0: Reject null bytes
@@ -402,7 +405,11 @@ mod tests {
 
         for pattern in encoded_patterns {
             let result = guard.validate_path(&pattern);
-            assert!(result.is_err(), "Should reject URL-encoded traversal: {:?}", pattern);
+            assert!(
+                result.is_err(),
+                "Should reject URL-encoded traversal: {:?}",
+                pattern
+            );
             assert!(matches!(result.unwrap_err(), EngineError::PathDenied(_)));
         }
     }

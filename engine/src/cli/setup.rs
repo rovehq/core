@@ -12,13 +12,16 @@ use super::tui::setup;
 pub async fn handle_setup() -> Result<()> {
     let result = setup::run_setup_wizard()?;
 
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     let config_dir = home.join(".rove");
     std::fs::create_dir_all(&config_dir)?;
 
     if !result.api_key.is_empty() && !result.secret_key.is_empty() {
         let secret_manager = SecretManager::new(SERVICE_NAME);
-        secret_manager.set_secret(&result.secret_key, &result.api_key).await?;
+        secret_manager
+            .set_secret(&result.secret_key, &result.api_key)
+            .await?;
     }
 
     let mut config = Config::default();
@@ -70,7 +73,10 @@ fn apply_provider(config: &mut Config, result: &setup::SetupResult) {
             config.llm.gemini.model = result.model.clone();
         }
         _ => {
-            config.llm.custom_providers.retain(|provider| provider.name != result.provider_name);
+            config
+                .llm
+                .custom_providers
+                .retain(|provider| provider.name != result.provider_name);
             config.llm.custom_providers.push(CustomProvider {
                 name: result.provider_name.clone(),
                 protocol: result.protocol.clone(),

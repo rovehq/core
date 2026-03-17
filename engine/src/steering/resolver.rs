@@ -249,12 +249,12 @@ mod tests {
     fn test_resolve_inheritance_merges_tags() {
         let mut child = create_test_skill("child");
         let mut parent = create_test_skill("parent");
-        
+
         parent.meta.tags = vec!["tag1".to_string(), "tag2".to_string()];
         child.meta.tags = vec!["tag3".to_string()];
-        
+
         resolve_inheritance(&mut child, &parent).expect("inheritance should succeed");
-        
+
         assert_eq!(child.meta.tags.len(), 3);
         assert!(child.meta.tags.contains(&"tag1".to_string()));
         assert!(child.meta.tags.contains(&"tag2".to_string()));
@@ -265,12 +265,12 @@ mod tests {
     fn test_resolve_inheritance_child_overrides_parent() {
         let mut child = create_test_skill("child");
         let mut parent = create_test_skill("parent");
-        
+
         parent.directives.system_prefix = "parent prefix".to_string();
         child.directives.system_prefix = "child prefix".to_string();
-        
+
         resolve_inheritance(&mut child, &parent).expect("inheritance should succeed");
-        
+
         // Child's system_prefix should be preserved with parent prepended
         assert!(child.directives.system_prefix.contains("parent prefix"));
         assert!(child.directives.system_prefix.contains("child prefix"));
@@ -280,12 +280,12 @@ mod tests {
     fn test_resolve_inheritance_takes_parent_when_child_empty() {
         let mut child = create_test_skill("child");
         let mut parent = create_test_skill("parent");
-        
+
         parent.directives.system_suffix = "parent suffix".to_string();
         child.directives.system_suffix = String::new();
-        
+
         resolve_inheritance(&mut child, &parent).expect("inheritance should succeed");
-        
+
         assert_eq!(child.directives.system_suffix, "parent suffix");
     }
 
@@ -293,42 +293,51 @@ mod tests {
     fn test_extend_unique_deduplicates() {
         let mut target = vec!["a".to_string(), "b".to_string()];
         let source = vec!["b".to_string(), "c".to_string()];
-        
+
         extend_unique(&mut target, &source);
-        
+
         assert_eq!(target.len(), 3);
-        assert_eq!(target, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            target,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
     }
 
     #[test]
     fn test_build_inheritance_graph_detects_circular_dependency() {
         use crate::steering::loader::Skill;
         use std::path::PathBuf;
-        
+
         let mut skills = HashMap::new();
-        
+
         // Create skill A that extends B
         let mut skill_a = create_test_skill("a");
         skill_a.meta.extends = Some("b".to_string());
-        skills.insert("a".to_string(), Skill {
-            name: "a".to_string(),
-            description: "Skill A".to_string(),
-            content: String::new(),
-            file_path: PathBuf::from("a.toml"),
-            config: Some(skill_a),
-        });
-        
+        skills.insert(
+            "a".to_string(),
+            Skill {
+                name: "a".to_string(),
+                description: "Skill A".to_string(),
+                content: String::new(),
+                file_path: PathBuf::from("a.toml"),
+                config: Some(skill_a),
+            },
+        );
+
         // Create skill B that extends A (circular!)
         let mut skill_b = create_test_skill("b");
         skill_b.meta.extends = Some("a".to_string());
-        skills.insert("b".to_string(), Skill {
-            name: "b".to_string(),
-            description: "Skill B".to_string(),
-            content: String::new(),
-            file_path: PathBuf::from("b.toml"),
-            config: Some(skill_b),
-        });
-        
+        skills.insert(
+            "b".to_string(),
+            Skill {
+                name: "b".to_string(),
+                description: "Skill B".to_string(),
+                content: String::new(),
+                file_path: PathBuf::from("b.toml"),
+                config: Some(skill_b),
+            },
+        );
+
         let result = build_inheritance_graph(&mut skills);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Circular"));

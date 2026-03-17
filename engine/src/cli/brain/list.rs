@@ -27,7 +27,10 @@ pub fn run() -> Result<()> {
             continue;
         }
 
-        let name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("unknown");
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("unknown");
         if name == "adapter" {
             continue;
         }

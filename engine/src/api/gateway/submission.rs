@@ -14,7 +14,8 @@ impl Gateway {
             }
         }
 
-        self.submit_task(input, TaskSource::Cli, None, None, None).await
+        self.submit_task(input, TaskSource::Cli, None, None, None)
+            .await
     }
 
     pub async fn submit_telegram(
@@ -22,8 +23,14 @@ impl Gateway {
         input: &str,
         session_id: Option<&str>,
     ) -> anyhow::Result<String> {
-        self.submit_task(input, TaskSource::Telegram(String::new()), session_id, None, None)
-            .await
+        self.submit_task(
+            input,
+            TaskSource::Telegram(String::new()),
+            session_id,
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn submit_webui(

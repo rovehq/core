@@ -18,7 +18,8 @@ impl TelegramRateLimits {
     pub(super) fn check_general(&mut self) -> bool {
         let now = std::time::Instant::now();
         let one_hour = Duration::from_secs(3600);
-        self.recent_ops.retain(|time| now.duration_since(*time) < one_hour);
+        self.recent_ops
+            .retain(|time| now.duration_since(*time) < one_hour);
         if self.recent_ops.len() >= 60 {
             return false;
         }
@@ -29,7 +30,8 @@ impl TelegramRateLimits {
     pub(super) fn check_tier2(&mut self) -> bool {
         let now = std::time::Instant::now();
         let ten_min = Duration::from_secs(600);
-        self.tier2_ops.retain(|time| now.duration_since(*time) < ten_min);
+        self.tier2_ops
+            .retain(|time| now.duration_since(*time) < ten_min);
         if self.tier2_ops.len() >= 10 {
             return false;
         }

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::defaults::default_true;
 
 /// Core tool enablement configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolsConfig {
     #[serde(default, rename = "tg-controller")]
     pub tg_controller: bool,
@@ -11,16 +11,6 @@ pub struct ToolsConfig {
     pub ui_server: bool,
     #[serde(default, rename = "api-server")]
     pub api_server: bool,
-}
-
-impl Default for ToolsConfig {
-    fn default() -> Self {
-        Self {
-            tg_controller: false,
-            ui_server: false,
-            api_server: false,
-        }
-    }
 }
 
 /// Plugin enablement configuration.

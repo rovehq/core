@@ -12,10 +12,10 @@
 ///
 /// Requirements: Phase 3 — Gateway + Durable Inbox
 use anyhow::{Context, Result};
+use sdk::TaskSource;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use std::time::{SystemTime, UNIX_EPOCH};
-use sdk::TaskSource;
 
 /// Task status for durable inbox
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,15 +96,7 @@ impl PendingTaskRepository {
         team_id: Option<&str>,
     ) -> Result<PendingTask> {
         self.create_task_with_dispatch(
-            id,
-            input,
-            source,
-            "general",
-            "simple",
-            false,
-            session_id,
-            workspace,
-            team_id,
+            id, input, source, "general", "simple", false, session_id, workspace, team_id,
         )
         .await
     }
@@ -113,6 +105,7 @@ impl PendingTaskRepository {
     ///
     /// This is the full version that includes domain/complexity/sensitive fields
     /// set by the dispatch brain at gateway entry.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_task_with_dispatch(
         &self,
         id: &str,
@@ -347,14 +340,7 @@ mod tests {
         let (_db, repo, _temp) = test_db().await;
 
         let task = repo
-            .create_task(
-                "task-1",
-                "list files",
-                TaskSource::Cli,
-                None,
-                None,
-                None,
-            )
+            .create_task("task-1", "list files", TaskSource::Cli, None, None, None)
             .await
             .unwrap();
 
@@ -386,16 +372,9 @@ mod tests {
         .await
         .unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        repo.create_task(
-            "task-3",
-            "third",
-            TaskSource::WebUI,
-            None,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        repo.create_task("task-3", "third", TaskSource::WebUI, None, None, None)
+            .await
+            .unwrap();
 
         let pending = repo.get_pending_tasks(10).await.unwrap();
 

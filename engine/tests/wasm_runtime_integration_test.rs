@@ -234,14 +234,7 @@ async fn test_call_plugin_not_loaded() {
     let temp_dir = TempDir::new().unwrap();
     let workspace = temp_dir.path().to_path_buf();
 
-    let manifest = Manifest {
-        version: "1.0.0".to_string(),
-        team_public_key: "ed25519:test_key".to_string(),
-        signature: "ed25519:test_sig".to_string(),
-        generated_at: "2024-01-15T10:30:00Z".to_string(),
-        core_tools: vec![],
-        plugins: vec![],
-    };
+    let manifest = create_test_manifest("nonexistent", "plugins/nonexistent.wasm", "deadbeef");
 
     let crypto = Arc::new(CryptoModule::new().unwrap());
     let fs_guard = Arc::new(FileSystemGuard::new(workspace).expect("test workspace"));

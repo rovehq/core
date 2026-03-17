@@ -45,7 +45,10 @@ pub async fn handle_setup() -> Result<()> {
     let set_default = default_choice.trim().eq_ignore_ascii_case("y");
 
     let mut config = Config::load_or_create()?;
-    config.llm.custom_providers.retain(|provider| provider.name != name);
+    config
+        .llm
+        .custom_providers
+        .retain(|provider| provider.name != name);
     config.llm.custom_providers.push(CustomProvider {
         name: name.clone(),
         protocol: protocol.to_string(),

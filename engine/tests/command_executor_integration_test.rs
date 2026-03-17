@@ -7,7 +7,7 @@ fn test_safe_command_execution() {
     let executor = CommandExecutor::new();
 
     // Execute a safe command
-    let result = executor.execute("uname", &[]);
+    let result = executor.execute("git", &["--version".to_string()]);
     assert!(result.is_ok());
 
     let output = result.unwrap();
@@ -35,21 +35,21 @@ fn test_command_injection_prevention() {
     let executor = CommandExecutor::new();
 
     // Attempt command injection via semicolon
-    let result = executor.execute("ls", &["; rm -rf /".to_string()]);
+    let result = executor.execute("git", &["; rm -rf /".to_string()]);
     assert!(matches!(
         result,
         Err(CommandError::ShellMetacharactersDetected(_))
     ));
 
     // Attempt command injection via pipe
-    let result = executor.execute("cat", &["file.txt | rm -rf /".to_string()]);
+    let result = executor.execute("git", &["file.txt | rm -rf /".to_string()]);
     assert!(matches!(
         result,
         Err(CommandError::ShellMetacharactersDetected(_))
     ));
 
     // Attempt command injection via backticks
-    let result = executor.execute("ls", &["`whoami`".to_string()]);
+    let result = executor.execute("git", &["`whoami`".to_string()]);
     assert!(matches!(
         result,
         Err(CommandError::ShellMetacharactersDetected(_))
@@ -71,7 +71,7 @@ fn test_dangerous_command_blocked() {
 
 #[test]
 fn test_stdin_null_configuration() {
-    let executor = CommandExecutor::new();
+    let executor = CommandExecutor::with_allowlist(vec!["cat".to_string()]);
 
     // Execute a command that would normally read from stdin
     // Since stdin is null, it should not hang

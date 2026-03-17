@@ -158,7 +158,8 @@ impl Config {
     /// Clamp all config values to valid ranges and validate
     fn clamp_and_validate(&mut self) -> Result<(), EngineError> {
         // Clamp memory config values
-        self.memory.consolidation_interval_mins = self.memory.consolidation_interval_mins.clamp(5, 1440);
+        self.memory.consolidation_interval_mins =
+            self.memory.consolidation_interval_mins.clamp(5, 1440);
         self.memory.min_to_consolidate = self.memory.min_to_consolidate.max(1);
         self.memory.query_limit = self.memory.query_limit.clamp(1, 20);
         self.memory.min_importance_to_inject = self.memory.min_importance_to_inject.clamp(0.1, 0.9);
@@ -271,9 +272,8 @@ fn reject_dangerous_workspace(path: &Path) -> Result<(), EngineError> {
 /// Canonicalize path or create if doesn't exist
 fn canonicalize_or_create(path: &Path) -> Result<PathBuf, EngineError> {
     if path.exists() {
-        path.canonicalize().map_err(|e| {
-            EngineError::Config(format!("Failed to canonicalize path: {}", e))
-        })
+        path.canonicalize()
+            .map_err(|e| EngineError::Config(format!("Failed to canonicalize path: {}", e)))
     } else {
         Ok(path.to_path_buf())
     }

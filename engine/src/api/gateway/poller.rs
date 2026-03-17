@@ -45,9 +45,11 @@ impl Gateway {
             let task = Task {
                 id: Uuid::parse_str(&task_row.id).unwrap_or_else(|_| Uuid::new_v4()),
                 input: task_row.input.clone(),
-                source: task_source.into(),
+                source: task_source,
                 risk_tier_override: None,
-                session_id: task_row.session_id.and_then(|value| Uuid::parse_str(&value).ok()),
+                session_id: task_row
+                    .session_id
+                    .and_then(|value| Uuid::parse_str(&value).ok()),
                 created_at: task_row.created_at,
             };
 
@@ -70,7 +72,9 @@ impl Gateway {
                     }
                     Err(error) => {
                         error!(task_id = %task_id, "Task failed: {}", error);
-                        if let Err(mark_error) = repo.mark_failed(&task_id, &error.to_string()).await {
+                        if let Err(mark_error) =
+                            repo.mark_failed(&task_id, &error.to_string()).await
+                        {
                             error!(task_id = %task_id, "Failed to mark task as failed: {}", mark_error);
                         }
                     }

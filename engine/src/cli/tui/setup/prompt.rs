@@ -22,7 +22,10 @@ pub fn prompt_text(stdout: &mut io::Stdout, label: &str, default: &str) -> Resul
     let mut input = String::new();
 
     loop {
-        if let Event::Key(KeyEvent { code, modifiers, .. }) = event::read()? {
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        {
             if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
                 terminal::disable_raw_mode()?;
                 std::process::exit(0);

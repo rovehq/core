@@ -3,11 +3,11 @@
 //! Shared library providing traits, types, and utilities for Rove components.
 //! This crate is used by both the engine and plugins/core-tools.
 
-/// Core tool trait and context
-pub mod core_tool;
 pub mod agent_handle;
 pub mod bus_handle;
 pub mod config_handle;
+/// Core tool trait and context
+pub mod core_tool;
 pub mod crypto_handle;
 pub mod db_handle;
 pub mod network_handle;
@@ -15,10 +15,10 @@ pub mod network_handle;
 /// Error types and handling
 pub mod errors;
 
-/// Tool input/output compatibility re-exports
-pub mod types;
 pub mod task;
 pub mod tool_io;
+/// Tool input/output compatibility re-exports
+pub mod types;
 
 /// Manifest types and compatibility re-exports
 pub mod manifest;
@@ -29,16 +29,14 @@ pub mod plugin;
 pub mod brain;
 
 // Re-export commonly used types
+pub use agent_handle::{AgentHandle, AgentHandleImpl};
 pub use brain::{
     Brain, BrainResponse, Complexity, DispatchResult, Message, Route, TaskDomain, ToolSchema,
     ToolTag,
 };
-pub use agent_handle::{AgentHandle, AgentHandleImpl};
 pub use bus_handle::{BusHandle, BusHandleImpl};
 pub use config_handle::{ConfigHandle, ConfigHandleImpl};
-pub use core_tool::{
-    CoreContext, CoreTool,
-};
+pub use core_tool::{CoreContext, CoreTool};
 pub use crypto_handle::{CryptoHandle, CryptoHandleImpl};
 pub use db_handle::{DbHandle, DbHandleImpl};
 pub use errors::{EngineError, RoveErrorExt};

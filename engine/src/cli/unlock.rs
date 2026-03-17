@@ -40,11 +40,12 @@ pub async fn run() -> Result<()> {
                 SERVICE_NAME.to_uppercase().replace('-', "_"),
                 key.to_uppercase()
             );
-            let source = if std::env::var(&env_key).is_ok() || std::env::var(key.to_uppercase()).is_ok() {
-                "(env)"
-            } else {
-                "(keychain)"
-            };
+            let source =
+                if std::env::var(&env_key).is_ok() || std::env::var(key.to_uppercase()).is_ok() {
+                    "(env)"
+                } else {
+                    "(keychain)"
+                };
             println!("    {} {}", key, source);
         } else {
             println!("    {} (not configured)", key);

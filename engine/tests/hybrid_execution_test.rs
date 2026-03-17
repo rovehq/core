@@ -2,10 +2,10 @@
 //!
 //! Tests cloud planning + local execution with DAG concurrency
 
+use rove_engine::conductor::types::{ConductorPlan, PlanStep, StepType};
 use rove_engine::conductor::HybridExecutor;
-use rove_engine::conductor::types::{PlanStep, StepType, ConductorPlan};
-use rove_engine::llm::router::LLMRouter;
 use rove_engine::config::LLMConfig;
+use rove_engine::llm::router::LLMRouter;
 use std::sync::Arc;
 
 /// Test DAG execution with parallel steps
@@ -63,7 +63,7 @@ fn test_dag_parallel_execution() {
 
     // Build DAG
     let dag = executor.build_dag(&plan.steps).unwrap();
-    
+
     // Verify structure
     assert_eq!(dag.len(), 3);
     assert_eq!(dag.get("step_1").unwrap().len(), 0); // No dependencies
@@ -156,7 +156,7 @@ fn test_plan_parsing() {
     ]"#;
 
     let plan = executor.parse_plan(json, "Test goal").unwrap();
-    
+
     assert_eq!(plan.steps.len(), 2);
     assert_eq!(plan.steps[0].id, "step_1");
     assert_eq!(plan.steps[1].dependencies.len(), 1);

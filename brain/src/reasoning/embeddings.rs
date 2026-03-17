@@ -12,18 +12,24 @@ impl LocalBrain {
             "input": text,
         });
 
-        let response = self.client.post(&url).json(&request).send().await.map_err(|error| {
-            if error.is_timeout() {
-                EngineError::LLMProvider("llama-server embedding timeout".to_string())
-            } else if error.is_connect() {
-                EngineError::LLMProvider(format!(
-                    "Cannot connect to llama-server at {}. Is it running?",
-                    self.base_url
-                ))
-            } else {
-                EngineError::LLMProvider(format!("llama-server embedding error: {}", error))
-            }
-        })?;
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| {
+                if error.is_timeout() {
+                    EngineError::LLMProvider("llama-server embedding timeout".to_string())
+                } else if error.is_connect() {
+                    EngineError::LLMProvider(format!(
+                        "Cannot connect to llama-server at {}. Is it running?",
+                        self.base_url
+                    ))
+                } else {
+                    EngineError::LLMProvider(format!("llama-server embedding error: {}", error))
+                }
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();

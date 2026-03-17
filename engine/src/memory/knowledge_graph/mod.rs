@@ -9,7 +9,7 @@ pub mod graph;
 pub mod query;
 
 pub use extractor::EntityExtractor;
-pub use graph::{GraphNode, GraphEdge, KnowledgeGraph};
+pub use graph::{GraphEdge, GraphNode, KnowledgeGraph};
 pub use query::GraphQuery;
 
 use serde::{Deserialize, Serialize};

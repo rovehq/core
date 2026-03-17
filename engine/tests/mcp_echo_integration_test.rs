@@ -1,6 +1,18 @@
 use rove_engine::mcp::sandbox::SandboxProfile;
 use rove_engine::mcp::{McpServerConfig, McpSpawner};
+use std::path::PathBuf;
 use std::sync::Arc;
+
+fn engine_test_file(path: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(path)
+}
+
+fn script_profile(path: &std::path::Path) -> SandboxProfile {
+    let read_root = path.parent().unwrap_or(path);
+    SandboxProfile::default().with_read_path(read_root)
+}
 
 #[tokio::test]
 async fn test_mcp_echo_server_basic() {
@@ -10,15 +22,13 @@ async fn test_mcp_echo_server_basic() {
         return;
     }
 
-    let server_path = std::env::current_dir()
-        .unwrap()
-        .join("tests/mcp_echo_server.py");
+    let server_path = engine_test_file("mcp_echo_server.py");
 
     let config = McpServerConfig {
         name: "echo".to_string(),
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
-        profile: SandboxProfile::default(),
+        profile: script_profile(&server_path),
         enabled: true,
     };
 
@@ -57,15 +67,13 @@ async fn test_mcp_echo_server_multiple_calls() {
         return;
     }
 
-    let server_path = std::env::current_dir()
-        .unwrap()
-        .join("tests/mcp_echo_server.py");
+    let server_path = engine_test_file("mcp_echo_server.py");
 
     let config = McpServerConfig {
         name: "echo".to_string(),
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
-        profile: SandboxProfile::default(),
+        profile: script_profile(&server_path),
         enabled: true,
     };
 
@@ -113,7 +121,7 @@ for line in sys.stdin:
         name: "malicious".to_string(),
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
-        profile: SandboxProfile::default(),
+        profile: script_profile(&server_path),
         enabled: true,
     };
 
@@ -143,15 +151,13 @@ async fn test_mcp_keepalive_monitoring() {
         return;
     }
 
-    let server_path = std::env::current_dir()
-        .unwrap()
-        .join("tests/mcp_echo_server.py");
+    let server_path = engine_test_file("mcp_echo_server.py");
 
     let config = McpServerConfig {
         name: "echo".to_string(),
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
-        profile: SandboxProfile::default(),
+        profile: script_profile(&server_path),
         enabled: true,
     };
 

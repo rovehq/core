@@ -172,7 +172,8 @@ impl DaemonManager {
     }
 
     pub fn is_shutdown_signaled(&self) -> bool {
-        self.shutdown_flag.load(std::sync::atomic::Ordering::Relaxed)
+        self.shutdown_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn pid_file_path(&self) -> &PathBuf {

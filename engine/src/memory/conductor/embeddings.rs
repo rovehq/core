@@ -44,11 +44,14 @@ impl EmbeddingGenerator {
         };
 
         // Generate embedding
-        let embedding = brain.embed(text).await.context("Failed to generate embedding")?;
+        let embedding = brain
+            .embed(text)
+            .await
+            .context("Failed to generate embedding")?;
 
         // Serialize embedding as bytes
-        let embedding_bytes = bincode::serialize(&embedding)
-            .context("Failed to serialize embedding")?;
+        let embedding_bytes =
+            bincode::serialize(&embedding).context("Failed to serialize embedding")?;
 
         let now = chrono::Utc::now().timestamp();
 

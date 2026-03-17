@@ -1,7 +1,7 @@
 pub mod bootstrap;
-pub mod daemon;
 pub mod brain;
 pub mod commands;
+pub mod daemon;
 pub mod database_path;
 pub mod doctor;
 pub mod history;

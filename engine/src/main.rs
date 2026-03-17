@@ -66,7 +66,8 @@ async fn run_daemon(port: u16) -> Result<()> {
 }
 
 async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>) -> Result<()> {
-    let home_dir = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let steering_dir = dir.unwrap_or_else(|| home_dir.join(".rove").join("steering"));
     let engine = SteeringEngine::new(&steering_dir).await?;
 

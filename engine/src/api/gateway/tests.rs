@@ -138,5 +138,9 @@ async fn test_workspace_lock_serializes_writes() {
     assert_eq!(result2.unwrap(), 2);
 
     let order = lock_order.lock().await.clone();
-    assert_eq!(order, vec![1, 2], "Locks should be serialized, not concurrent");
+    assert_eq!(
+        order,
+        vec![1, 2],
+        "Locks should be serialized, not concurrent"
+    );
 }

@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::PathBuf;
 
 use tempfile::TempDir;
 
@@ -44,9 +45,14 @@ require_explicit_tier2 = true
     Config::load_from_path(&config_path).unwrap()
 }
 
+fn create_safe_temp_dir() -> TempDir {
+    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    TempDir::new_in(base).unwrap()
+}
+
 #[tokio::test]
 async fn test_daemon_manager_creation() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
@@ -55,7 +61,7 @@ async fn test_daemon_manager_creation() {
 
 #[tokio::test]
 async fn test_write_and_read_pid_file() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
@@ -70,7 +76,7 @@ async fn test_write_and_read_pid_file() {
 #[tokio::test]
 #[cfg(unix)]
 async fn test_daemon_already_running() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
@@ -82,7 +88,7 @@ async fn test_daemon_already_running() {
 
 #[tokio::test]
 async fn test_stale_pid_file_handling() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
@@ -96,7 +102,7 @@ async fn test_stale_pid_file_handling() {
 #[tokio::test]
 #[cfg(unix)]
 async fn test_daemon_status() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let status = DaemonManager::status(&config).unwrap();
@@ -113,7 +119,7 @@ async fn test_daemon_status() {
 
 #[tokio::test]
 async fn test_pid_file_cleanup_on_drop() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let pid_file = {
@@ -128,7 +134,7 @@ async fn test_pid_file_cleanup_on_drop() {
 
 #[tokio::test]
 async fn test_daemon_status_provider_availability() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
     let status = DaemonManager::status(&config).unwrap();
 

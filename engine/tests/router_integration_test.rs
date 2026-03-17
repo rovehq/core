@@ -12,11 +12,27 @@ use wiremock::{
 use rove_engine::config::LLMConfig;
 use rove_engine::llm::{ollama::OllamaProvider, router::LLMRouter, LLMProvider, Message};
 
+async fn mount_ollama_health(server: &MockServer) {
+    let tags_response = json!({
+        "models": [
+            { "name": "llama3.1:8b" }
+        ]
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/tags"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(tags_response))
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn test_llm_router_failover_with_wiremock() {
     // Start two mock servers to represent two different Ollama instances
     let failing_server = MockServer::start().await;
     let succeeding_server = MockServer::start().await;
+    mount_ollama_health(&failing_server).await;
+    mount_ollama_health(&succeeding_server).await;
 
     // First provider throws 500 error (simulating failure)
     Mock::given(method("POST"))
@@ -43,8 +59,8 @@ async fn test_llm_router_failover_with_wiremock() {
         .await;
 
     // Create providers pointing to our mock servers
-    let provider1 =
-        Box::new(OllamaProvider::new(failing_server.uri(), "llama3.1:8b").unwrap()) as Box<dyn LLMProvider>;
+    let provider1 = Box::new(OllamaProvider::new(failing_server.uri(), "llama3.1:8b").unwrap())
+        as Box<dyn LLMProvider>;
     let provider2 = Box::new(OllamaProvider::new(succeeding_server.uri(), "llama3.1:8b").unwrap())
         as Box<dyn LLMProvider>;
 
@@ -92,6 +108,8 @@ async fn test_llm_router_failover_with_wiremock() {
 async fn test_property_llm_router_provider_fallback_all_fail() {
     let failing_server1 = MockServer::start().await;
     let failing_server2 = MockServer::start().await;
+    mount_ollama_health(&failing_server1).await;
+    mount_ollama_health(&failing_server2).await;
 
     Mock::given(method("POST"))
         .and(path("/api/chat"))
@@ -105,10 +123,10 @@ async fn test_property_llm_router_provider_fallback_all_fail() {
         .mount(&failing_server2)
         .await;
 
-    let p1 =
-        Box::new(OllamaProvider::new(failing_server1.uri(), "llama3.1:8b").unwrap()) as Box<dyn LLMProvider>;
-    let p2 =
-        Box::new(OllamaProvider::new(failing_server2.uri(), "llama3.1:8b").unwrap()) as Box<dyn LLMProvider>;
+    let p1 = Box::new(OllamaProvider::new(failing_server1.uri(), "llama3.1:8b").unwrap())
+        as Box<dyn LLMProvider>;
+    let p2 = Box::new(OllamaProvider::new(failing_server2.uri(), "llama3.1:8b").unwrap())
+        as Box<dyn LLMProvider>;
 
     let config = Arc::new(LLMConfig {
         default_provider: "ollama".to_string(),

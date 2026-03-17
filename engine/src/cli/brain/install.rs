@@ -43,13 +43,21 @@ fn link_model(model_path: &Path, brain_dir: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(model_path, &target).context("Failed to create symlink")?;
-        println!("Linked model: {} -> {}", target.display(), model_path.display());
+        println!(
+            "Linked model: {} -> {}",
+            target.display(),
+            model_path.display()
+        );
     }
 
     #[cfg(not(unix))]
     {
         std::fs::copy(model_path, &target).context("Failed to copy model")?;
-        println!("Copied model: {} -> {}", model_path.display(), target.display());
+        println!(
+            "Copied model: {} -> {}",
+            model_path.display(),
+            target.display()
+        );
     }
 
     Ok(())

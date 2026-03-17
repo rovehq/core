@@ -138,7 +138,10 @@ async fn test_envelope_verification_success() {
 
     // This will fail because the signature doesn't match the embedded public key
     let result = crypto.verify_envelope(&envelope);
-    assert!(result.await.is_err(), "Should fail with mismatched signature");
+    assert!(
+        result.await.is_err(),
+        "Should fail with mismatched signature"
+    );
 }
 
 #[tokio::test]

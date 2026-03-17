@@ -34,7 +34,12 @@ impl WasmRuntime {
             .plugin
             .call::<&[u8], Vec<u8>>(function, input)
             .map_err(|error| {
-                tracing::error!("Plugin '{}' function '{}' failed: {}", name, function, error);
+                tracing::error!(
+                    "Plugin '{}' function '{}' failed: {}",
+                    name,
+                    function,
+                    error
+                );
                 EngineError::Plugin(format!("Plugin call failed: {}", error))
             });
 
@@ -90,7 +95,11 @@ impl WasmRuntime {
         if let Ok(input_json) = serde_json::from_slice::<serde_json::Value>(input) {
             if let Some(path) = input_json.get("path").and_then(|value| value.as_str()) {
                 if !plugin_entry.is_path_allowed(path) {
-                    tracing::warn!(plugin = name, path = path, "Plugin attempted to access denied path");
+                    tracing::warn!(
+                        plugin = name,
+                        path = path,
+                        "Plugin attempted to access denied path"
+                    );
                     return Err(EngineError::PathDenied(std::path::PathBuf::from(path)));
                 }
             }

@@ -10,6 +10,7 @@ use rove_engine::fs_guard::FileSystemGuard;
 use rove_engine::runtime::native::NativeRuntime;
 use rove_engine::runtime::wasm::WasmRuntime;
 use sdk::manifest::Manifest;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,10 +55,15 @@ require_explicit_tier2 = true
     Config::load_from_path(&config_path).unwrap()
 }
 
+fn create_safe_temp_dir() -> TempDir {
+    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    TempDir::new_in(base).unwrap()
+}
+
 #[tokio::test]
 async fn test_graceful_shutdown_sequence() {
     // Requirement 14.6, 14.7, 14.8, 14.9, 14.10, 14.11, 14.12
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let mut manager = DaemonManager::new(&config).unwrap();
@@ -102,7 +108,7 @@ async fn test_graceful_shutdown_sequence() {
 #[tokio::test]
 async fn test_shutdown_flag_set() {
     // Requirement 14.6: Set shutdown flag to refuse new tasks
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let mut manager = DaemonManager::new(&config).unwrap();
@@ -120,7 +126,7 @@ async fn test_shutdown_flag_set() {
 #[tokio::test]
 async fn test_wait_for_tasks_timeout() {
     // Requirement 14.8: Wait up to 30 seconds for in-progress tasks
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
@@ -144,7 +150,7 @@ async fn test_wait_for_tasks_timeout() {
 #[tokio::test]
 async fn test_wait_for_tasks_completes() {
     // Requirement 14.8: Wait for in-progress tasks
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
@@ -184,7 +190,7 @@ async fn test_signal_handler_setup() {
 #[tokio::test]
 async fn test_native_runtime_shutdown() {
     // Requirement 14.9: Call stop() on all core tools
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let mut manager = DaemonManager::new(&config).unwrap();
@@ -217,7 +223,7 @@ async fn test_native_runtime_shutdown() {
 #[tokio::test]
 async fn test_wasm_runtime_shutdown() {
     // Requirement 14.10: Close all plugins
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let mut manager = DaemonManager::new(&config).unwrap();
@@ -252,7 +258,7 @@ async fn test_wasm_runtime_shutdown() {
 #[tokio::test]
 async fn test_database_wal_flush() {
     // Requirement 14.11: Flush SQLite WAL
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let mut manager = DaemonManager::new(&config).unwrap();
@@ -273,7 +279,7 @@ async fn test_database_wal_flush() {
 #[tokio::test]
 async fn test_pid_file_removal() {
     // Requirement 14.12: Remove PID file
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let mut manager = DaemonManager::new(&config).unwrap();
@@ -294,7 +300,7 @@ async fn test_pid_file_removal() {
 async fn test_complete_shutdown_sequence() {
     // Integration test for complete shutdown sequence
     // Requirements: 14.6, 14.7, 14.8, 14.9, 14.10, 14.11, 14.12
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let mut manager = DaemonManager::new(&config).unwrap();
@@ -359,7 +365,7 @@ async fn test_complete_shutdown_sequence() {
 #[tokio::test]
 async fn test_shutdown_without_components() {
     // Test that shutdown works even if components aren't initialized
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let mut manager = DaemonManager::new(&config).unwrap();

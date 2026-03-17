@@ -4,9 +4,9 @@
 //! iterative ReAct loop implemented in the child modules below.
 
 mod events;
+mod r#loop;
 mod prompt;
 mod result;
-mod r#loop;
 #[cfg(test)]
 mod tests;
 mod tools;
@@ -52,6 +52,7 @@ pub struct AgentCore {
 
 impl AgentCore {
     /// Create a new agent core.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<LLMRouter>,
         risk_assessor: RiskAssessor,
@@ -62,8 +63,9 @@ impl AgentCore {
         config: Arc<crate::config::Config>,
         workspace_locks: Arc<WorkspaceLocks>,
     ) -> Result<Self> {
-        let injection_detector = InjectionDetector::new()
-            .map_err(|error| anyhow::anyhow!("Failed to initialize injection detector: {}", error))?;
+        let injection_detector = InjectionDetector::new().map_err(|error| {
+            anyhow::anyhow!("Failed to initialize injection detector: {}", error)
+        })?;
         let dispatch_brain = brain::dispatch::DispatchBrain::init()
             .map_err(|error| anyhow::anyhow!("Failed to initialize dispatch brain: {}", error))?;
 

@@ -29,10 +29,8 @@ async fn test_router_with_local_brain() {
         "qwen2.5-coder-0.5b",
     ));
 
-    let _router = LLMRouter::with_local_brain(vec![], config, Some(local_brain));
-
-    // Router should be created successfully
-    assert!(true);
+    let _router = LLMRouter::with_local_brain(vec![], config, Some(local_brain.clone()));
+    assert_eq!(Arc::strong_count(&local_brain), 2);
 }
 
 /// Test that router works without LocalBrain (backward compatibility)
@@ -50,10 +48,10 @@ async fn test_router_without_local_brain() {
         custom_providers: vec![],
     });
 
-    let _router = LLMRouter::with_local_brain(vec![], config, None);
+    let router = LLMRouter::with_local_brain(vec![], config, None);
+    let messages = vec![Message::user("hello")];
 
-    // Router should work without LocalBrain
-    assert!(true);
+    assert!(router.call(&messages).await.is_err());
 }
 
 /// Test that LocalBrain check_available works

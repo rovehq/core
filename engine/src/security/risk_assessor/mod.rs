@@ -381,20 +381,20 @@ mod tests {
     #[test]
     fn test_remote_source_always_tier2() {
         let assessor = RiskAssessor::new();
-        
+
         // Remote source ALWAYS Tier2, regardless of operation type
         // Spec: "Remote source always → Tier 2 regardless of action type"
-        
+
         // Read operation from remote → Tier2 (not Tier0)
         let op = Operation::new("read_file", vec![], OperationSource::Remote);
         let tier = assessor.assess(&op).unwrap();
         assert_eq!(tier, RiskTier::Tier2);
-        
+
         // Write operation from remote → Tier2 (not Tier1)
         let op = Operation::new("write_file", vec![], OperationSource::Remote);
         let tier = assessor.assess(&op).unwrap();
         assert_eq!(tier, RiskTier::Tier2);
-        
+
         // Delete operation from remote → Tier2 (already Tier2)
         let op = Operation::new("delete_file", vec![], OperationSource::Remote);
         let tier = assessor.assess(&op).unwrap();

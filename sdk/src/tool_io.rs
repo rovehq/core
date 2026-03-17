@@ -44,7 +44,10 @@ impl ToolInput {
     }
 
     pub fn param_str_opt(&self, key: &str) -> Option<String> {
-        self.params.get(key).and_then(|v| v.as_str()).map(String::from)
+        self.params
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(String::from)
     }
 
     pub fn param_i64_opt(&self, key: &str) -> Option<i64> {

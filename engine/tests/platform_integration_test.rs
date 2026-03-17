@@ -17,6 +17,11 @@ use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+fn create_safe_temp_dir() -> TempDir {
+    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    TempDir::new_in(base).unwrap()
+}
+
 #[test]
 fn test_path_separator_matches_platform() {
     // Verify that the path separator matches the current platform
@@ -65,7 +70,7 @@ fn test_pathbuf_uses_platform_separator() {
 #[test]
 fn test_fs_guard_with_platform_paths() {
     // Create a temporary workspace
-    let temp = TempDir::new().unwrap();
+    let temp = create_safe_temp_dir();
     let workspace = temp.path().to_path_buf();
     let guard = FileSystemGuard::new(workspace.clone()).expect("test workspace");
 
@@ -98,7 +103,7 @@ fn test_fs_guard_with_platform_paths() {
 #[test]
 fn test_config_path_expansion() {
     // Create a temporary config file
-    let temp = TempDir::new().unwrap();
+    let temp = create_safe_temp_dir();
     let config_path = temp.path().join("config.toml");
 
     // Create a workspace path using platform-agnostic PathBuf
@@ -186,7 +191,7 @@ fn test_line_ending_conversion_round_trip() {
 
 #[test]
 fn test_file_write_with_platform_line_endings() {
-    let temp = TempDir::new().unwrap();
+    let temp = create_safe_temp_dir();
     let file_path = temp.path().join("test.txt");
 
     // Write content with platform-specific line endings
@@ -265,7 +270,7 @@ fn test_platform_detection() {
 
 #[test]
 fn test_path_traversal_with_platform_separators() {
-    let temp = TempDir::new().unwrap();
+    let temp = create_safe_temp_dir();
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
     let guard = FileSystemGuard::new(workspace.clone()).expect("test workspace");
@@ -290,7 +295,7 @@ fn test_symlink_handling_on_unix() {
     // This test only runs on Unix systems where symlinks are well-supported
     #[cfg(unix)]
     {
-        let temp = TempDir::new().unwrap();
+        let temp = create_safe_temp_dir();
         let workspace = temp.path().to_path_buf();
         let guard = FileSystemGuard::new(workspace.clone()).expect("test workspace");
 

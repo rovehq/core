@@ -62,7 +62,7 @@ impl CommandExecutor {
     ///
     /// Commands are resolved to absolute paths at construction time
     /// to prevent PATH hijacking. Only explicitly allowed commands can execute.
-    /// 
+    ///
     /// Allowed commands (per spec):
     /// - git, cargo, npm, npx, node
     /// - python3, python, pip3, pip
@@ -71,16 +71,11 @@ impl CommandExecutor {
     pub fn new() -> Self {
         let safe_commands = [
             // Version control
-            "git",
-            // Rust toolchain
-            "cargo", "rustc", "rustfmt",
-            // Node.js ecosystem
-            "npm", "npx", "node",
-            // Python ecosystem
-            "python3", "python", "pip3", "pip",
-            // Build tools
-            "make", "cmake",
-            // Modern CLI tools
+            "git", // Rust toolchain
+            "cargo", "rustc", "rustfmt", // Node.js ecosystem
+            "npm", "npx", "node", // Python ecosystem
+            "python3", "python", "pip3", "pip", // Build tools
+            "make", "cmake", // Modern CLI tools
             "rg", "fd", "bat",
         ];
 
@@ -143,11 +138,18 @@ impl CommandExecutor {
     pub fn validate(&self, command: &str, args: &[String]) -> Result<(), CommandError> {
         // Gate 1: Block shell interpreters explicitly
         const BLOCKED_SHELLS: &[&str] = &[
-            "bash", "sh", "zsh", "fish", "dash",
-            "cmd", "powershell", "pwsh",
-            "eval", "exec",
+            "bash",
+            "sh",
+            "zsh",
+            "fish",
+            "dash",
+            "cmd",
+            "powershell",
+            "pwsh",
+            "eval",
+            "exec",
         ];
-        
+
         let command_lower = command.to_lowercase();
         if BLOCKED_SHELLS.contains(&command_lower.as_str()) {
             return Err(CommandError::ShellInjectionAttempt);
@@ -194,11 +196,18 @@ impl CommandExecutor {
     pub fn execute(&self, command: &str, args: &[String]) -> Result<Output, CommandError> {
         // Gate 1: Block shell interpreters explicitly
         const BLOCKED_SHELLS: &[&str] = &[
-            "bash", "sh", "zsh", "fish", "dash",
-            "cmd", "powershell", "pwsh",
-            "eval", "exec",
+            "bash",
+            "sh",
+            "zsh",
+            "fish",
+            "dash",
+            "cmd",
+            "powershell",
+            "pwsh",
+            "eval",
+            "exec",
         ];
-        
+
         let command_lower = command.to_lowercase();
         if BLOCKED_SHELLS.contains(&command_lower.as_str()) {
             return Err(CommandError::ShellInjectionAttempt);
@@ -242,8 +251,12 @@ impl CommandExecutor {
     /// # Requirement
     /// - Requirement 8.3: Rejects shell metacharacters in user input
     fn has_shell_metacharacters(&self, s: &str) -> bool {
-        s.chars()
-            .any(|c| matches!(c, ';' | '|' | '&' | '$' | '<' | '>' | '`' | '\'' | '"' | '\n' | '\r' | '!'))
+        s.chars().any(|c| {
+            matches!(
+                c,
+                ';' | '|' | '&' | '$' | '<' | '>' | '`' | '\'' | '"' | '\n' | '\r' | '!'
+            )
+        })
     }
 
     /// Checks if a command contains dangerous piping patterns.
@@ -285,7 +298,7 @@ mod tests {
     #[cfg(unix)]
     fn test_allowed_command_executes() {
         let executor = CommandExecutor::new();
-        let result = executor.execute("ls", &["-la".to_string()]);
+        let result = executor.execute("git", &["--version".to_string()]);
         assert!(result.is_ok());
     }
 
@@ -327,21 +340,21 @@ mod tests {
         let executor = CommandExecutor::new();
 
         // Test pipe character
-        let result = executor.execute("ls", &["| cat".to_string()]);
+        let result = executor.execute("git", &["| cat".to_string()]);
         assert!(matches!(
             result,
             Err(CommandError::ShellMetacharactersDetected(_))
         ));
 
         // Test semicolon
-        let result = executor.execute("ls", &["; rm -rf /".to_string()]);
+        let result = executor.execute("git", &["; rm -rf /".to_string()]);
         assert!(matches!(
             result,
             Err(CommandError::ShellMetacharactersDetected(_))
         ));
 
         // Test backtick
-        let result = executor.execute("ls", &["`whoami`".to_string()]);
+        let result = executor.execute("git", &["`whoami`".to_string()]);
         assert!(matches!(
             result,
             Err(CommandError::ShellMetacharactersDetected(_))
@@ -354,7 +367,7 @@ mod tests {
 
         // Test pipe character in arguments (should be caught by metacharacter check)
         let result = executor.execute(
-            "ls",
+            "git",
             &["/tmp".to_string(), "|".to_string(), "bash".to_string()],
         );
         // This will be caught by shell metacharacter detection
@@ -374,12 +387,12 @@ mod tests {
         assert!(result.is_ok());
 
         // ls should not work (not in custom allowlist)
-        let result = executor.execute("ls", &[]);
+        let result = executor.execute("git", &[]);
         assert!(matches!(result, Err(CommandError::CommandNotAllowed(_))));
 
-        // Add ls to allowlist
-        executor.allow_command("ls".to_string());
-        let result = executor.execute("ls", &[]);
+        // Add git to allowlist
+        executor.allow_command("git".to_string());
+        let result = executor.execute("git", &["--version".to_string()]);
         assert!(result.is_ok());
     }
 
@@ -387,7 +400,7 @@ mod tests {
     #[cfg(unix)]
     fn test_stdin_null_stdout_stderr_piped() {
         let executor = CommandExecutor::new();
-        let result = executor.execute("uname", &[]);
+        let result = executor.execute("git", &["--version".to_string()]);
 
         // Should succeed and capture output
         assert!(result.is_ok());

@@ -26,8 +26,11 @@ struct EngineRelease {
 pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()> {
     let current = semver::Version::parse(VERSION).context("Failed to parse current version")?;
 
-    let client = reqwest::Client::builder().user_agent(user_agent()).build()?;
-    let manifest_url = "https://raw.githubusercontent.com/orvislab/rove-registry/main/manifest.json";
+    let client = reqwest::Client::builder()
+        .user_agent(user_agent())
+        .build()?;
+    let manifest_url =
+        "https://raw.githubusercontent.com/orvislab/rove-registry/main/manifest.json";
 
     let manifest_text = client
         .get(manifest_url)
@@ -46,7 +49,8 @@ pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()>
         .get("latest")
         .map(|release| release.version.as_str())
         .unwrap_or(manifest.version.as_str());
-    let latest = semver::Version::parse(latest_version).context("Failed to parse latest version")?;
+    let latest =
+        semver::Version::parse(latest_version).context("Failed to parse latest version")?;
 
     if latest <= current {
         return print_up_to_date(&current, &latest, format);
@@ -67,7 +71,12 @@ pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()>
         .fallback_url
         .as_deref()
         .unwrap_or(engine_release.url.as_str());
-    let payload = download_payload(&client, download_url, engine_release.size_bytes.unwrap_or(0)).await?;
+    let payload = download_payload(
+        &client,
+        download_url,
+        engine_release.size_bytes.unwrap_or(0),
+    )
+    .await?;
 
     verify_payload(engine_release, &payload)?;
     replace_binary(target, &payload)?;
@@ -135,7 +144,10 @@ fn print_available(
 }
 
 async fn download_payload(client: &reqwest::Client, url: &str, size_bytes: u64) -> Result<Vec<u8>> {
-    println!("Downloading payload ({:.1} MB)...", size_bytes as f64 / 1_048_576.0);
+    println!(
+        "Downloading payload ({:.1} MB)...",
+        size_bytes as f64 / 1_048_576.0
+    );
 
     let response = client
         .get(url)

@@ -25,7 +25,11 @@ impl NativeRuntime {
     }
 
     pub fn call_tool(&self, name: &str, input: ToolInput) -> Result<ToolOutput, EngineError> {
-        tracing::debug!("Calling core tool '{}' with method '{}'", name, input.method);
+        tracing::debug!(
+            "Calling core tool '{}' with method '{}'",
+            name,
+            input.method
+        );
 
         let tool = self.tools.get(name).ok_or_else(|| {
             tracing::error!("Tool '{}' not loaded", name);

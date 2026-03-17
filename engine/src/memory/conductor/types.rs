@@ -158,7 +158,9 @@ pub struct IngestResult {
 /// Result of a consolidation operation.
 #[derive(Debug, Clone)]
 pub enum ConsolidationResult {
-    Skipped { reason: String },
+    Skipped {
+        reason: String,
+    },
     Completed {
         memories_processed: usize,
         insights_generated: usize,

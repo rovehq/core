@@ -210,10 +210,7 @@ async fn call_llm_for_text(router: &LLMRouter, user_content: &str) -> Result<Str
 
 /// Parse LLM response from consolidation prompt into insights.
 /// Validates that source_ids reference actual memory IDs.
-fn parse_consolidation_response(
-    text: &str,
-    valid_ids: &[String],
-) -> Vec<ConsolidationInsight> {
+fn parse_consolidation_response(text: &str, valid_ids: &[String]) -> Vec<ConsolidationInsight> {
     let cleaned = strip_markdown_fences(text);
 
     match serde_json::from_str::<Vec<ConsolidationInsight>>(&cleaned) {

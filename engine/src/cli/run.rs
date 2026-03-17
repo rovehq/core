@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -159,7 +159,7 @@ async fn load_steering(config: &Config) -> Option<SteeringEngine> {
     }
 }
 
-fn expand_skill_dir(skill_dir: &PathBuf) -> PathBuf {
+fn expand_skill_dir(skill_dir: &Path) -> std::path::PathBuf {
     let raw = skill_dir.to_string_lossy();
     if let Some(rest) = raw.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
@@ -167,7 +167,7 @@ fn expand_skill_dir(skill_dir: &PathBuf) -> PathBuf {
         }
     }
 
-    skill_dir.clone()
+    skill_dir.to_path_buf()
 }
 
 fn print_start(task: &str, format: OutputFormat) -> Result<()> {

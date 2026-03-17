@@ -15,7 +15,11 @@ pub(super) struct ToolExecution {
 }
 
 impl AgentCore {
-    pub(super) fn assistant_tool_message(&self, task_id: &uuid::Uuid, tool_call: &ToolCall) -> Message {
+    pub(super) fn assistant_tool_message(
+        &self,
+        task_id: &uuid::Uuid,
+        tool_call: &ToolCall,
+    ) -> Message {
         let arguments = self.parse_tool_arguments(&task_id.to_string(), tool_call);
         Message::assistant(
             serde_json::json!({
@@ -36,7 +40,9 @@ impl AgentCore {
             .assess_tool_risk(task_id, &tool_call.name, &tool_args)
             .await?;
 
-        let tool_result = self.dispatch_tool(&tool_call.name, &tool_call.arguments).await;
+        let tool_result = self
+            .dispatch_tool(&tool_call.name, &tool_call.arguments)
+            .await;
         if tool_result.len() > MAX_RESULT_SIZE {
             warn!(
                 task_id = %task_id,
@@ -193,7 +199,7 @@ impl AgentCore {
         let mut reader = BufReader::new(tokio::io::stdin());
         let mut buf = String::new();
 
-        match tokio::time::timeout(Duration::from_secs(delay_secs as u64), reader.read_line(&mut buf))
+        match tokio::time::timeout(Duration::from_secs(delay_secs), reader.read_line(&mut buf))
             .await
         {
             Ok(Ok(_)) => {
@@ -236,7 +242,10 @@ impl AgentCore {
         let mut reader = BufReader::new(tokio::io::stdin());
         let mut buf = String::new();
         match reader.read_line(&mut buf).await {
-            Ok(_) if buf.trim().eq_ignore_ascii_case("y") || buf.trim().eq_ignore_ascii_case("yes") => {
+            Ok(_)
+                if buf.trim().eq_ignore_ascii_case("y")
+                    || buf.trim().eq_ignore_ascii_case("yes") =>
+            {
                 println!("Approved by user.");
                 Ok("user".to_string())
             }

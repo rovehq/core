@@ -71,8 +71,10 @@ impl KnowledgeGraph {
 
     /// Add an edge between two nodes
     pub async fn add_edge(&self, edge: &GraphEdge) -> Result<()> {
-        let properties_json = edge.properties.as_ref()
-            .map(|p| serde_json::to_string(p))
+        let properties_json = edge
+            .properties
+            .as_ref()
+            .map(serde_json::to_string)
             .transpose()?;
         let relation = edge.relation.as_str();
 
@@ -83,7 +85,7 @@ impl KnowledgeGraph {
             ON CONFLICT(id) DO UPDATE SET
                 weight = excluded.weight,
                 properties = excluded.properties
-            "#
+            "#,
         )
         .bind(&edge.id)
         .bind(&edge.from_id)
@@ -105,7 +107,7 @@ impl KnowledgeGraph {
             SELECT id, label, type, properties, created_at, last_updated, access_count
             FROM graph_nodes
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -154,7 +156,7 @@ impl KnowledgeGraph {
             SELECT id, from_id, to_id, relation, weight, properties, created_at
             FROM graph_edges
             WHERE from_id = ?
-            "#
+            "#,
         )
         .bind(node_id)
         .fetch_all(&self.pool)
@@ -163,8 +165,7 @@ impl KnowledgeGraph {
         let mut edges = Vec::new();
         for row in rows {
             let properties_str: Option<String> = row.get("properties");
-            let properties = properties_str
-                .and_then(|s| serde_json::from_str(&s).ok());
+            let properties = properties_str.and_then(|s| serde_json::from_str(&s).ok());
             let relation_str: String = row.get("relation");
             let relation = parse_relation_type(&relation_str);
 
@@ -189,7 +190,7 @@ impl KnowledgeGraph {
             SELECT id, from_id, to_id, relation, weight, properties, created_at
             FROM graph_edges
             WHERE to_id = ?
-            "#
+            "#,
         )
         .bind(node_id)
         .fetch_all(&self.pool)
@@ -198,8 +199,7 @@ impl KnowledgeGraph {
         let mut edges = Vec::new();
         for row in rows {
             let properties_str: Option<String> = row.get("properties");
-            let properties = properties_str
-                .and_then(|s| serde_json::from_str(&s).ok());
+            let properties = properties_str.and_then(|s| serde_json::from_str(&s).ok());
             let relation_str: String = row.get("relation");
             let relation = parse_relation_type(&relation_str);
 
@@ -226,7 +226,7 @@ impl KnowledgeGraph {
             FROM graph_nodes
             WHERE label LIKE ?
             LIMIT 20
-            "#
+            "#,
         )
         .bind(&pattern)
         .fetch_all(&self.pool)

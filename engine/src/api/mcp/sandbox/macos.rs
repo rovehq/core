@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::debug;
 
@@ -12,15 +13,17 @@ impl McpSandbox {
         profile: &SandboxProfile,
     ) -> Result<Command, EngineError> {
         debug!("Wrapping MCP command with Seatbelt sandbox");
+        let resolved_cmd = resolve_command_path(cmd);
+        let exec_literal = resolved_cmd.display().to_string();
 
-        let mut sb_profile = String::from("(version 1)\n(deny default)\n");
-        sb_profile.push_str(&format!("(allow process-exec (literal \"{}\"))\n", cmd));
-        sb_profile.push_str("(allow file-read* (subpath \"/usr\"))\n");
-        sb_profile.push_str("(allow file-read* (subpath \"/System\"))\n");
-        sb_profile.push_str("(allow file-read* (subpath \"/Library\"))\n");
+        let mut sb_profile = String::from("(version 1)\n(allow default)\n");
+        sb_profile.push_str(&format!(
+            "(allow process-exec (literal \"{}\"))\n",
+            exec_literal
+        ));
 
-        if profile.allow_network {
-            sb_profile.push_str("(allow network*)\n");
+        if !profile.allow_network {
+            sb_profile.push_str("(deny network*)\n");
         }
 
         for path in &profile.read_paths {
@@ -41,20 +44,29 @@ impl McpSandbox {
             }
         }
 
-        if profile.allow_tmp {
-            sb_profile.push_str("(allow file-read* (subpath \"/tmp\"))\n");
-            sb_profile.push_str("(allow file-write* (subpath \"/tmp\"))\n");
-        }
-
-        let profile_path =
-            std::env::temp_dir().join(format!("rove_mcp_{}.sb", std::process::id()));
+        let profile_path = std::env::temp_dir().join(format!("rove_mcp_{}.sb", std::process::id()));
         std::fs::write(&profile_path, sb_profile).map_err(EngineError::Io)?;
 
         let mut command = Command::new("sandbox-exec");
         command.arg("-f");
         command.arg(&profile_path);
-        command.arg(cmd);
+        command.arg(&resolved_cmd);
         command.args(args);
         Ok(command)
     }
+}
+
+fn resolve_command_path(cmd: &str) -> PathBuf {
+    let candidate = Path::new(cmd);
+    if candidate.is_absolute() || cmd.contains(std::path::MAIN_SEPARATOR) {
+        return candidate.to_path_buf();
+    }
+
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join(cmd))
+                .find(|path| path.exists())
+        })
+        .unwrap_or_else(|| candidate.to_path_buf())
 }
