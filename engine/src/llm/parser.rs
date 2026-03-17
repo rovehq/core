@@ -37,13 +37,8 @@ pub fn parse_tool_calls(content: &str) -> Option<ToolCall> {
         }
     }
 
-    if let Some(pos) = trimmed.find("{\"function\"") {
-        let candidate = &trimmed[pos..];
-        if let Some(json_str) = extract_balanced_json(candidate) {
-            if let Some(tool_call) = try_parse_function_json(json_str) {
-                return Some(tool_call);
-            }
-        }
+    if let Some(tool_call) = find_embedded_tool_json(trimmed) {
+        return Some(tool_call);
     }
 
     None
@@ -73,6 +68,23 @@ fn extract_fenced_json(content: &str) -> Option<&str> {
     }
 
     Some(&content[body_start..body_end])
+}
+
+fn find_embedded_tool_json(content: &str) -> Option<ToolCall> {
+    for (index, ch) in content.char_indices() {
+        if ch != '{' {
+            continue;
+        }
+
+        let candidate = &content[index..];
+        if let Some(json_str) = extract_balanced_json(candidate) {
+            if let Some(tool_call) = try_parse_function_json(json_str) {
+                return Some(tool_call);
+            }
+        }
+    }
+
+    None
 }
 
 fn extract_balanced_json(content: &str) -> Option<&str> {
@@ -139,5 +151,16 @@ mod tests {
         let tool_call = parse_tool_calls(content);
 
         assert!(tool_call.is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_calls_embedded_json_with_reordered_keys() {
+        let content = r#"I created the file. {"arguments":{"path":"."},"function":"list_dir"}"#;
+        let tool_call = parse_tool_calls(content);
+
+        assert!(tool_call.is_some());
+        let tool_call = tool_call.unwrap();
+        assert_eq!(tool_call.name, "list_dir");
+        assert!(tool_call.arguments.contains("path"));
     }
 }

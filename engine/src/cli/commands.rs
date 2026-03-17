@@ -37,6 +37,7 @@ pub enum Command {
     Stop,
 
     /// Execute a task immediately.
+    #[command(alias = "run")]
     Task {
         /// The task description.
         prompt: Vec<String>,
@@ -133,6 +134,7 @@ pub enum SteeringAction {
     /// List all loaded steering files.
     List,
     /// Show currently active steering files.
+    #[command(alias = "active")]
     Status,
     /// Activate a steering file by exact name.
     On { name: String },

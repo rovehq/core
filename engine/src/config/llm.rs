@@ -58,7 +58,7 @@ impl Default for LLMConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaConfig {
     #[serde(default = "default_ollama_base_url")]
     pub base_url: String,
@@ -66,7 +66,16 @@ pub struct OllamaConfig {
     pub model: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_ollama_base_url(),
+            model: default_ollama_model(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIConfig {
     #[serde(default = "default_openai_base_url")]
     pub base_url: String,
@@ -74,7 +83,16 @@ pub struct OpenAIConfig {
     pub model: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+impl Default for OpenAIConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_openai_base_url(),
+            model: default_openai_model(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicConfig {
     #[serde(default = "default_anthropic_base_url")]
     pub base_url: String,
@@ -82,7 +100,16 @@ pub struct AnthropicConfig {
     pub model: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+impl Default for AnthropicConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_anthropic_base_url(),
+            model: default_anthropic_model(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeminiConfig {
     #[serde(default = "default_gemini_base_url")]
     pub base_url: String,
@@ -90,10 +117,28 @@ pub struct GeminiConfig {
     pub model: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+impl Default for GeminiConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_gemini_base_url(),
+            model: default_gemini_model(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NvidiaNimConfig {
     #[serde(default = "default_nvidia_nim_base_url")]
     pub base_url: String,
     #[serde(default = "default_nvidia_nim_model")]
     pub model: String,
+}
+
+impl Default for NvidiaNimConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_nvidia_nim_base_url(),
+            model: default_nvidia_nim_model(),
+        }
+    }
 }

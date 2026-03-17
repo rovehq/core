@@ -19,7 +19,7 @@ impl AgentCore {
         risk_tier: RiskTier,
     ) -> Result<TaskContext> {
         self.memory.clear();
-        let mut system_prompt = self.tools.system_prompt();
+        let mut system_prompt = self.tools.system_prompt_for_query(&task.input);
 
         self.apply_steering(&task.input, risk_tier, &mut system_prompt)
             .await;

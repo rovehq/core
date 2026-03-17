@@ -87,7 +87,7 @@ pub fn default_anthropic_model() -> String {
 
 /// Default Gemini model
 pub fn default_gemini_model() -> String {
-    "gemini-1.5-flash".to_string()
+    "gemini-2.5-flash".to_string()
 }
 
 /// Default Nvidia NIM base URL

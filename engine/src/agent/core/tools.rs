@@ -202,6 +202,11 @@ impl AgentCore {
         match tokio::time::timeout(Duration::from_secs(delay_secs), reader.read_line(&mut buf))
             .await
         {
+            Ok(Ok(0)) => {
+                debug!(task_id = %task_id, "stdin not available, auto-approving Tier1");
+                println!("Auto-approved (no stdin).");
+                "auto".to_string()
+            }
             Ok(Ok(_)) => {
                 println!("Approved by user.");
                 "user".to_string()
