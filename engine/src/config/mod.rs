@@ -89,7 +89,7 @@ impl Config {
     /// - TOML parsing fails
     /// - Validation fails
     pub fn load_or_create() -> Result<Self, EngineError> {
-        let config_path = Self::default_config_path()?;
+        let config_path = Self::config_path()?;
 
         if config_path.exists() {
             Self::load_from_path(&config_path)
@@ -150,9 +150,18 @@ impl Config {
 
     /// Get the default configuration file path (~/.rove/config.toml)
     fn default_config_path() -> Result<PathBuf, EngineError> {
+        if let Some(path) = std::env::var_os("ROVE_CONFIG_PATH").filter(|value| !value.is_empty()) {
+            return Ok(PathBuf::from(path));
+        }
+
         let home = dirs::home_dir()
             .ok_or_else(|| EngineError::Config("Could not determine home directory".to_string()))?;
         Ok(home.join(".rove").join("config.toml"))
+    }
+
+    /// Resolve the effective configuration path, honoring `ROVE_CONFIG_PATH`.
+    pub fn config_path() -> Result<PathBuf, EngineError> {
+        Self::default_config_path()
     }
 
     /// Clamp all config values to valid ranges and validate

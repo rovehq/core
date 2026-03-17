@@ -1,11 +1,14 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use brain::reasoning::LocalBrain;
 use serde_json::json;
 
 use crate::cli::database_path::expand_data_dir;
 use crate::config::Config;
+use crate::platform::llama_search_paths;
 use crate::security::crypto::CryptoModule;
+use crate::steering::SteeringEngine;
 use crate::storage::Database;
 use crate::system::daemon::DaemonManager;
 
@@ -16,6 +19,11 @@ pub async fn handle_doctor(config: &Config, format: OutputFormat) -> Result<()> 
     let mut checks = Vec::new();
 
     checks.push(("Configuration", "Valid".to_string()));
+    checks.push(("Config path", Config::config_path()?.display().to_string()));
+    checks.push((
+        "Workspace path",
+        config.core.workspace.display().to_string(),
+    ));
 
     if config.core.workspace.exists() {
         checks.push(("Workspace directory", "Exists".to_string()));
@@ -28,6 +36,7 @@ pub async fn handle_doctor(config: &Config, format: OutputFormat) -> Result<()> 
     }
 
     let data_dir = expand_data_dir(&config.core.data_dir);
+    checks.push(("Data directory path", data_dir.display().to_string()));
     if data_dir.exists() {
         checks.push(("Data directory", "Exists".to_string()));
     } else {
@@ -36,6 +45,7 @@ pub async fn handle_doctor(config: &Config, format: OutputFormat) -> Result<()> 
     }
 
     let db_path = data_dir.join("rove.db");
+    checks.push(("Database path", db_path.display().to_string()));
     if db_path.exists() {
         checks.push(("Database", "Exists".to_string()));
         match Database::new(&db_path).await {
@@ -49,6 +59,29 @@ pub async fn handle_doctor(config: &Config, format: OutputFormat) -> Result<()> 
         checks.push(("Database", "Not initialized".to_string()));
         issues.push("Database not initialized. Run `rove setup` first.".to_string());
     }
+
+    let llama_path = detect_llama_server_path();
+    checks.push((
+        "llama.cpp path",
+        llama_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "Not found".to_string()),
+    ));
+
+    let local_brain = LocalBrain::new("http://localhost:8080", "qwen2.5-coder-0.5b");
+    checks.push((
+        "Brain status",
+        if local_brain.check_available().await {
+            format!("Running ({})", local_brain.model_name())
+        } else if llama_path.is_some() {
+            "Installed, server not running".to_string()
+        } else {
+            "Not installed".to_string()
+        },
+    ));
+
+    checks.push(("Steering files", steering_summary(config).await));
 
     match DaemonManager::status(config) {
         Ok(status) => {
@@ -235,4 +268,73 @@ fn print_json(checks: &[(&str, String)], issues: &[String]) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn detect_llama_server_path() -> Option<PathBuf> {
+    which::which("llama-server")
+        .ok()
+        .or_else(|| llama_search_paths().into_iter().find(|path| path.exists()))
+}
+
+async fn steering_summary(config: &Config) -> String {
+    let mut parts = Vec::new();
+    let global_dir = config.steering.skill_dir.clone();
+    let workspace_dir = config.core.workspace.join(".rove").join("steering");
+
+    match SteeringEngine::new(&global_dir).await {
+        Ok(engine) => {
+            let mut names: Vec<String> = engine
+                .list_skills()
+                .await
+                .into_iter()
+                .map(|skill| skill.name)
+                .collect();
+            names.sort();
+            if names.is_empty() {
+                parts.push(format!("global: none ({})", global_dir.display()));
+            } else {
+                parts.push(format!("global: {}", names.join(", ")));
+            }
+        }
+        Err(error) => {
+            parts.push(format!(
+                "global: error loading {} ({})",
+                global_dir.display(),
+                error
+            ));
+        }
+    }
+
+    let workspace_files = list_steering_files(&workspace_dir);
+    if workspace_files.is_empty() {
+        parts.push(format!("workspace: none ({})", workspace_dir.display()));
+    } else {
+        parts.push(format!("workspace: {}", workspace_files.join(", ")));
+    }
+
+    parts.join(" | ")
+}
+
+fn list_steering_files(dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut files: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter_map(|path| {
+            let ext = path.extension().and_then(|value| value.to_str())?;
+            match ext {
+                "toml" | "md" => path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_string),
+                _ => None,
+            }
+        })
+        .collect();
+    files.sort();
+    files
 }

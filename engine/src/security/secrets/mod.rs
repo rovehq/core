@@ -47,6 +47,13 @@ fn compile_secret_patterns() -> Vec<Regex> {
 
 use keyring::Entry;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SecretSource {
+    Env,
+    Keychain,
+    Memory,
+}
+
 impl SecretManager {
     pub fn new(service_name: impl Into<String>) -> Self {
         Self {
@@ -57,48 +64,17 @@ impl SecretManager {
 
     /// Get a secret — checks env vars first, then OS keychain
     pub async fn get_secret(&self, key: &str) -> Result<String, EngineError> {
-        // 1. Check environment variables
-        let env_key = format!(
-            "{}_{}",
-            self.service_name.to_uppercase().replace('-', "_"),
-            key.to_uppercase()
-        );
-        if let Ok(val) = std::env::var(&env_key).or_else(|_| std::env::var(key.to_uppercase())) {
-            if !val.is_empty() {
-                tracing::debug!("Retrieved secret '{}' from env var", key);
-                return Ok(val);
-            }
-        }
-
-        // 2. Check keychain
-        let entry_result = Entry::new(&self.service_name, key);
-        match entry_result {
-            Ok(entry) => {
-                match entry.get_password() {
-                    Ok(val) => {
-                        tracing::debug!("Retrieved secret '{}' from OS keychain", key);
-                        return Ok(val);
-                    }
-                    Err(keyring::Error::NoEntry) => {
-                        // Secret does not exist, fall through to in-memory
-                        tracing::debug!("Secret '{}' not found in keychain", key);
-                    }
-                    Err(e) => {
-                        // OS keychain unavailable or headless (CI)
-                        tracing::warn!("Failed to read from OS keychain for '{}': {}", key, e);
-                    }
+        if let Some((value, source)) = self.lookup_secret(key).await {
+            match source {
+                SecretSource::Env => tracing::debug!("Retrieved secret '{}' from env var", key),
+                SecretSource::Keychain => {
+                    tracing::debug!("Retrieved secret '{}' from OS keychain", key)
+                }
+                SecretSource::Memory => {
+                    tracing::debug!("Retrieved secret '{}' from in-memory store", key)
                 }
             }
-            Err(e) => tracing::warn!("Failed to initialize keyring entry: {}", e),
-        }
-
-        // 3. Check in-memory fallback
-        {
-            let store = self.memory_store.read().await;
-            if let Some(val) = store.get(key) {
-                tracing::debug!("Retrieved secret '{}' from in-memory store", key);
-                return Ok(val.clone());
-            }
+            return Ok(value);
         }
 
         // 4. Not found — prompt user
@@ -119,6 +95,13 @@ impl SecretManager {
             return Err(EngineError::KeyringError(
                 "Secret value cannot be empty".to_string(),
             ));
+        }
+
+        if self.skip_keychain() {
+            let mut store = self.memory_store.write().await;
+            store.insert(key.to_string(), value.to_string());
+            tracing::info!("Stored secret '{}' in memory (keychain skipped)", key);
+            return Ok(());
         }
 
         match Entry::new(&self.service_name, key) {
@@ -150,19 +133,24 @@ impl SecretManager {
 
     /// Delete a secret from the OS keychain (and in-memory fallback)
     pub async fn delete_secret(&self, key: &str) -> Result<(), EngineError> {
-        // Delete from keychain
-        match Entry::new(&self.service_name, key) {
-            Ok(entry) => {
-                if let Err(e) = entry.delete_credential() {
-                    if !matches!(e, keyring::Error::NoEntry) {
-                        tracing::warn!("Failed to delete secret '{}' from keychain: {}", key, e);
+        if !self.skip_keychain() {
+            match Entry::new(&self.service_name, key) {
+                Ok(entry) => {
+                    if let Err(e) = entry.delete_credential() {
+                        if !matches!(e, keyring::Error::NoEntry) {
+                            tracing::warn!(
+                                "Failed to delete secret '{}' from keychain: {}",
+                                key,
+                                e
+                            );
+                        }
+                    } else {
+                        tracing::info!("Deleted secret '{}' from OS keychain", key);
                     }
-                } else {
-                    tracing::info!("Deleted secret '{}' from OS keychain", key);
                 }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to initialize keyring entry for deletion: {}", e);
+                Err(e) => {
+                    tracing::warn!("Failed to initialize keyring entry for deletion: {}", e);
+                }
             }
         }
 
@@ -175,26 +163,7 @@ impl SecretManager {
 
     /// Check if a secret exists (env var, keychain, or in-memory fallback) — no I/O prompts
     pub async fn has_secret(&self, key: &str) -> bool {
-        // Check env vars
-        let env_key = format!(
-            "{}_{}",
-            self.service_name.to_uppercase().replace('-', "_"),
-            key.to_uppercase()
-        );
-        if std::env::var(&env_key).is_ok() || std::env::var(key.to_uppercase()).is_ok() {
-            return true;
-        }
-
-        // Check keychain
-        if let Ok(entry) = Entry::new(&self.service_name, key) {
-            if entry.get_password().is_ok() {
-                return true;
-            }
-        }
-
-        // Check in-memory fallback
-        let store = self.memory_store.read().await;
-        store.contains_key(key)
+        self.lookup_secret(key).await.is_some()
     }
 
     // ── Shared utilities ─────────────────────────────────────────────────
@@ -220,6 +189,63 @@ impl SecretManager {
             result = pattern.replace_all(&result, "[REDACTED]").to_string();
         }
         result
+    }
+
+    pub(crate) async fn lookup_secret(&self, key: &str) -> Option<(String, SecretSource)> {
+        if let Some(value) = self.read_env_secret(key) {
+            return Some((value, SecretSource::Env));
+        }
+
+        if !self.skip_keychain() {
+            match Entry::new(&self.service_name, key) {
+                Ok(entry) => match entry.get_password() {
+                    Ok(value) => return Some((value, SecretSource::Keychain)),
+                    Err(keyring::Error::NoEntry) => {
+                        tracing::debug!("Secret '{}' not found in keychain", key);
+                    }
+                    Err(error) => {
+                        tracing::warn!("Failed to read from OS keychain for '{}': {}", key, error);
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!("Failed to initialize keyring entry: {}", error);
+                }
+            }
+        }
+
+        let store = self.memory_store.read().await;
+        store
+            .get(key)
+            .cloned()
+            .map(|value| (value, SecretSource::Memory))
+    }
+
+    fn env_key(&self, key: &str) -> String {
+        format!(
+            "{}_{}",
+            self.service_name.to_uppercase().replace('-', "_"),
+            key.to_uppercase()
+        )
+    }
+
+    fn read_env_secret(&self, key: &str) -> Option<String> {
+        for env_key in [self.env_key(key), key.to_uppercase()] {
+            if let Ok(value) = std::env::var(&env_key) {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+
+        None
+    }
+
+    fn skip_keychain(&self) -> bool {
+        matches!(
+            std::env::var("ROVE_SKIP_KEYCHAIN"),
+            Ok(value) if value == "1" || value.eq_ignore_ascii_case("true")
+        )
     }
 }
 

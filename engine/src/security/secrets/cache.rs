@@ -1,5 +1,5 @@
 use crate::secrets::string::SecretString;
-use crate::secrets::SecretManager;
+use crate::secrets::{SecretManager, SecretSource};
 use sdk::errors::EngineError;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,35 +67,19 @@ impl SecretCache {
         let mut failures = Vec::new();
         let mut from_env = Vec::new();
         let mut from_keychain = Vec::new();
+        let mut from_memory = Vec::new();
 
         for key in keys {
-            // Check environment variables first (user preference override)
-            let env_key = format!(
-                "{}_{}",
-                self.manager.service_name.to_uppercase().replace('-', "_"),
-                key.to_uppercase()
-            );
-
-            let secret_value = if let Ok(val) = std::env::var(&env_key) {
-                from_env.push(*key);
-                val
-            } else if let Ok(val) = std::env::var(key.to_uppercase()) {
-                from_env.push(*key);
-                val
-            } else {
-                // Fall back to keychain
-                match self.manager.get_secret(key).await {
-                    Ok(raw_secret) => {
-                        from_keychain.push(*key);
-                        raw_secret
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to load secret '{}': {}", key, e);
-                        failures.push(*key);
-                        continue;
-                    }
-                }
+            let Some((secret_value, source)) = self.manager.lookup_secret(key).await else {
+                failures.push(*key);
+                continue;
             };
+
+            match source {
+                SecretSource::Env => from_env.push(*key),
+                SecretSource::Keychain => from_keychain.push(*key),
+                SecretSource::Memory => from_memory.push(*key),
+            }
 
             cache.insert(key.to_string(), SecretString::new(secret_value));
         }
@@ -117,13 +101,20 @@ impl SecretCache {
                 from_keychain
             );
         }
+        if !from_memory.is_empty() {
+            tracing::info!(
+                "Loaded {} secrets from memory: {:?}",
+                from_memory.len(),
+                from_memory
+            );
+        }
 
         if failures.is_empty() {
             tracing::info!("Secret cache unlocked successfully");
             Ok(())
         } else {
-            tracing::warn!(
-                "Secret cache partially unlocked ({} failed: {:?})",
+            tracing::info!(
+                "Secret cache partially unlocked ({} unavailable: {:?})",
                 failures.len(),
                 failures
             );

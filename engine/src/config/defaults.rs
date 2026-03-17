@@ -30,6 +30,10 @@ pub fn default_true() -> bool {
 
 /// Default data directory
 pub fn default_data_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("ROVE_DATA_DIR").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".rove")
