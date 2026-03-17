@@ -1,0 +1,36 @@
+
+
+# Added by cargo
+
+/target
+
+
+# Dependencies
+website/node_modules/
+
+# Build outputs
+website/out/
+website/dist/
+website/.next/
+
+# pnpm
+.pnpm-store/
+
+# OS
+.DS_Store
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal
+
+
+
+/webui/.next
+/webui/node_modules
+/webui/dist
