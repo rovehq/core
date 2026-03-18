@@ -3,7 +3,9 @@
 //! These tests verify that the RiskAssessor correctly classifies operations
 //! according to the requirements specified in the design document.
 
-use rove_engine::risk_assessor::{Operation, OperationSource, RiskAssessor, RiskTier};
+use rove_engine::risk_assessor::{
+    classify_terminal_command, Operation, OperationSource, RiskAssessor, RiskTier,
+};
 
 #[test]
 fn test_all_tier0_operations_classified_correctly() {
@@ -228,6 +230,20 @@ fn test_realistic_command_execution() {
         OperationSource::Local,
     );
     assert_eq!(assessor.assess(&op).unwrap(), RiskTier::Tier2);
+}
+
+#[test]
+fn test_safe_terminal_commands_are_classified_read_only() {
+    assert_eq!(classify_terminal_command("git status"), "git_status");
+    assert_eq!(
+        classify_terminal_command("git branch --show-current"),
+        "git_status"
+    );
+    assert_eq!(
+        classify_terminal_command("git rev-parse --abbrev-ref HEAD"),
+        "git_status"
+    );
+    assert_eq!(classify_terminal_command("rg TODO src"), "read_file");
 }
 
 #[test]

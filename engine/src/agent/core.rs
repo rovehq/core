@@ -13,6 +13,7 @@ mod tools;
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
+use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::builtin_tools::ToolRegistry;
@@ -48,6 +49,7 @@ pub struct AgentCore {
     preferences_manager: PreferencesManager,
     dispatch_brain: brain::dispatch::DispatchBrain,
     workspace_locks: Arc<WorkspaceLocks>,
+    background_jobs: Vec<JoinHandle<()>>,
 }
 
 impl AgentCore {
@@ -84,6 +86,7 @@ impl AgentCore {
             preferences_manager: PreferencesManager::new(router),
             dispatch_brain,
             workspace_locks,
+            background_jobs: Vec::new(),
         })
     }
 
@@ -94,6 +97,8 @@ impl AgentCore {
 
     /// Process a task through the agent loop.
     pub async fn process_task(&mut self, task: Task) -> Result<TaskResult> {
+        self.prune_finished_background_jobs();
+
         let task_id = task.id;
         let task_id_str = task_id.to_string();
         let task_input = task.input.clone();
@@ -149,13 +154,22 @@ impl AgentCore {
         }
     }
 
-    fn spawn_post_task_jobs(&self, task_input: String, answer: String, task_id: String) {
+    pub async fn drain_background_jobs(&mut self) {
+        let pending = std::mem::take(&mut self.background_jobs);
+        for job in pending {
+            if let Err(error) = job.await {
+                warn!("Background job failed to join cleanly: {}", error);
+            }
+        }
+    }
+
+    fn spawn_post_task_jobs(&mut self, task_input: String, answer: String, task_id: String) {
         if let Some(memory_system) = self.memory_system.clone() {
             let memory_task_input = task_input.clone();
             let memory_answer = answer.clone();
             let memory_task_id = task_id.clone();
 
-            tokio::spawn(async move {
+            self.background_jobs.push(tokio::spawn(async move {
                 use crate::conductor::types::TaskDomain;
 
                 if let Err(error) = memory_system
@@ -170,14 +184,18 @@ impl AgentCore {
                 {
                     warn!(task_id = %memory_task_id, "Memory ingest failed (non-fatal): {}", error);
                 }
-            });
+            }));
         }
 
         let prefs_manager = self.preferences_manager.clone();
-        tokio::spawn(async move {
+        self.background_jobs.push(tokio::spawn(async move {
             if let Err(error) = prefs_manager.extract_and_update(&task_input, &answer).await {
                 warn!(task_id = %task_id, "Preferences extraction failed (non-fatal): {}", error);
             }
-        });
+        }));
+    }
+
+    fn prune_finished_background_jobs(&mut self) {
+        self.background_jobs.retain(|job| !job.is_finished());
     }
 }

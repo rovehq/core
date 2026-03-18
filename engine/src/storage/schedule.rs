@@ -80,12 +80,70 @@ impl ScheduleRepository {
         Ok(rows.into_iter().map(row_to_scheduled_task).collect())
     }
 
+    pub async fn get(&self, name: &str) -> Result<Option<ScheduledTask>> {
+        let row = sqlx::query(
+            r#"SELECT id, name, input, interval_secs, enabled, workspace, created_at, last_run_at, next_run_at
+               FROM scheduled_tasks
+               WHERE name = ?"#,
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .context("Failed to fetch scheduled task")?;
+
+        Ok(row.map(row_to_scheduled_task))
+    }
+
     pub async fn remove(&self, name: &str) -> Result<bool> {
         let result = sqlx::query("DELETE FROM scheduled_tasks WHERE name = ?")
             .bind(name)
             .execute(&self.pool)
             .await
             .context("Failed to remove scheduled task")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn pause(&self, name: &str) -> Result<bool> {
+        let result = sqlx::query("UPDATE scheduled_tasks SET enabled = 0 WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .context("Failed to pause scheduled task")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn resume(&self, name: &str) -> Result<bool> {
+        let now = unix_now()?;
+        let result = sqlx::query(
+            r#"UPDATE scheduled_tasks
+               SET enabled = 1,
+                   next_run_at = ? + interval_secs
+               WHERE name = ?"#,
+        )
+        .bind(now)
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .context("Failed to resume scheduled task")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn run_now(&self, name: &str) -> Result<bool> {
+        let now = unix_now()?;
+        let result = sqlx::query(
+            r#"UPDATE scheduled_tasks
+               SET enabled = 1,
+                   next_run_at = ?
+               WHERE name = ?"#,
+        )
+        .bind(now)
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .context("Failed to queue scheduled task immediately")?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -214,5 +272,37 @@ mod tests {
 
         assert!(repo.remove("cleanup").await.unwrap());
         assert!(!repo.remove("cleanup").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_get_pause_resume_and_run_now() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::new(&temp_dir.path().join("schedule.db"))
+            .await
+            .unwrap();
+        let repo: ScheduleRepository = db.schedules();
+
+        let created = repo
+            .create("brief", "prepare brief", 600, Some("/tmp/workspace"), false)
+            .await
+            .unwrap();
+
+        let fetched = repo.get("brief").await.unwrap().unwrap();
+        assert_eq!(fetched.id, created.id);
+        assert!(fetched.enabled);
+
+        assert!(repo.pause("brief").await.unwrap());
+        let paused = repo.get("brief").await.unwrap().unwrap();
+        assert!(!paused.enabled);
+
+        assert!(repo.resume("brief").await.unwrap());
+        let resumed = repo.get("brief").await.unwrap().unwrap();
+        assert!(resumed.enabled);
+        assert!(resumed.next_run_at >= resumed.created_at + 600);
+
+        assert!(repo.run_now("brief").await.unwrap());
+        let run_now = repo.get("brief").await.unwrap().unwrap();
+        assert!(run_now.enabled);
+        assert!(run_now.next_run_at <= run_now.created_at + 600);
     }
 }

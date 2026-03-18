@@ -16,9 +16,9 @@ async fn main() -> Result<()> {
         None => rove_engine::cli::repl::run().await?,
         Some(Command::Start { port }) => rove_engine::cli::daemon::start_background(port)?,
         Some(Command::Stop) => rove_engine::cli::daemon::stop()?,
-        Some(Command::Task { prompt, yes: _ }) => {
+        Some(Command::Task { prompt, yes }) => {
             let config = rove_engine::config::Config::load_or_create()?;
-            rove_engine::cli::run::handle_run(prompt.join(" "), &config, OutputFormat::Text)
+            rove_engine::cli::run::handle_run(prompt.join(" "), yes, &config, OutputFormat::Text)
                 .await?;
         }
         Some(Command::History { limit }) => {

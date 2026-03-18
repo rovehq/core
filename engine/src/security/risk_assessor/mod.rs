@@ -84,6 +84,34 @@ impl Operation {
     }
 }
 
+/// Classify a terminal command into an operation name for risk assessment.
+///
+/// Safe read-only commands are mapped onto Tier 0 operations so they can run
+/// without destructive confirmations. All other commands remain
+/// `execute_command` and require Tier 2 handling.
+pub fn classify_terminal_command(command: &str) -> &'static str {
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.is_empty() {
+        return "execute_command";
+    }
+
+    match parts[0] {
+        "git" => classify_git_command(&parts[1..]),
+        "rg" | "fd" | "bat" => "read_file",
+        _ => "execute_command",
+    }
+}
+
+fn classify_git_command(args: &[&str]) -> &'static str {
+    match args {
+        ["status", ..] => "git_status",
+        ["branch", "--show-current"] => "git_status",
+        ["rev-parse", "--abbrev-ref", "HEAD"] => "git_status",
+        ["log", ..] => "git_log",
+        _ => "execute_command",
+    }
+}
+
 /// Risk assessor for operation classification
 ///
 /// The RiskAssessor classifies operations into risk tiers based on:
@@ -469,5 +497,35 @@ mod tests {
         let op = Operation::new("read_file", vec![], OperationSource::Local);
         let tier = assessor.assess(&op).unwrap();
         assert_eq!(tier, RiskTier::Tier0);
+    }
+
+    #[test]
+    fn test_classify_terminal_command_git_status_is_tier0() {
+        assert_eq!(classify_terminal_command("git status"), "git_status");
+        assert_eq!(
+            classify_terminal_command("git branch --show-current"),
+            "git_status"
+        );
+        assert_eq!(
+            classify_terminal_command("git rev-parse --abbrev-ref HEAD"),
+            "git_status"
+        );
+    }
+
+    #[test]
+    fn test_classify_terminal_command_read_only_search_tools_are_tier0() {
+        assert_eq!(classify_terminal_command("rg TODO src"), "read_file");
+        assert_eq!(classify_terminal_command("fd Cargo.toml"), "read_file");
+        assert_eq!(classify_terminal_command("bat src/main.rs"), "read_file");
+    }
+
+    #[test]
+    fn test_classify_terminal_command_mutating_or_unknown_stays_tier2() {
+        assert_eq!(
+            classify_terminal_command("git commit -m test"),
+            "execute_command"
+        );
+        assert_eq!(classify_terminal_command("cargo build"), "execute_command");
+        assert_eq!(classify_terminal_command(""), "execute_command");
     }
 }

@@ -5,7 +5,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{debug, info, warn};
 
 use crate::llm::{Message, ToolCall};
-use crate::risk_assessor::{Operation, RiskTier};
+use crate::risk_assessor::{classify_terminal_command, Operation, RiskTier};
 use sdk::errors::EngineError;
 
 use super::{AgentCore, MAX_RESULT_SIZE};
@@ -133,13 +133,7 @@ impl AgentCore {
         tool_name: &str,
         args: &serde_json::Value,
     ) -> Result<(i32, String)> {
-        let op_name = match tool_name {
-            "read_file" | "list_dir" | "file_exists" => "read_file",
-            "write_file" => "write_file",
-            "run_command" => "execute_command",
-            "capture_screen" => "read_file",
-            _ => "execute_task",
-        };
+        let op_name = self.tool_operation_name(tool_name, args);
 
         let arg_strings = match args {
             serde_json::Value::Object(map) => map
@@ -170,6 +164,20 @@ impl AgentCore {
         };
 
         Ok((tier_value, approved_by))
+    }
+
+    fn tool_operation_name(&self, tool_name: &str, args: &serde_json::Value) -> &'static str {
+        match tool_name {
+            "read_file" | "list_dir" | "file_exists" => "read_file",
+            "write_file" => "write_file",
+            "run_command" => args
+                .get("command")
+                .and_then(|value| value.as_str())
+                .map(classify_terminal_command)
+                .unwrap_or("execute_command"),
+            "capture_screen" => "read_file",
+            _ => "execute_task",
+        }
     }
 
     async fn confirm_tier1(&self, task_id: &str, tool_name: &str) -> String {

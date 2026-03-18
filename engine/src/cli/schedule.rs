@@ -59,6 +59,41 @@ pub async fn handle_schedule(action: ScheduleAction, config: &Config) -> Result<
                 print_schedule(&task);
             }
         }
+        ScheduleAction::Show { name } => match repo.get(&name).await? {
+            Some(task) => {
+                println!("Schedule '{}'", task.name);
+                print_schedule(&task);
+            }
+            None => println!("No schedule named '{}' found", name),
+        },
+        ScheduleAction::Pause { name } => {
+            if repo.pause(&name).await? {
+                println!("Paused schedule '{}'", name);
+            } else {
+                println!("No schedule named '{}' found", name);
+            }
+        }
+        ScheduleAction::Resume { name } => {
+            if repo.resume(&name).await? {
+                match repo.get(&name).await? {
+                    Some(task) => {
+                        println!("Resumed schedule '{}'", name);
+                        println!("  Next run: {}", format_timestamp(task.next_run_at));
+                    }
+                    None => println!("Resumed schedule '{}'", name),
+                }
+            } else {
+                println!("No schedule named '{}' found", name);
+            }
+        }
+        ScheduleAction::RunNow { name } => {
+            if repo.run_now(&name).await? {
+                println!("Queued '{}' for immediate execution", name);
+                println!("  Run `rove start` if the daemon is not already running.");
+            } else {
+                println!("No schedule named '{}' found", name);
+            }
+        }
         ScheduleAction::Remove { name } => {
             if repo.remove(&name).await? {
                 println!("Removed schedule '{}'", name);
@@ -73,6 +108,10 @@ pub async fn handle_schedule(action: ScheduleAction, config: &Config) -> Result<
 
 fn print_schedule(task: &ScheduledTask) {
     println!("  {}", task.name);
+    println!(
+        "    Status: {}",
+        if task.enabled { "active" } else { "paused" }
+    );
     println!("    Prompt: {}", task.input);
     println!("    Interval: every {} minute(s)", task.interval_secs / 60);
     println!("    Next run: {}", format_timestamp(task.next_run_at));

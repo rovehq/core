@@ -180,6 +180,15 @@ pub enum ScheduleAction {
     },
     /// List recurring background tasks.
     List,
+    /// Show one recurring background task.
+    Show { name: String },
+    /// Pause a recurring background task.
+    Pause { name: String },
+    /// Resume a recurring background task.
+    Resume { name: String },
+    /// Queue the next run immediately.
+    #[command(name = "run-now")]
+    RunNow { name: String },
     /// Remove a recurring background task.
     Remove { name: String },
 }

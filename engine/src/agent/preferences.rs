@@ -25,8 +25,7 @@ pub struct PreferencesData {
 impl PreferencesManager {
     /// Create a new PreferencesManager
     pub fn new(llm_router: Arc<LLMRouter>) -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let path = home.join(".rove").join("preferences.toml");
+        let path = preferences_path();
 
         let mut manager = Self {
             path,
@@ -102,7 +101,9 @@ impl PreferencesManager {
             return String::new();
         }
 
-        let mut block = String::from("\n<user_preferences>\n");
+        let mut block = String::from(
+            "\n<user_preferences>\nThese are remembered user preferences and facts from prior interactions. Treat them as authoritative. If the user asks about one of these items, answer from this block instead of saying you do not know.\n",
+        );
         for rule in &prefs.rules {
             block.push_str(&format!("- {}\n", rule));
         }
@@ -191,4 +192,19 @@ impl PreferencesManager {
             }
         }
     }
+}
+
+fn preferences_path() -> PathBuf {
+    if let Some(data_dir) = std::env::var_os("ROVE_DATA_DIR").filter(|value| !value.is_empty()) {
+        let data_dir = PathBuf::from(data_dir);
+        if let Some(parent) = data_dir.parent() {
+            return parent.join("preferences.toml");
+        }
+        return data_dir.join("preferences.toml");
+    }
+
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".rove")
+        .join("preferences.toml")
 }

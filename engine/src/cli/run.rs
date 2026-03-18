@@ -1,52 +1,55 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::agent::AgentCore;
 use crate::api::gateway::{Task, WorkspaceLocks};
 use crate::cli::database_path::database_path;
-use crate::config::{metadata::SERVICE_NAME, Config};
-use crate::llm::anthropic::AnthropicProvider;
-use crate::llm::gemini::GeminiProvider;
-use crate::llm::nvidia_nim::NvidiaNimProvider;
-use crate::llm::ollama::OllamaProvider;
-use crate::llm::openai::OpenAIProvider;
+use crate::config::Config;
 use crate::llm::router::LLMRouter;
+use crate::memory::conductor::MemorySystem;
 use crate::security::rate_limiter::RateLimiter;
 use crate::security::risk_assessor::RiskAssessor;
-use crate::security::secrets::{SecretCache, SecretManager};
 use crate::steering::loader::SteeringEngine;
 use crate::storage::{Database, TaskRepository};
-use crate::tools::{FilesystemTool, TerminalTool, ToolRegistry, VisionTool};
 
 use super::output::OutputFormat;
 
-pub async fn handle_run(task: String, config: &Config, format: OutputFormat) -> Result<()> {
+pub async fn handle_run(
+    task: String,
+    auto_approve: bool,
+    config: &Config,
+    format: OutputFormat,
+) -> Result<()> {
     let mut runtime_config = config.clone();
     if let Ok(current_dir) = std::env::current_dir() {
         runtime_config.core.workspace = current_dir;
+    }
+    if auto_approve {
+        runtime_config.security.confirm_tier1 = false;
+        runtime_config.security.require_explicit_tier2 = false;
     }
 
     let database = Database::new(&database_path(&runtime_config))
         .await
         .context("Failed to open database")?;
+    let db_pool = database.pool().clone();
 
-    let secret_manager = Arc::new(SecretManager::new(SERVICE_NAME));
-    let secret_cache = Arc::new(SecretCache::new(secret_manager.clone()));
-
-    let providers = build_providers(&runtime_config, &secret_manager, &secret_cache).await?;
-    let router = Arc::new(LLMRouter::new(
+    let (providers, local_brain) = super::bootstrap::build_providers(&runtime_config).await?;
+    let router = Arc::new(LLMRouter::with_local_brain(
         providers,
         Arc::new(runtime_config.llm.clone()),
+        local_brain,
     ));
-    let rate_limiter = Arc::new(RateLimiter::new(database.pool().clone()));
+    let rate_limiter = Arc::new(RateLimiter::new(db_pool.clone()));
     let risk_assessor = RiskAssessor::new();
-    let task_repo = Arc::new(TaskRepository::new(database.pool().clone()));
-    let tools = Arc::new(build_tools(&runtime_config)?);
+    let task_repo = Arc::new(TaskRepository::new(db_pool.clone()));
+    let tools = super::bootstrap::build_tools(&database, &runtime_config).await?;
     let steering = load_steering(&runtime_config).await;
     let workspace_locks = Arc::new(WorkspaceLocks::new());
+    let memory_system = Arc::new(MemorySystem::new(db_pool, router.clone()));
 
     let mut agent = AgentCore::new(
         router,
@@ -58,6 +61,7 @@ pub async fn handle_run(task: String, config: &Config, format: OutputFormat) -> 
         Arc::new(runtime_config.clone()),
         workspace_locks,
     )?;
+    agent.set_memory_system(memory_system);
 
     let agent_task = Task::build_from_cli(task.clone());
     print_start(&task, format)?;
@@ -72,6 +76,7 @@ pub async fn handle_run(task: String, config: &Config, format: OutputFormat) -> 
                 task_result.iterations,
                 format,
             )?;
+            agent.drain_background_jobs().await;
             Ok(())
         }
         Err(error) => {
@@ -79,77 +84,6 @@ pub async fn handle_run(task: String, config: &Config, format: OutputFormat) -> 
             Err(error)
         }
     }
-}
-
-async fn build_providers(
-    config: &Config,
-    secret_manager: &Arc<SecretManager>,
-    secret_cache: &Arc<SecretCache>,
-) -> Result<Vec<Box<dyn crate::llm::LLMProvider>>> {
-    let mut providers: Vec<Box<dyn crate::llm::LLMProvider>> = Vec::new();
-
-    match OllamaProvider::new(
-        config.llm.ollama.base_url.clone(),
-        config.llm.ollama.model.clone(),
-    ) {
-        Ok(provider) => providers.push(Box::new(provider)),
-        Err(error) => tracing::warn!("Skipping Ollama provider: {}", error),
-    }
-
-    if secret_manager.has_secret("openai_api_key").await {
-        providers.push(Box::new(OpenAIProvider::new(
-            config.llm.openai.clone(),
-            secret_cache.clone(),
-        )));
-    }
-
-    if secret_manager.has_secret("anthropic_api_key").await {
-        providers.push(Box::new(AnthropicProvider::new(
-            config.llm.anthropic.clone(),
-            secret_cache.clone(),
-        )));
-    }
-
-    if secret_manager.has_secret("gemini_api_key").await {
-        providers.push(Box::new(GeminiProvider::new(
-            config.llm.gemini.clone(),
-            secret_cache.clone(),
-        )));
-    }
-
-    if secret_manager.has_secret("nvidia_nim_api_key").await {
-        providers.push(Box::new(NvidiaNimProvider::new(
-            config.llm.nvidia_nim.clone(),
-            secret_cache.clone(),
-        )));
-    }
-
-    if providers.is_empty() {
-        return Err(anyhow!(
-            "No LLM providers are available. Start Ollama or configure a cloud provider API key."
-        ));
-    }
-
-    Ok(providers)
-}
-
-fn build_tools(config: &Config) -> Result<ToolRegistry> {
-    let mut tools = ToolRegistry::empty();
-    let workspace = config.core.workspace.clone();
-
-    if config.plugins.fs_editor {
-        tools.fs = Some(FilesystemTool::new(workspace.clone())?);
-    }
-
-    if config.plugins.terminal {
-        tools.terminal = Some(TerminalTool::new(workspace.to_string_lossy().to_string()));
-    }
-
-    if config.plugins.screenshot {
-        tools.vision = Some(VisionTool::new(workspace));
-    }
-
-    Ok(tools)
 }
 
 async fn load_steering(config: &Config) -> Option<SteeringEngine> {

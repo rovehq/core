@@ -132,6 +132,7 @@ impl ToolRegistry {
             "1. To call a tool, your ENTIRE response must be ONLY the JSON object — nothing else. No explanation, no markdown fences, no text before or after.".to_string(),
             "2. When you have the final answer (after receiving tool results), respond with plain text only — no JSON.".to_string(),
             "3. Never invent tool output. Use a tool only when you need real external state, file contents, command output, or side effects. If the user asks for something you can answer from reasoning alone, answer directly without any tool call.".to_string(),
+            "4. If the user explicitly asks you to run a single terminal command, execute exactly that command once, then answer with its output. Do not run extra exploratory commands unless the user asked for additional investigation.".to_string(),
             String::new(),
             "Tool call format (your entire response must be exactly this):".to_string(),
             r#"{"function": "tool_name", "arguments": {"arg1": "value1"}}"#.to_string(),
@@ -174,7 +175,7 @@ impl ToolRegistry {
             parts.push(String::new());
             parts.push("## run_command".to_string());
             parts.push(
-                "Execute a shell command and return its output. Use this only for real system or repository operations, not for arithmetic, general knowledge, or questions that can be answered directly."
+                "Execute a shell command and return its output. Use this only for real system or repository operations, not for arithmetic, general knowledge, or questions that can be answered directly. If the user names a specific command, run that exact command and stop unless its output clearly requires a follow-up."
                     .to_string(),
             );
             parts.push(r#"Arguments: {"command": "shell command to run"}"#.to_string());
