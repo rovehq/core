@@ -28,9 +28,10 @@ use axum::{
 };
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tracing::{error, info, warn};
 
-use super::AppState;
+use super::{completion, AppState};
 
 // ── Client → Server messages ─────────────────────────────────────────────────
 
@@ -54,6 +55,7 @@ enum ServerMsg<'a> {
     },
     Result {
         answer: String,
+        provider: Option<String>,
         duration_ms: i64,
         iterations: usize,
     },
@@ -171,54 +173,45 @@ async fn handle_start_task(socket: &mut WebSocket, state: &AppState, input: Stri
     };
     let _ = socket.send(Message::Text(prog.to_text())).await;
 
-    // Poll for task completion
-    use std::time::Duration;
-    let repo = state.db.pending_tasks();
-
     loop {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        match repo.get_task(&task_id).await {
-            Ok(Some(t)) => {
-                match t.status {
-                    crate::db::pending_tasks::PendingTaskStatus::Done => {
-                        // Task completed successfully
-                        let msg = ServerMsg::Result {
-                            answer: "Task completed".to_string(),
-                            duration_ms: 0,
-                            iterations: 0,
-                        };
-                        if let Err(e) = socket.send(Message::Text(msg.to_text())).await {
-                            error!("Failed to stream task result over WebSocket: {}", e);
-                        }
-                        break;
-                    }
-                    crate::db::pending_tasks::PendingTaskStatus::Failed => {
-                        let msg = ServerMsg::Error {
-                            message: format!("Task failed: {}", t.error.unwrap_or_default()),
-                        };
-                        let _ = socket.send(Message::Text(msg.to_text())).await;
-                        break;
-                    }
-                    _ => {
-                        // Still running, send progress update
-                        let prog = ServerMsg::Progress {
-                            message: "Task is running...",
-                        };
-                        let _ = socket.send(Message::Text(prog.to_text())).await;
-                    }
+        match completion::load_completion(state, &task_id).await {
+            Ok(completion::CompletionState::Done(result)) => {
+                let msg = ServerMsg::Result {
+                    answer: result.answer,
+                    provider: result.provider,
+                    duration_ms: result.duration_ms.unwrap_or(0),
+                    iterations: 0,
+                };
+                if let Err(error) = socket.send(Message::Text(msg.to_text())).await {
+                    error!("Failed to stream task result over WebSocket: {}", error);
                 }
+                break;
             }
-            Ok(None) => {
+            Ok(completion::CompletionState::Failed(error)) => {
+                let msg = ServerMsg::Error {
+                    message: format!("Task failed: {}", error),
+                };
+                let _ = socket.send(Message::Text(msg.to_text())).await;
+                break;
+            }
+            Ok(completion::CompletionState::Missing) => {
                 let msg = ServerMsg::Error {
                     message: "Task not found".to_string(),
                 };
                 let _ = socket.send(Message::Text(msg.to_text())).await;
                 break;
             }
-            Err(e) => {
+            Ok(completion::CompletionState::Running) => {
+                let prog = ServerMsg::Progress {
+                    message: "Task is running...",
+                };
+                let _ = socket.send(Message::Text(prog.to_text())).await;
+            }
+            Err(error) => {
                 let msg = ServerMsg::Error {
-                    message: format!("Failed to get task status: {}", e),
+                    message: format!("Failed to get task status: {}", error),
                 };
                 let _ = socket.send(Message::Text(msg.to_text())).await;
                 break;

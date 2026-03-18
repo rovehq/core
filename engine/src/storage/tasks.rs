@@ -403,6 +403,19 @@ impl TaskRepository {
             .collect())
     }
 
+    /// Get the latest final answer recorded for a task.
+    pub async fn get_latest_answer(&self, task_id: &str) -> Result<Option<String>> {
+        let payload: Option<String> = sqlx::query_scalar(
+            "SELECT payload FROM agent_events WHERE task_id = ? AND event_type = 'answer' ORDER BY step_num DESC, created_at DESC LIMIT 1"
+        )
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("Failed to fetch latest task answer")?;
+
+        Ok(payload.and_then(|payload| parse_answer_payload(&payload)))
+    }
+
     /// Get all steps for a task
     ///
     /// Requirements: 12.5, 12.10
@@ -457,4 +470,11 @@ impl TaskRepository {
 
         Ok(result.rows_affected())
     }
+}
+
+fn parse_answer_payload(payload: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(payload).ok()?;
+    json.get("answer")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
 }

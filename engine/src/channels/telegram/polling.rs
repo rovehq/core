@@ -44,10 +44,7 @@ impl TelegramBot {
         };
 
         if !self.allowed_users.contains(&user_id) && !self.allowed_users.is_empty() {
-            warn!("Unauthorized user {} attempted to use the bot", user_id);
-            let _ = self
-                .send_message(chat_id, "Unauthorized. Access denied.")
-                .await;
+            info!("telegram: ignoring unlisted user_id={}", user_id);
             return;
         }
 
@@ -103,17 +100,26 @@ impl TelegramBot {
                     };
 
                     let repo = db.pending_tasks();
+                    let tasks = db.tasks();
                     loop {
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         if let Ok(Some(task)) = repo.get_task(&task_id).await {
                             match task.status {
-                                crate::db::pending_tasks::PendingTaskStatus::Done => {
+                                crate::storage::PendingTaskStatus::Done => {
+                                    let answer = tasks
+                                        .get_latest_answer(&task_id)
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                        .unwrap_or_else(|| "Task completed".to_string());
+                                    let reply =
+                                        format_telegram_reply(bot.secret_manager.scrub(&answer));
                                     let target_chat =
                                         confirmation_chat_id.unwrap_or(chat_id_for_task);
-                                    let _ = bot.send_message(target_chat, "Task completed").await;
+                                    let _ = bot.send_message(target_chat, &reply).await;
                                     break;
                                 }
-                                crate::db::pending_tasks::PendingTaskStatus::Failed => {
+                                crate::storage::PendingTaskStatus::Failed => {
                                     let error_msg =
                                         format!("Task failed: {}", task.error.unwrap_or_default());
                                     let _ = bot.send_message(chat_id_for_task, &error_msg).await;
@@ -136,12 +142,8 @@ impl TelegramBot {
                     let mut agent_guard = agent.lock().await;
                     match agent_guard.process_task(task).await {
                         Ok(result) => {
-                            let scrubbed = bot.secret_manager.scrub(&result.answer);
-                            let reply = if scrubbed.len() > 4000 {
-                                format!("{}...\n\n(truncated)", &scrubbed[..4000])
-                            } else {
-                                scrubbed
-                            };
+                            let reply =
+                                format_telegram_reply(bot.secret_manager.scrub(&result.answer));
 
                             let target_chat = confirmation_chat_id.unwrap_or(chat_id);
                             if let Err(error) = bot.send_message(target_chat, &reply).await {
@@ -167,8 +169,7 @@ impl TelegramBot {
     async fn handle_callback_query(&self, cbq: CallbackQuery) {
         let user_id = cbq.from.id;
         if !self.allowed_users.contains(&user_id) && !self.allowed_users.is_empty() {
-            warn!("Unauthorized callback from user {}", user_id);
-            let _ = self.answer_callback_query(&cbq.id, "Access denied.").await;
+            info!("telegram: ignoring unlisted user_id={}", user_id);
             return;
         }
 
@@ -215,5 +216,13 @@ impl TelegramBot {
         if let Err(error) = self.send_message(chat_id, &reply).await {
             error!("Failed to send command reply: {}", error);
         }
+    }
+}
+
+fn format_telegram_reply(text: String) -> String {
+    if text.len() > 4000 {
+        format!("{}...\n\n(truncated)", &text[..4000])
+    } else {
+        text
     }
 }

@@ -10,6 +10,7 @@
 
 pub mod api;
 pub mod auth;
+mod completion;
 pub mod mcp;
 pub mod ws;
 
@@ -82,6 +83,7 @@ pub async fn start_daemon(
 
     // Routes that require bearer token authentication
     let protected = Router::new()
+        .route("/api/run", post(api::execute_task))
         .route("/api/v1/execute", post(api::execute_task))
         .route("/api/v1/steering/active", get(api::active_skills))
         .route("/v1/chat/completions", post(mcp::mcp_chat_completions))

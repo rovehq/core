@@ -171,6 +171,13 @@ impl AgentCore {
         }
     }
 
+    pub async fn active_steering_skills(&self) -> Vec<String> {
+        match &self.steering {
+            Some(steering) => steering.active_skills().await,
+            None => Vec::new(),
+        }
+    }
+
     fn spawn_post_task_jobs(
         &mut self,
         task_input: String,
