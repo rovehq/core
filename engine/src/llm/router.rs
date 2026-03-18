@@ -53,6 +53,59 @@ pub struct LLMRouter {
 }
 
 impl LLMRouter {
+    fn should_try_local_brain_first(&self, profile: &TaskProfile) -> bool {
+        profile.sensitivity > self.config.sensitivity_threshold
+            || self.config.default_provider == "local-brain"
+    }
+
+    async fn try_local_brain(
+        &self,
+        messages: &[Message],
+    ) -> Option<super::Result<(super::LLMResponse, String)>> {
+        let local_brain = self.local_brain.as_ref()?;
+        if !local_brain.check_available().await {
+            tracing::debug!("LocalBrain not available, falling back to providers");
+            return None;
+        }
+
+        tracing::debug!("Attempting LocalBrain (llama-server)");
+
+        let brain_messages: Vec<sdk::Message> = messages
+            .iter()
+            .map(|m| sdk::Message {
+                role: m.role.to_string(),
+                content: m.content.clone(),
+            })
+            .collect();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(120),
+            local_brain.complete("You are a helpful AI assistant.", &brain_messages, &[]),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(brain_response)) => {
+                tracing::info!("LocalBrain succeeded");
+                let llm_response = super::LLMResponse::FinalAnswer(super::FinalAnswer {
+                    content: brain_response.content,
+                });
+                Some(Ok((llm_response, "local-brain".to_string())))
+            }
+            Ok(Err(error)) => {
+                tracing::warn!("LocalBrain failed: {}", scrub_text(&error.to_string()));
+                Some(Err(super::LLMError::ProviderUnavailable(format!(
+                    "LocalBrain failed: {}",
+                    scrub_text(&error.to_string())
+                ))))
+            }
+            Err(_) => {
+                tracing::warn!("LocalBrain timed out after 120s");
+                Some(Err(super::LLMError::Timeout))
+            }
+        }
+    }
+
     /// Create a new LLM router
     ///
     /// # Arguments
@@ -109,35 +162,41 @@ impl LLMRouter {
     ///
     /// **Validates: Requirements 4.2**
     fn calculate_sensitivity(&self, messages: &[Message]) -> f64 {
-        const SENSITIVE_KEYWORDS: &[&str] = &[
+        const HIGH_CONFIDENCE_KEYWORDS: &[&str] = &[
             "password",
             "credential",
             "secret",
             "token",
             "api_key",
+            "api key",
             "private_key",
+            "private key",
             "ssh",
             ".env",
-            "ssn",
-            "credit_card",
-            "bank",
-            "account",
         ];
+        const LOW_CONFIDENCE_KEYWORDS: &[&str] =
+            &["ssn", "credit_card", "credit card", "bank", "account"];
 
-        let mut sensitivity_score: f64 = 0.0;
         let total_content: String = messages
             .iter()
             .map(|m| m.content.to_lowercase())
             .collect::<Vec<_>>()
             .join(" ");
 
-        for keyword in SENSITIVE_KEYWORDS {
+        if HIGH_CONFIDENCE_KEYWORDS
+            .iter()
+            .any(|keyword| total_content.contains(keyword))
+        {
+            return 1.0;
+        }
+
+        let mut sensitivity_score: f64 = 0.0;
+        for keyword in LOW_CONFIDENCE_KEYWORDS {
             if total_content.contains(keyword) {
                 sensitivity_score += 0.2;
             }
         }
 
-        // Cap at 1.0
         sensitivity_score.min(1.0)
     }
 
@@ -271,57 +330,33 @@ impl LLMRouter {
     pub async fn call(&self, messages: &[Message]) -> super::Result<(super::LLMResponse, String)> {
         use super::LLMError;
 
-        // Try LocalBrain first if available
-        if let Some(local_brain) = &self.local_brain {
-            if local_brain.check_available().await {
-                tracing::debug!("Attempting LocalBrain (llama-server)");
+        let profile = self.analyze_task(messages);
+        let try_local_first = self.should_try_local_brain_first(&profile);
+        let mut tried_local = false;
 
-                // Convert messages to Brain trait format
-                let brain_messages: Vec<sdk::Message> = messages
-                    .iter()
-                    .map(|m| sdk::Message {
-                        role: m.role.to_string(),
-                        content: m.content.clone(),
-                    })
-                    .collect();
-
-                // Try LocalBrain with timeout
-                let result = tokio::time::timeout(
-                    Duration::from_secs(120),
-                    local_brain.complete("You are a helpful AI assistant.", &brain_messages, &[]),
-                )
-                .await;
-
+        if try_local_first {
+            tried_local = true;
+            if let Some(result) = self.try_local_brain(messages).await {
                 match result {
-                    Ok(Ok(brain_response)) => {
-                        tracing::info!("LocalBrain succeeded");
-                        // Convert BrainResponse to LLMResponse
-                        let llm_response = super::LLMResponse::FinalAnswer(super::FinalAnswer {
-                            content: brain_response.content,
-                        });
-                        return Ok((llm_response, "local-brain".to_string()));
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!("LocalBrain failed: {}", scrub_text(&e.to_string()));
-                    }
-                    Err(_) => {
-                        tracing::warn!("LocalBrain timed out after 120s");
-                    }
+                    Ok(response) => return Ok(response),
+                    Err(error) => tracing::warn!("LocalBrain fallback failed: {}", error),
                 }
-            } else {
-                tracing::debug!("LocalBrain not available, falling back to providers");
             }
         }
 
         // If no providers available, return error immediately
         if self.providers.is_empty() {
+            if !tried_local {
+                if let Some(result) = self.try_local_brain(messages).await {
+                    return result;
+                }
+            }
             return Err(LLMError::ProviderUnavailable(
                 "No LLM providers configured".to_string(),
             ));
         }
 
         // Analyze task and rank providers
-        let profile = self.analyze_task(messages);
         let ranked_providers = self.rank_providers(&profile);
         let mut failures: Vec<String> = Vec::new();
 
@@ -380,6 +415,17 @@ impl LLMRouter {
                         provider.name(),
                         timeout_secs
                     ));
+                }
+            }
+        }
+
+        if !tried_local {
+            if let Some(result) = self.try_local_brain(messages).await {
+                match result {
+                    Ok(response) => return Ok(response),
+                    Err(error) => {
+                        failures.push(format!("local-brain: {}", scrub_text(&error.to_string())))
+                    }
                 }
             }
         }
@@ -506,8 +552,7 @@ mod tests {
         ];
 
         let sensitivity = router.calculate_sensitivity(&messages);
-        assert!(sensitivity > 0.0);
-        assert!(sensitivity <= 1.0);
+        assert_eq!(sensitivity, 1.0);
     }
 
     #[test]
@@ -659,5 +704,25 @@ mod tests {
 
         // Should prefer cheaper option (ollama)
         assert_eq!(ranked[0].name(), "ollama");
+    }
+
+    #[test]
+    fn test_should_try_local_brain_first_for_sensitive_tasks() {
+        let config = create_test_config();
+        let router = LLMRouter::new(vec![], config);
+
+        assert!(router.should_try_local_brain_first(&TaskProfile::new(0.9, 0.1, 200)));
+        assert!(!router.should_try_local_brain_first(&TaskProfile::new(0.1, 0.1, 200)));
+    }
+
+    #[test]
+    fn test_should_try_local_brain_first_when_default_provider_is_local() {
+        let config = Arc::new(LLMConfig {
+            default_provider: "local-brain".to_string(),
+            ..(*create_test_config()).clone()
+        });
+        let router = LLMRouter::new(vec![], config);
+
+        assert!(router.should_try_local_brain_first(&TaskProfile::new(0.0, 0.1, 200)));
     }
 }

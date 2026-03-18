@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use brain::reasoning::LocalBrain;
+use serde::Deserialize;
 
 use crate::config::{metadata::SERVICE_NAME, AnthropicConfig, Config, GeminiConfig, OpenAIConfig};
 use crate::llm::anthropic::AnthropicProvider;
@@ -118,10 +119,13 @@ pub async fn build(
 }
 
 async fn detect_local_brain() -> Option<Arc<LocalBrain>> {
-    let brain = Arc::new(LocalBrain::new(
-        "http://localhost:8080",
-        "qwen2.5-coder-0.5b",
-    ));
+    let metadata = read_local_brain_metadata();
+    let port = metadata.as_ref().map(|meta| meta.port).unwrap_or(8080);
+    let model = metadata
+        .as_ref()
+        .map(|meta| meta.model_name())
+        .unwrap_or_else(|| "qwen2.5-coder-0.5b".to_string());
+    let brain = Arc::new(LocalBrain::new(format!("http://localhost:{}", port), model));
 
     if brain.check_available().await {
         tracing::info!("LocalBrain (llama-server) detected and available");
@@ -130,4 +134,26 @@ async fn detect_local_brain() -> Option<Arc<LocalBrain>> {
         tracing::debug!("LocalBrain not available (llama-server not running)");
         None
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalBrainMetadata {
+    model_path: String,
+    port: u16,
+}
+
+impl LocalBrainMetadata {
+    fn model_name(&self) -> String {
+        std::path::Path::new(&self.model_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("qwen2.5-coder-0.5b")
+            .to_string()
+    }
+}
+
+fn read_local_brain_metadata() -> Option<LocalBrainMetadata> {
+    let path = LocalBrain::default_brain_dir()?.join("llama-server.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
 }

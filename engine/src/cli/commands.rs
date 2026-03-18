@@ -199,6 +199,8 @@ pub enum BrainAction {
     Check,
     /// Show installation instructions for llama.cpp.
     Setup,
+    /// Show local brain status.
+    Status,
     /// Install a model.
     Install { model: String },
     /// List installed models.

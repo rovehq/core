@@ -56,6 +56,7 @@ pub fn stop() -> Result<()> {
     let config = Config::load_or_create()?;
     let pid_file = pid_file_path(&config);
     if !pid_file.exists() {
+        let _ = crate::cli::brain::stop_local_server();
         println!("  No daemon running");
         return Ok(());
     }
@@ -76,6 +77,7 @@ pub fn stop() -> Result<()> {
     }
 
     let _ = std::fs::remove_file(pid_file);
+    let _ = crate::cli::brain::stop_local_server();
     Ok(())
 }
 
