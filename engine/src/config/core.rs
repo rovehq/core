@@ -10,6 +10,7 @@ use super::llm::LLMConfig;
 use super::memory::MemoryConfig;
 use super::security::SecurityConfig;
 use super::steering::SteeringConfig;
+use super::telegram::TelegramConfig;
 use super::tools::{PluginsConfig, ToolsConfig};
 use super::transport::{McpConfig, WsClientConfig};
 use super::webui::WebUIConfig;
@@ -36,6 +37,8 @@ pub struct Config {
     pub gateway: GatewayFileConfig,
     #[serde(default)]
     pub webui: WebUIConfig,
+    #[serde(default)]
+    pub telegram: TelegramConfig,
     #[serde(default)]
     pub mcp: McpConfig,
 }

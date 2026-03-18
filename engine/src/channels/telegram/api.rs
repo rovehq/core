@@ -7,8 +7,9 @@ use super::TelegramBot;
 impl TelegramBot {
     pub(super) async fn get_updates(&self, offset: i64) -> Result<Vec<super::types::Update>> {
         let url = format!(
-            "https://api.telegram.org/bot{}/getUpdates?offset={}&timeout=30&allowed_updates=[\"message\",\"callback_query\"]",
-            self.token, offset
+            "{}?offset={}&timeout=30&allowed_updates=[\"message\",\"callback_query\"]",
+            self.api_url("getUpdates"),
+            offset
         );
 
         let response = self
@@ -31,10 +32,7 @@ impl TelegramBot {
         callback_query_id: &str,
         text: &str,
     ) -> Result<()> {
-        let url = format!(
-            "https://api.telegram.org/bot{}/answerCallbackQuery",
-            self.token
-        );
+        let url = self.api_url("answerCallbackQuery");
         let body = serde_json::json!({
             "callback_query_id": callback_query_id,
             "text": text,
@@ -44,7 +42,7 @@ impl TelegramBot {
     }
 
     pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<()> {
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.token);
+        let url = self.api_url("sendMessage");
         let scrubbed = self.secret_manager.scrub(text);
 
         #[derive(Serialize)]

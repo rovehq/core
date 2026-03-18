@@ -5,23 +5,42 @@ use std::path::PathBuf;
 use tracing::{error, Level};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use rove_engine::cli::{Cli, Command, ModelAction, OutputFormat, PluginAction, SteeringAction};
+use rove_engine::channels::TelegramBot;
+use rove_engine::cli::{
+    Cli, Command, ConfigAction, ModelAction, OutputFormat, PluginAction, SecretsAction,
+    SteeringAction,
+};
+use rove_engine::config::metadata::SERVICE_NAME;
+use rove_engine::security::secrets::SecretManager;
 use rove_engine::server;
 use rove_engine::steering::loader::SteeringEngine;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(path) = cli.config.as_ref() {
+        std::env::set_var("ROVE_CONFIG_PATH", path);
+    }
     init_logging(cli.verbose)?;
 
     match cli.command {
         None => rove_engine::cli::repl::run().await?,
         Some(Command::Start { port }) => rove_engine::cli::daemon::start_background(port)?,
         Some(Command::Stop) => rove_engine::cli::daemon::stop()?,
-        Some(Command::Task { prompt, yes }) => {
+        Some(Command::Task {
+            prompt,
+            yes,
+            stream,
+        }) => {
             let config = rove_engine::config::Config::load_or_create()?;
-            rove_engine::cli::run::handle_run(prompt.join(" "), yes, &config, OutputFormat::Text)
-                .await?;
+            rove_engine::cli::run::handle_run(
+                prompt.join(" "),
+                yes,
+                stream,
+                &config,
+                OutputFormat::Text,
+            )
+            .await?;
         }
         Some(Command::History { limit }) => {
             let config = rove_engine::config::Config::load_or_create()?;
@@ -40,6 +59,11 @@ async fn main() -> Result<()> {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::schedule::handle_schedule(action, &config).await?;
         }
+        Some(Command::Config { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            handle_config(action, &config).await?;
+        }
+        Some(Command::Secrets { action }) => handle_secrets(action).await?,
         Some(Command::Brain { action }) => rove_engine::cli::brain::execute(action).await?,
         Some(Command::Daemon { port }) => run_daemon(port).await?,
         Some(Command::Doctor) => {
@@ -102,8 +126,10 @@ fn log_file_path() -> PathBuf {
 }
 
 async fn run_daemon(port: u16) -> Result<()> {
+    let config = rove_engine::config::Config::load_or_create()?;
     let (agent, database, gateway) = rove_engine::cli::bootstrap::init_daemon().await?;
-    gateway.clone().start(agent.clone());
+    gateway.clone().start();
+    start_telegram_if_enabled(&config, gateway.clone(), database.clone());
     tracing::info!("{}", rove_engine::info::engine_banner());
     server::start_daemon(agent, port, database, gateway).await?;
     Ok(())
@@ -216,4 +242,60 @@ async fn handle_model(action: ModelAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn handle_config(action: ConfigAction, config: &rove_engine::config::Config) -> Result<()> {
+    match action {
+        ConfigAction::Show => rove_engine::cli::config::show(config),
+    }
+}
+
+async fn handle_secrets(action: SecretsAction) -> Result<()> {
+    match action {
+        SecretsAction::Set { name } => rove_engine::cli::secrets::set(&name).await,
+        SecretsAction::List => rove_engine::cli::secrets::list().await,
+        SecretsAction::Remove { name } => rove_engine::cli::secrets::remove(&name).await,
+    }
+}
+
+fn start_telegram_if_enabled(
+    config: &rove_engine::config::Config,
+    gateway: std::sync::Arc<rove_engine::gateway::Gateway>,
+    database: std::sync::Arc<rove_engine::db::Database>,
+) {
+    if !config.telegram.enabled {
+        return;
+    }
+
+    let config = config.clone();
+    tokio::spawn(async move {
+        let secret_manager = SecretManager::new(SERVICE_NAME);
+        if !secret_manager.has_secret("telegram_token").await {
+            tracing::warn!(
+                "Telegram is enabled but no telegram_token is configured. Run `rove secrets set telegram`."
+            );
+            return;
+        }
+
+        let token = match secret_manager.get_secret("telegram_token").await {
+            Ok(token) => token,
+            Err(error) => {
+                tracing::warn!("Failed to load telegram token: {}", error);
+                return;
+            }
+        };
+
+        let mut bot = TelegramBot::new(token, config.telegram.allowed_ids.clone())
+            .with_gateway(gateway, database);
+        if let Some(chat_id) = config.telegram.confirmation_chat_id {
+            bot = bot.with_confirmation_chat(chat_id);
+        }
+        if let Some(base_url) = config.telegram.api_base_url {
+            bot = bot.with_api_base_url(base_url);
+        }
+
+        if let Err(error) = bot.start_polling().await {
+            tracing::error!("Telegram polling stopped: {}", error);
+        }
+    });
 }

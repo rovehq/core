@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use brain::reasoning::LocalBrain;
 use serde::Deserialize;
 
@@ -10,6 +10,7 @@ use crate::llm::gemini::GeminiProvider;
 use crate::llm::nvidia_nim::NvidiaNimProvider;
 use crate::llm::ollama::OllamaProvider;
 use crate::llm::openai::OpenAIProvider;
+use crate::llm::LLMProvider;
 use crate::security::secrets::{SecretCache, SecretManager};
 
 pub async fn build(
@@ -32,12 +33,19 @@ pub async fn build(
         tracing::warn!("LLM providers may prompt for credentials on first use");
     }
 
+    let local_brain = detect_local_brain().await;
     let mut providers: Vec<Box<dyn crate::llm::LLMProvider>> = Vec::new();
     match OllamaProvider::new(
         config.llm.ollama.base_url.clone(),
         config.llm.ollama.model.clone(),
     ) {
-        Ok(provider) => providers.push(Box::new(provider)),
+        Ok(provider) => {
+            if provider.check_health().await {
+                providers.push(Box::new(provider));
+            } else {
+                tracing::warn!("Skipping Ollama provider: health check failed");
+            }
+        }
         Err(error) => tracing::warn!("Skipping Ollama provider: {}", error),
     }
 
@@ -108,13 +116,12 @@ pub async fn build(
         }
     }
 
-    if providers.is_empty() {
-        return Err(anyhow!(
-            "No LLM providers are available. Start Ollama or configure a provider API key."
-        ));
+    if providers.is_empty() && local_brain.is_none() {
+        tracing::warn!(
+            "No LLM providers are configured. Run `rove secrets set openai` or start the local brain."
+        );
     }
 
-    let local_brain = detect_local_brain().await;
     Ok((providers, local_brain))
 }
 

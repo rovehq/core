@@ -7,6 +7,22 @@ use crate::security::secrets::scrub_text;
 use super::AgentCore;
 
 impl AgentCore {
+    fn tool_step(iteration: usize) -> i64 {
+        if iteration == 0 {
+            1
+        } else {
+            (iteration * 2 - 1) as i64
+        }
+    }
+
+    fn observation_step(iteration: usize) -> i64 {
+        if iteration == 0 {
+            2
+        } else {
+            (iteration * 2) as i64
+        }
+    }
+
     pub(super) async fn insert_user_event(
         &self,
         task_id: &Uuid,
@@ -40,7 +56,7 @@ impl AgentCore {
                 task_id,
                 "tool_call",
                 &payload,
-                (iteration * 2 - 1) as i64,
+                Self::tool_step(iteration),
                 Some(domain_str),
             )
             .await
@@ -61,7 +77,7 @@ impl AgentCore {
                 task_id,
                 "observation",
                 &payload,
-                (iteration * 2) as i64,
+                Self::observation_step(iteration),
                 Some(domain_str),
             )
             .await
@@ -82,7 +98,7 @@ impl AgentCore {
                 task_id,
                 "answer",
                 &payload,
-                (iteration * 2 - 1) as i64,
+                Self::tool_step(iteration),
                 Some(domain_str),
             )
             .await

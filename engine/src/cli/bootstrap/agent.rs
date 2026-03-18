@@ -19,6 +19,31 @@ use super::providers;
 pub async fn init_agent_with_db(database: Arc<Database>) -> Result<Arc<RwLock<AgentCore>>> {
     let config = Config::load_or_create()?;
     let memory_config = config.memory.clone();
+    let agent = build_task_agent(database.clone(), None).await?;
+
+    if let Some(memory_system) = agent_memory_system(&agent) {
+        tokio::spawn(async move {
+            memory_system
+                .start_consolidation_loop(std::time::Duration::from_secs(
+                    memory_config.consolidation_interval_mins * 60,
+                ))
+                .await;
+        });
+    }
+
+    Ok(Arc::new(RwLock::new(agent)))
+}
+
+pub async fn build_task_agent(
+    database: Arc<Database>,
+    workspace_override: Option<std::path::PathBuf>,
+) -> Result<AgentCore> {
+    let config = Config::load_or_create()?;
+    let mut config = config;
+    if let Some(workspace) = workspace_override {
+        config.core.workspace = workspace;
+    }
+
     let db_pool = database.pool().clone();
 
     let (providers, local_brain) = providers::build(&config).await?;
@@ -33,19 +58,8 @@ pub async fn init_agent_with_db(database: Arc<Database>) -> Result<Arc<RwLock<Ag
     let memory_system = Arc::new(MemorySystem::new_with_config(
         db_pool,
         router.clone(),
-        memory_config.clone(),
+        config.memory.clone(),
     ));
-
-    {
-        let memory_system = memory_system.clone();
-        tokio::spawn(async move {
-            memory_system
-                .start_consolidation_loop(std::time::Duration::from_secs(
-                    memory_config.consolidation_interval_mins * 60,
-                ))
-                .await;
-        });
-    }
 
     let tools = plugins::build(&database, &config).await?;
     let steering = load_steering(&config).await?;
@@ -63,7 +77,7 @@ pub async fn init_agent_with_db(database: Arc<Database>) -> Result<Arc<RwLock<Ag
     )?;
     agent.set_memory_system(memory_system);
 
-    Ok(Arc::new(RwLock::new(agent)))
+    Ok(agent)
 }
 
 async fn load_steering(config: &Config) -> Result<SteeringEngine> {
@@ -73,4 +87,8 @@ async fn load_steering(config: &Config) -> Result<SteeringEngine> {
         SteeringEngine::new_with_workspace(&steering_dir, Some(&workspace_dir)).await?;
     steering.load_all_skills().await?;
     Ok(steering)
+}
+
+fn agent_memory_system(agent: &AgentCore) -> Option<Arc<MemorySystem>> {
+    agent.memory_system().cloned()
 }

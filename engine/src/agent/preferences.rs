@@ -115,6 +115,10 @@ impl PreferencesManager {
     /// Call the LLM to extract new preferences or corrections from an interaction.
     /// Returns true if rules were added.
     pub async fn extract_and_update(&self, input: &str, output: &str) -> Result<bool> {
+        if let Some(rule) = verification_preference(input) {
+            return self.add_rules(vec![rule]).await;
+        }
+
         let prompt = format!(
             "Analyze the following user input and agent output.\n\
             Extract any explicit user preferences, rules, or corrections the user wants the agent to remember for future interactions.\n\
@@ -152,37 +156,7 @@ impl PreferencesManager {
         };
 
         match serde_json::from_str::<Vec<String>>(content) {
-            Ok(new_rules) => {
-                if new_rules.is_empty() {
-                    return Ok(false);
-                }
-
-                info!(
-                    "Extracted new preferences from interaction: {:?}",
-                    new_rules
-                );
-
-                let mut rules_added = false;
-                let mut prefs = self.preferences.write().await;
-
-                for rule in new_rules {
-                    if !prefs.rules.contains(&rule) {
-                        prefs.rules.push(rule);
-                        rules_added = true;
-                    }
-                }
-
-                drop(prefs); // release lock before save
-
-                if rules_added {
-                    self.save()
-                        .await
-                        .context("Failed to save updated preferences")?;
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
+            Ok(new_rules) => self.add_rules(new_rules).await,
             Err(e) => {
                 debug!(
                     "Failed to parse LLM extraction as JSON: {}. Content: {}",
@@ -192,6 +166,52 @@ impl PreferencesManager {
             }
         }
     }
+
+    async fn add_rules(&self, new_rules: Vec<String>) -> Result<bool> {
+        if new_rules.is_empty() {
+            return Ok(false);
+        }
+
+        info!(
+            "Extracted new preferences from interaction: {:?}",
+            new_rules
+        );
+
+        let mut rules_added = false;
+        let mut prefs = self.preferences.write().await;
+
+        for rule in new_rules {
+            if !prefs.rules.contains(&rule) {
+                prefs.rules.push(rule);
+                rules_added = true;
+            }
+        }
+
+        drop(prefs);
+
+        if rules_added {
+            self.save()
+                .await
+                .context("Failed to save updated preferences")?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+fn verification_preference(input: &str) -> Option<String> {
+    let normalized = input.to_ascii_lowercase();
+    if normalized.contains("cargo test before saying done") {
+        return Some("Run cargo test before saying done.".to_string());
+    }
+    if normalized.contains("test it")
+        || normalized.contains("run tests")
+        || normalized.contains("cargo test")
+    {
+        return Some("Run cargo test before completion.".to_string());
+    }
+    None
 }
 
 fn preferences_path() -> PathBuf {

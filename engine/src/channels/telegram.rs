@@ -13,6 +13,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::agent::AgentCore;
+use crate::config::metadata::SERVICE_NAME;
 use crate::db::Database;
 use crate::gateway::Gateway;
 use crate::secrets::SecretManager;
@@ -25,6 +26,7 @@ pub struct TelegramBot {
     token: String,
     allowed_users: Vec<i64>,
     client: Client,
+    api_base_url: String,
     agent: Option<TaskHandler>,
     rate_limits: Arc<Mutex<TelegramRateLimits>>,
     confirmation_chat_id: Option<i64>,
@@ -51,10 +53,11 @@ impl TelegramBot {
                 .timeout(Duration::from_secs(60))
                 .build()
                 .unwrap_or_default(),
+            api_base_url: "https://api.telegram.org".to_string(),
             agent: None,
             rate_limits: Arc::new(Mutex::new(TelegramRateLimits::new())),
             confirmation_chat_id: None,
-            secret_manager: Arc::new(SecretManager::new("rove")),
+            secret_manager: Arc::new(SecretManager::new(SERVICE_NAME)),
             gateway: None,
             db: None,
         }
@@ -74,5 +77,14 @@ impl TelegramBot {
     pub fn with_confirmation_chat(mut self, chat_id: i64) -> Self {
         self.confirmation_chat_id = Some(chat_id);
         self
+    }
+
+    pub fn with_api_base_url(mut self, api_base_url: impl Into<String>) -> Self {
+        self.api_base_url = api_base_url.into().trim_end_matches('/').to_string();
+        self
+    }
+
+    pub(super) fn api_url(&self, method: &str) -> String {
+        format!("{}/bot{}/{}", self.api_base_url, self.token, method)
     }
 }

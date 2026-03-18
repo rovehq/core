@@ -90,24 +90,45 @@ impl Operation {
 /// without destructive confirmations. All other commands remain
 /// `execute_command` and require Tier 2 handling.
 pub fn classify_terminal_command(command: &str) -> &'static str {
-    let parts: Vec<&str> = command.split_whitespace().collect();
+    let Some(parts) = shlex::split(command) else {
+        return "execute_command";
+    };
     if parts.is_empty() {
         return "execute_command";
     }
 
-    match parts[0] {
+    match parts[0].as_str() {
         "git" => classify_git_command(&parts[1..]),
+        "cargo" => classify_cargo_command(&parts[1..]),
         "rg" | "fd" | "bat" => "read_file",
         _ => "execute_command",
     }
 }
 
-fn classify_git_command(args: &[&str]) -> &'static str {
+fn classify_git_command(args: &[String]) -> &'static str {
     match args {
-        ["status", ..] => "git_status",
-        ["branch", "--show-current"] => "git_status",
-        ["rev-parse", "--abbrev-ref", "HEAD"] => "git_status",
-        ["log", ..] => "git_log",
+        [command, ..] if command == "status" => "git_status",
+        [command, flag] if command == "branch" && flag == "--show-current" => "git_status",
+        [command, flag, head]
+            if command == "rev-parse" && flag == "--abbrev-ref" && head == "HEAD" =>
+        {
+            "git_status"
+        }
+        [command, ..] if command == "log" || command == "show" || command == "diff" => "git_log",
+        [command, ..] if command == "add" => "git_add",
+        [command, ..] if command == "commit" => "git_commit",
+        [command, ..] if command == "push" => "git_push",
+        [command, ..] if command == "reset" => "git_reset",
+        _ => "execute_command",
+    }
+}
+
+fn classify_cargo_command(args: &[String]) -> &'static str {
+    match args {
+        [command, ..] if command == "check" || command == "test" || command == "clippy" => {
+            "cargo_verify"
+        }
+        [command, ..] if command == "build" => "cargo_build",
         _ => "execute_command",
     }
 }
@@ -205,12 +226,13 @@ impl RiskAssessor {
     fn classify_operation(&self, operation_name: &str) -> Result<RiskTier, EngineError> {
         match operation_name {
             // Tier 0: Read-only operations and core agent tasks
-            "read_file" | "list_dir" | "git_status" | "git_log" | "execute_task" => {
-                Ok(RiskTier::Tier0)
-            }
+            "read_file" | "list_dir" | "git_status" | "git_log" | "execute_task"
+            | "cargo_verify" => Ok(RiskTier::Tier0),
 
             // Tier 1: Write/reversible operations
-            "write_file" | "git_add" | "git_commit" | "create_dir" => Ok(RiskTier::Tier1),
+            "write_file" | "git_add" | "git_commit" | "create_dir" | "cargo_build" => {
+                Ok(RiskTier::Tier1)
+            }
 
             // Tier 2: Destructive/irreversible operations
             "delete_file" | "git_push" | "execute_command" | "git_reset" => Ok(RiskTier::Tier2),
@@ -523,9 +545,9 @@ mod tests {
     fn test_classify_terminal_command_mutating_or_unknown_stays_tier2() {
         assert_eq!(
             classify_terminal_command("git commit -m test"),
-            "execute_command"
+            "git_commit"
         );
-        assert_eq!(classify_terminal_command("cargo build"), "execute_command");
+        assert_eq!(classify_terminal_command("cargo build"), "cargo_build");
         assert_eq!(classify_terminal_command(""), "execute_command");
     }
 }

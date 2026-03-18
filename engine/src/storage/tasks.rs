@@ -113,14 +113,16 @@ impl TaskRepository {
         let id_str = id.to_string();
 
         // Use parameterized query to prevent SQL injection
-        sqlx::query("INSERT INTO tasks (id, input, status, created_at) VALUES (?, ?, ?, ?)")
-            .bind(&id_str)
-            .bind(input)
-            .bind(status)
-            .bind(now)
-            .execute(&self.pool)
-            .await
-            .context("Failed to create task")?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO tasks (id, input, status, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id_str)
+        .bind(input)
+        .bind(status)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .context("Failed to create task")?;
 
         Ok(Task {
             id: *id,

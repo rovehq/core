@@ -19,8 +19,8 @@ pub async fn run() -> Result<()> {
     println!();
     println!("  {DIM}Initializing daemon (gateway + agent)...{RESET}");
 
-    let (agent, database, gateway) = bootstrap::init_daemon().await?;
-    gateway.clone().start(agent.clone());
+    let (_agent, database, gateway) = bootstrap::init_daemon().await?;
+    gateway.clone().start();
 
     println!("  {GREEN}Gateway poll loop started{RESET}");
     println!("  {GREEN}Agent ready{RESET}");

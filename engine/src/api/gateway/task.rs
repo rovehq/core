@@ -1,5 +1,6 @@
 use chrono::Utc;
 use sdk::TaskSource;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::risk_assessor::RiskTier;
@@ -11,6 +12,7 @@ pub struct Task {
     pub source: TaskSource,
     pub risk_tier_override: Option<RiskTier>,
     pub session_id: Option<Uuid>,
+    pub workspace: Option<PathBuf>,
     pub created_at: i64,
 }
 
@@ -22,6 +24,7 @@ impl Task {
             source: TaskSource::Cli,
             risk_tier_override: None,
             session_id: None,
+            workspace: std::env::current_dir().ok(),
             created_at: Utc::now().timestamp(),
         }
     }
@@ -33,6 +36,7 @@ impl Task {
             source: TaskSource::Telegram(String::new()),
             risk_tier_override: None,
             session_id,
+            workspace: None,
             created_at: Utc::now().timestamp(),
         }
     }
@@ -44,6 +48,7 @@ impl Task {
             source: TaskSource::WebUI,
             risk_tier_override: None,
             session_id,
+            workspace: None,
             created_at: Utc::now().timestamp(),
         }
     }

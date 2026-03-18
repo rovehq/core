@@ -28,6 +28,11 @@ pub fn default_true() -> bool {
     true
 }
 
+/// Default false value
+pub fn default_false() -> bool {
+    false
+}
+
 /// Default data directory
 pub fn default_data_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("ROVE_DATA_DIR").filter(|value| !value.is_empty()) {

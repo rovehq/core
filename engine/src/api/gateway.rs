@@ -8,10 +8,8 @@ mod task;
 mod tests;
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::agent::AgentCore;
 use crate::db::Database;
 use crate::injection_detector::InjectionDetector;
 use brain::dispatch::DispatchBrain;
@@ -69,9 +67,9 @@ impl Gateway {
         })
     }
 
-    pub fn start(self: Arc<Self>, agent: Arc<RwLock<AgentCore>>) {
+    pub fn start(self: Arc<Self>) {
         tokio::spawn(async move {
-            self.run(agent).await;
+            self.run().await;
         });
         info!("Gateway poll loop started");
     }

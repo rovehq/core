@@ -16,6 +16,76 @@ pub(super) struct ToolExecution {
 }
 
 impl AgentCore {
+    pub(super) async fn run_steering_preflight(
+        &mut self,
+        task_id: &uuid::Uuid,
+        domain: &str,
+    ) -> Result<()> {
+        let commands = self.steering_preflight_commands.clone();
+        for command in commands {
+            self.execute_scripted_command(task_id, 0, domain, &command)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn run_steering_after_write(
+        &mut self,
+        task_id: &uuid::Uuid,
+        iteration: usize,
+        tool_name: &str,
+        domain: &str,
+    ) -> Result<()> {
+        if tool_name != "write_file" {
+            return Ok(());
+        }
+
+        let commands = self.steering_after_write_commands.clone();
+        for command in commands {
+            self.execute_scripted_command(task_id, iteration, domain, &command)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn execute_scripted_command(
+        &mut self,
+        task_id: &uuid::Uuid,
+        iteration: usize,
+        domain: &str,
+        command: &str,
+    ) -> Result<()> {
+        if !self.steering_executed_commands.insert(command.to_string()) {
+            return Ok(());
+        }
+
+        let tool_call = ToolCall::new(
+            format!(
+                "steering-{}-{}",
+                task_id,
+                self.steering_executed_commands.len()
+            ),
+            "run_command",
+            serde_json::json!({ "command": command }).to_string(),
+        );
+
+        self.memory
+            .add_message(self.assistant_tool_message(task_id, &tool_call));
+        self.insert_tool_call_event(task_id, &tool_call, iteration, domain)
+            .await?;
+
+        let execution = self
+            .execute_tool_call(&task_id.to_string(), &tool_call)
+            .await?;
+        self.memory.add_message(crate::llm::Message::tool_result(
+            &execution.safe_result,
+            &tool_call.id,
+        ));
+        self.insert_observation_event(task_id, &execution.safe_result, iteration, domain)
+            .await?;
+        Ok(())
+    }
+
     pub(super) fn assistant_tool_message(
         &self,
         task_id: &uuid::Uuid,

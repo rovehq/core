@@ -7,6 +7,8 @@ pub use string::SecretString;
 use regex::Regex;
 use sdk::errors::EngineError;
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use tokio::sync::RwLock;
 
@@ -28,7 +30,7 @@ fn get_secret_patterns() -> &'static Vec<Regex> {
 
 fn compile_secret_patterns() -> Vec<Regex> {
     [
-        ("OpenAI", r"sk-[a-zA-Z0-9\-_]{20,}"),
+        ("OpenAI", r"sk-[a-zA-Z0-9\-_]{8,}"),
         ("Google", r"AIza[0-9A-Za-z\-_]{35}"),
         ("Telegram", r"\b[0-9]{10}:[a-zA-Z0-9\-_]{35}\b"),
         ("GitHub", r"ghp_[a-zA-Z0-9]{36}"),
@@ -109,7 +111,11 @@ impl SecretManager {
         if self.skip_keychain() {
             let mut store = self.memory_store.write().await;
             store.insert(key.to_string(), value.to_string());
-            tracing::info!("Stored secret '{}' in memory (keychain skipped)", key);
+            self.write_fallback_secret(key, value)?;
+            tracing::info!(
+                "Stored secret '{}' in local fallback store (keychain skipped)",
+                key
+            );
             return Ok(());
         }
 
@@ -166,6 +172,7 @@ impl SecretManager {
         // Also delete from in-memory fallback
         let mut store = self.memory_store.write().await;
         store.remove(key);
+        self.delete_fallback_secret(key)?;
 
         Ok(())
     }
@@ -218,9 +225,17 @@ impl SecretManager {
         }
 
         let store = self.memory_store.read().await;
-        store
+        if let Some(value) = store
             .get(key)
             .cloned()
+            .map(|value| (value, SecretSource::Memory))
+        {
+            return Some(value);
+        }
+
+        self.read_fallback_secret(key)
+            .ok()
+            .flatten()
             .map(|value| (value, SecretSource::Memory))
     }
 
@@ -250,6 +265,105 @@ impl SecretManager {
             std::env::var("ROVE_SKIP_KEYCHAIN"),
             Ok(value) if value == "1" || value.eq_ignore_ascii_case("true")
         )
+    }
+
+    fn fallback_store_path(&self) -> Result<PathBuf, EngineError> {
+        if let Some(config_path) =
+            std::env::var_os("ROVE_CONFIG_PATH").filter(|value| !value.is_empty())
+        {
+            let config_path = PathBuf::from(config_path);
+            let base = config_path
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
+            return Ok(base.join("secrets.toml"));
+        }
+
+        let home = dirs::home_dir()
+            .ok_or_else(|| EngineError::Config("Could not determine home directory".to_string()))?;
+        Ok(home.join(".rove").join("secrets.toml"))
+    }
+
+    fn read_fallback_secret(&self, key: &str) -> Result<Option<String>, EngineError> {
+        let path = self.fallback_store_path()?;
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let contents = fs::read_to_string(&path).map_err(|error| {
+            EngineError::Config(format!("Failed to read secrets file: {}", error))
+        })?;
+        let secrets: HashMap<String, String> = toml::from_str(&contents).map_err(|error| {
+            EngineError::Config(format!("Failed to parse secrets file: {}", error))
+        })?;
+
+        Ok(secrets
+            .get(key)
+            .cloned()
+            .filter(|value| !value.trim().is_empty()))
+    }
+
+    fn write_fallback_secret(&self, key: &str, value: &str) -> Result<(), EngineError> {
+        let path = self.fallback_store_path()?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                EngineError::Config(format!("Failed to create secrets directory: {}", error))
+            })?;
+        }
+
+        let mut secrets = if path.exists() {
+            let contents = fs::read_to_string(&path).map_err(|error| {
+                EngineError::Config(format!("Failed to read secrets file: {}", error))
+            })?;
+            toml::from_str::<HashMap<String, String>>(&contents).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+
+        secrets.insert(key.to_string(), value.to_string());
+        let serialized = toml::to_string_pretty(&secrets).map_err(|error| {
+            EngineError::Config(format!("Failed to serialize secrets: {}", error))
+        })?;
+        fs::write(&path, serialized).map_err(|error| {
+            EngineError::Config(format!("Failed to write secrets file: {}", error))
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&path, perms).map_err(|error| {
+                EngineError::Config(format!("Failed to set secrets file permissions: {}", error))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn delete_fallback_secret(&self, key: &str) -> Result<(), EngineError> {
+        let path = self.fallback_store_path()?;
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let contents = fs::read_to_string(&path).map_err(|error| {
+            EngineError::Config(format!("Failed to read secrets file: {}", error))
+        })?;
+        let mut secrets: HashMap<String, String> = toml::from_str(&contents).unwrap_or_default();
+        secrets.remove(key);
+
+        if secrets.is_empty() {
+            let _ = fs::remove_file(path);
+            return Ok(());
+        }
+
+        let serialized = toml::to_string_pretty(&secrets).map_err(|error| {
+            EngineError::Config(format!("Failed to serialize secrets: {}", error))
+        })?;
+        fs::write(&path, serialized).map_err(|error| {
+            EngineError::Config(format!("Failed to write secrets file: {}", error))
+        })?;
+        Ok(())
     }
 }
 

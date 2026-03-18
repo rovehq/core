@@ -328,9 +328,20 @@ impl LLMRouter {
     ///
     /// Requirements: 4.4, 4.5
     pub async fn call(&self, messages: &[Message]) -> super::Result<(super::LLMResponse, String)> {
+        self.call_with_sensitivity(messages, None).await
+    }
+
+    pub async fn call_with_sensitivity(
+        &self,
+        messages: &[Message],
+        sensitivity_override: Option<bool>,
+    ) -> super::Result<(super::LLMResponse, String)> {
         use super::LLMError;
 
-        let profile = self.analyze_task(messages);
+        let mut profile = self.analyze_task(messages);
+        if sensitivity_override == Some(true) {
+            profile.sensitivity = 1.0;
+        }
         let try_local_first = self.should_try_local_brain_first(&profile);
         let mut tried_local = false;
 
@@ -352,7 +363,7 @@ impl LLMRouter {
                 }
             }
             return Err(LLMError::ProviderUnavailable(
-                "No LLM providers configured".to_string(),
+                "No LLM provider configured. Run `rove secrets set openai`, configure another provider, or start the local brain with `rove brain start`.".to_string(),
             ));
         }
 

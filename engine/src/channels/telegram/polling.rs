@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::time::Duration;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use super::approvals::resolve_approval;
 use super::types::{CallbackQuery, Message};
@@ -81,8 +82,51 @@ impl TelegramBot {
                 let confirmation_chat_id = self.confirmation_chat_id;
                 let chat_id_for_task = chat_id;
                 let text_clone = text.clone();
+                let approval_required = requires_telegram_approval(&text_clone);
 
                 tokio::spawn(async move {
+                    if approval_required {
+                        let op_key = format!("telegram-{}", Uuid::new_v4());
+                        let approval_chat = confirmation_chat_id.unwrap_or(chat_id_for_task);
+                        let approval = match bot
+                            .request_tier2_approval(approval_chat, &text_clone, &op_key)
+                            .await
+                        {
+                            Ok(receiver) => receiver,
+                            Err(error) => {
+                                let _ = bot
+                                    .send_message(
+                                        chat_id_for_task,
+                                        &format!("Failed to request approval: {}", error),
+                                    )
+                                    .await;
+                                return;
+                            }
+                        };
+
+                        match tokio::time::timeout(Duration::from_secs(300), approval).await {
+                            Ok(Ok(true)) => {}
+                            Ok(Ok(false)) => {
+                                let _ = bot
+                                    .send_message(chat_id_for_task, "Operation denied.")
+                                    .await;
+                                return;
+                            }
+                            Ok(Err(_)) => {
+                                let _ = bot
+                                    .send_message(chat_id_for_task, "Approval channel closed.")
+                                    .await;
+                                return;
+                            }
+                            Err(_) => {
+                                let _ = bot
+                                    .send_message(chat_id_for_task, "Approval timed out.")
+                                    .await;
+                                return;
+                            }
+                        }
+                    }
+
                     let task_id = match gateway
                         .submit_telegram(&text_clone, Some(&chat_id_for_task.to_string()))
                         .await
@@ -225,4 +269,11 @@ fn format_telegram_reply(text: String) -> String {
     } else {
         text
     }
+}
+
+fn requires_telegram_approval(input: &str) -> bool {
+    let input = input.to_ascii_lowercase();
+    ["delete ", "remove ", "rm ", "reset ", "push "]
+        .iter()
+        .any(|pattern| input.contains(pattern))
 }

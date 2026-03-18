@@ -16,6 +16,7 @@ use crate::conductor::memory_types::*;
 use crate::conductor::memory_utils::*;
 use crate::conductor::types::TaskDomain;
 use crate::llm::router::LLMRouter;
+use crate::security::secrets::scrub_text;
 
 /// Ingest a completed task into episodic memory.
 ///
@@ -46,6 +47,16 @@ pub async fn ingest(
     domain: &TaskDomain,
     sensitive: bool,
 ) -> Result<IngestResult> {
+    let task_input = if sensitive {
+        scrub_text(task_input)
+    } else {
+        task_input.to_string()
+    };
+    let task_result = if sensitive {
+        scrub_text(task_result)
+    } else {
+        task_result.to_string()
+    };
     let memory_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp();
 
@@ -57,25 +68,37 @@ pub async fn ingest(
         task_result
     );
 
-    // Call LLM with a 30s timeout
-    let extraction = match call_llm_for_text(router, &content).await {
-        Ok(text) => parse_ingest_response(&text),
-        Err(e) => {
-            warn!("LLM ingest call failed, storing raw fallback: {}", e);
-            None
+    // Sensitive memories must stay local-only. Skip extractor LLM calls entirely
+    // and rely on scrubbed fallback/heuristic summaries instead.
+    let extraction = if sensitive {
+        debug!(
+            "Skipping LLM memory extraction for sensitive task {}",
+            task_id
+        );
+        None
+    } else {
+        match call_llm_for_text(router, &content).await {
+            Ok(text) => parse_ingest_response(&text),
+            Err(e) => {
+                warn!("LLM ingest call failed, storing raw fallback: {}", e);
+                None
+            }
         }
     };
 
     let extraction = extraction.unwrap_or_else(|| {
         // Fallback: store a simple raw memory so nothing is lost
         IngestExtraction {
-            summary: truncate(task_input, 200),
+            summary: truncate(&task_input, 200),
             entities: vec![],
             topics: vec![],
             importance: 0.3,
         }
     });
-    let extraction = apply_fact_heuristics(task_input, extraction);
+    let mut extraction = apply_fact_heuristics(&task_input, extraction);
+    if sensitive {
+        extraction.summary = scrub_text(&extraction.summary);
+    }
 
     // Clamp importance
     let importance = extraction.importance.clamp(0.0, 1.0);
@@ -119,7 +142,7 @@ pub async fn ingest(
         persist_graph_facts(
             entity_extractor.as_ref(),
             knowledge_graph.as_ref(),
-            task_input,
+            &task_input,
             &extraction.summary,
             &memory_id,
             now,
@@ -207,6 +230,12 @@ fn apply_fact_heuristics(task_input: &str, mut extraction: IngestExtraction) -> 
         push_topic(&mut extraction.topics, "user_preference");
     }
 
+    if let Some(preference) = verification_preference(task_input) {
+        extraction.summary = preference;
+        extraction.importance = extraction.importance.max(0.85);
+        push_topic(&mut extraction.topics, "verification_preference");
+    }
+
     if let Some(workspace_fact) = project_workspace_summary(task_input) {
         extraction.summary = workspace_fact;
         extraction.importance = extraction.importance.max(0.8);
@@ -248,6 +277,17 @@ fn user_property(task_input: &str) -> Option<(String, String)> {
     }
 
     Some((key, value))
+}
+
+fn verification_preference(task_input: &str) -> Option<String> {
+    let input = task_input.to_ascii_lowercase();
+    if input.contains("cargo test before saying done") {
+        return Some("User prefers cargo test before saying done.".to_string());
+    }
+    if input.contains("test it") || input.contains("run tests") || input.contains("cargo test") {
+        return Some("User prefers running cargo test before completion.".to_string());
+    }
+    None
 }
 
 fn project_workspace_summary(task_input: &str) -> Option<String> {

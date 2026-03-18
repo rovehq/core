@@ -1,6 +1,7 @@
 pub mod bootstrap;
 pub mod brain;
 pub mod commands;
+pub mod config;
 pub mod daemon;
 pub mod database_path;
 pub mod doctor;
@@ -12,6 +13,7 @@ pub mod repl;
 pub mod replay;
 pub mod run;
 pub mod schedule;
+pub mod secrets;
 pub mod setup;
 pub mod status;
 pub mod tui;

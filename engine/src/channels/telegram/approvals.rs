@@ -50,7 +50,7 @@ impl TelegramBot {
         tool_name: &str,
         op_key: &str,
     ) -> Result<oneshot::Receiver<bool>> {
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.token);
+        let url = self.api_url("sendMessage");
 
         let keyboard = InlineKeyboardMarkup {
             inline_keyboard: vec![vec![

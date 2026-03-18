@@ -40,17 +40,19 @@ impl TerminalTool {
         info!("Executing terminal command: {}", command);
 
         // Parse command into program and arguments
-        let parts: Vec<&str> = command.split_whitespace().collect();
+        let Some(parts) = shlex::split(command) else {
+            return Err(anyhow::anyhow!("Invalid shell-style quoting in command"));
+        };
         if parts.is_empty() {
             return Err(anyhow::anyhow!("Empty command"));
         }
 
-        let program = parts[0];
-        let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+        let program = parts[0].clone();
+        let args: Vec<String> = parts[1..].to_vec();
 
         // Route through CommandExecutor for security validation
         let executor = self.executor.clone();
-        let program_owned = program.to_string();
+        let program_owned = program;
         let work_dir = self.work_dir.clone();
         let timeout = self.timeout;
 

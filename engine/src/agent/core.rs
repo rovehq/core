@@ -7,11 +7,13 @@ mod events;
 mod r#loop;
 mod prompt;
 mod result;
+mod shortcuts;
 #[cfg(test)]
 mod tests;
 mod tools;
 
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
@@ -52,6 +54,10 @@ pub struct AgentCore {
     dispatch_brain: brain::dispatch::DispatchBrain,
     workspace_locks: Arc<WorkspaceLocks>,
     background_jobs: Vec<JoinHandle<()>>,
+    current_task_sensitive: bool,
+    steering_preflight_commands: Vec<String>,
+    steering_after_write_commands: Vec<String>,
+    steering_executed_commands: HashSet<String>,
 }
 
 impl AgentCore {
@@ -89,12 +95,20 @@ impl AgentCore {
             dispatch_brain,
             workspace_locks,
             background_jobs: Vec::new(),
+            current_task_sensitive: false,
+            steering_preflight_commands: Vec::new(),
+            steering_after_write_commands: Vec::new(),
+            steering_executed_commands: HashSet::new(),
         })
     }
 
     /// Set the episodic memory system after the engine wiring is available.
     pub fn set_memory_system(&mut self, memory: Arc<MemorySystem>) {
         self.memory_system = Some(memory);
+    }
+
+    pub fn memory_system(&self) -> Option<&Arc<MemorySystem>> {
+        self.memory_system.as_ref()
     }
 
     /// Process a task through the agent loop.
@@ -116,7 +130,11 @@ impl AgentCore {
             .await
             .context("Failed to update task status")?;
 
-        let result = self.execute_task_loop(&task_id, task).await;
+        let result = match self.try_shortcut_task(&task_id, &task).await {
+            Ok(Some(result)) => Ok(result),
+            Ok(None) => self.execute_task_loop(&task_id, task).await,
+            Err(error) => Err(error),
+        };
 
         match result {
             Ok(task_result) => {
@@ -151,6 +169,16 @@ impl AgentCore {
                     .fail_task(&task_id)
                     .await
                     .context("Failed to mark task as failed")?;
+                let _ = self
+                    .task_repo
+                    .insert_agent_event(
+                        &task_id,
+                        "error",
+                        &serde_json::json!({ "error": scrub_text(&error.to_string()) }).to_string(),
+                        -1,
+                        None,
+                    )
+                    .await;
 
                 error!(
                     "Task {} failed: {}",
@@ -211,16 +239,18 @@ impl AgentCore {
             }));
         }
 
-        let prefs_manager = self.preferences_manager.clone();
-        self.background_jobs.push(tokio::spawn(async move {
-            if let Err(error) = prefs_manager.extract_and_update(&task_input, &answer).await {
-                warn!(
-                    task_id = %task_id,
-                    "Preferences extraction failed (non-fatal): {}",
-                    scrub_text(&error.to_string())
-                );
-            }
-        }));
+        if !sensitive {
+            let prefs_manager = self.preferences_manager.clone();
+            self.background_jobs.push(tokio::spawn(async move {
+                if let Err(error) = prefs_manager.extract_and_update(&task_input, &answer).await {
+                    warn!(
+                        task_id = %task_id,
+                        "Preferences extraction failed (non-fatal): {}",
+                        scrub_text(&error.to_string())
+                    );
+                }
+            }));
+        }
     }
 
     fn prune_finished_background_jobs(&mut self) {

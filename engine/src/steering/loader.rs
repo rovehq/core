@@ -630,6 +630,30 @@ impl SteeringEngine {
         prefs
     }
 
+    pub async fn matched_hints(&self, task_input: &str) -> Vec<String> {
+        let task_input_lower = task_input.to_ascii_lowercase();
+        let active = self.active.read().await;
+        let skills = self.skills.read().await;
+        let mut matched = Vec::new();
+
+        for skill_id in active.iter() {
+            let Some(skill) = skills.get(skill_id) else {
+                continue;
+            };
+            let Some(cfg) = &skill.config else {
+                continue;
+            };
+
+            for (pattern, hint) in &cfg.hints {
+                if task_input_lower.contains(&pattern.to_ascii_lowercase()) {
+                    matched.push(hint.clone());
+                }
+            }
+        }
+
+        matched
+    }
+
     pub async fn get_skill(&self, name: &str) -> Option<Skill> {
         let skills = self.skills.read().await;
         skills.get(&name.to_lowercase()).cloned()

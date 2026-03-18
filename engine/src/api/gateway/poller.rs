@@ -1,17 +1,17 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::agent::AgentCore;
+use crate::cli::bootstrap::build_task_agent;
 use sdk::TaskSource;
 
 use super::{Gateway, Task};
 
 impl Gateway {
-    pub(super) async fn run(&self, agent: Arc<RwLock<AgentCore>>) {
+    pub(super) async fn run(&self) {
         let mut poller = interval(Duration::from_millis(self.config.poll_interval_ms));
         poller.tick().await;
 
@@ -22,7 +22,7 @@ impl Gateway {
                 Ok(_) => {}
                 Err(error) => warn!("Schedule enqueue error: {}", error),
             }
-            match self.poll_and_spawn(Arc::clone(&agent)).await {
+            match self.poll_and_spawn().await {
                 Ok(count) if count > 0 => info!("Spawned {} task(s)", count),
                 Ok(_) => {}
                 Err(error) => warn!("Gateway poll error: {}", error),
@@ -88,7 +88,7 @@ impl Gateway {
         Ok(queued)
     }
 
-    async fn poll_and_spawn(&self, agent: Arc<RwLock<AgentCore>>) -> anyhow::Result<usize> {
+    async fn poll_and_spawn(&self) -> anyhow::Result<usize> {
         let repo = self.db.pending_tasks();
         let pending = repo.get_pending_tasks(self.config.poll_limit).await?;
         if pending.is_empty() {
@@ -102,7 +102,6 @@ impl Gateway {
                 continue;
             }
 
-            let agent = Arc::clone(&agent);
             let task_id = task_row.id.clone();
             let task_source = task_row.source;
             let task_source_str = task_source.as_str().to_string();
@@ -114,6 +113,7 @@ impl Gateway {
                 session_id: task_row
                     .session_id
                     .and_then(|value| Uuid::parse_str(&value).ok()),
+                workspace: task_row.workspace.as_ref().map(PathBuf::from),
                 created_at: task_row.created_at,
             };
 
@@ -121,9 +121,10 @@ impl Gateway {
             tokio::spawn(async move {
                 info!(task_id = %task_id, source = %task_source_str, "Starting task");
 
-                let result = {
-                    let mut agent_guard = agent.write().await;
-                    agent_guard.process_task(task).await
+                let result = match build_task_agent(db_clone.clone(), task.workspace.clone()).await
+                {
+                    Ok(mut agent) => agent.process_task(task).await,
+                    Err(error) => Err(error),
                 };
 
                 let repo = db_clone.pending_tasks();

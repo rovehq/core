@@ -14,7 +14,10 @@ impl Gateway {
             }
         }
 
-        self.submit_task(input, TaskSource::Cli, None, None, None)
+        let workspace = std::env::current_dir().ok();
+        let workspace = workspace.as_ref().and_then(|path| path.to_str());
+
+        self.submit_task(input, TaskSource::Cli, None, workspace, None)
             .await
     }
 

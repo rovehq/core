@@ -45,6 +45,10 @@ pub enum Command {
         /// Auto-approve destructive actions.
         #[arg(short = 'y', long)]
         yes: bool,
+
+        /// Stream task progress while it runs.
+        #[arg(long)]
+        stream: bool,
     },
 
     /// Show recent task history.
@@ -92,6 +96,18 @@ pub enum Command {
     Schedule {
         #[command(subcommand)]
         action: ScheduleAction,
+    },
+
+    /// Configuration management.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+
+    /// Secret management.
+    Secrets {
+        #[command(subcommand)]
+        action: SecretsAction,
     },
 
     /// Local brain management.
@@ -221,4 +237,20 @@ pub enum BrainAction {
     Stop,
     /// Verify llama-server is responding.
     Verify,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Show the current configuration with sensitive fields masked.
+    Show,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SecretsAction {
+    /// Store a secret in the configured secret backend.
+    Set { name: String },
+    /// List known secret slots and whether they are configured.
+    List,
+    /// Remove a stored secret.
+    Remove { name: String },
 }

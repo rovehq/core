@@ -51,6 +51,21 @@ impl AgentCore {
         let context = self.initialize_task_context(&task, risk_tier).await?;
         self.insert_user_event(task_id, &task.input, &context.domain_str)
             .await?;
+        self.run_steering_preflight(task_id, &context.domain_str)
+            .await?;
+        if let Some(result) = self
+            .try_git_commit_shortcut(
+                task_id,
+                &task,
+                &context.domain_str,
+                context.domain,
+                context.sensitive,
+                start_time,
+            )
+            .await?
+        {
+            return Ok(result);
+        }
 
         let max_iterations = if self.config.agent.max_iterations == 0 {
             usize::MAX
@@ -100,6 +115,13 @@ impl AgentCore {
                         task_id,
                         &execution.safe_result,
                         iteration,
+                        &context.domain_str,
+                    )
+                    .await?;
+                    self.run_steering_after_write(
+                        task_id,
+                        iteration,
+                        &tool_call.name,
                         &context.domain_str,
                     )
                     .await?;
@@ -205,7 +227,8 @@ impl AgentCore {
     ) -> Result<(LLMResponse, String)> {
         let llm_result = timeout(
             Duration::from_secs(LLM_TIMEOUT_SECS),
-            self.router.call(self.memory.messages()),
+            self.router
+                .call_with_sensitivity(self.memory.messages(), Some(self.current_task_sensitive)),
         )
         .await;
 
