@@ -11,6 +11,7 @@ pub mod plugins;
 pub mod repl;
 pub mod replay;
 pub mod run;
+pub mod schedule;
 pub mod setup;
 pub mod status;
 pub mod tui;

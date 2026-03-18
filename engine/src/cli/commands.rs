@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
     version,
     about = "Rove - Autonomous AI Agent Engine",
     long_about = "Rove is a local-first, plugin-driven AI agent engine.\n\nRun `rove` with no arguments to enter interactive mode.",
-    after_help = "Examples:\n  rove                          Start interactive mode\n  rove start                    Start daemon in background\n  rove task \"do something\"      Execute a task immediately\n  rove history                  Show recent tasks\n  rove replay <task-id>         Show task steps\n  rove model list               List configured LLM providers"
+    after_help = "Examples:\n  rove                          Start interactive mode\n  rove start                    Start daemon in background\n  rove task \"do something\"      Execute a task immediately\n  rove history                  Show recent tasks\n  rove replay <task-id>         Show task steps\n  rove model list               List configured LLM providers\n  rove schedule add daily-brief --every-minutes 1440 \"prepare my morning brief\""
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -88,6 +88,12 @@ pub enum Command {
         action: ModelAction,
     },
 
+    /// Recurring background task management.
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
+    },
+
     /// Local brain management.
     Brain {
         #[command(subcommand)]
@@ -152,6 +158,30 @@ pub enum ModelAction {
     List,
     /// Interactively add or configure an LLM provider.
     Setup,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ScheduleAction {
+    /// Add a recurring background task.
+    Add {
+        /// Unique schedule name.
+        name: String,
+
+        /// Repeat interval in minutes.
+        #[arg(long, value_name = "MINUTES")]
+        every_minutes: u64,
+
+        /// Queue the first run immediately.
+        #[arg(long)]
+        start_now: bool,
+
+        /// Task prompt to enqueue.
+        prompt: Vec<String>,
+    },
+    /// List recurring background tasks.
+    List,
+    /// Remove a recurring background task.
+    Remove { name: String },
 }
 
 #[derive(Subcommand, Debug)]

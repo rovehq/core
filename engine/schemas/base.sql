@@ -227,6 +227,22 @@ CREATE VIEW IF NOT EXISTS pending_tasks_recovery AS
     SELECT * FROM pending_tasks
     WHERE status = 'running';
 
+-- 7.1 Scheduled Tasks
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL UNIQUE,
+    input         TEXT NOT NULL,
+    interval_secs INTEGER NOT NULL CHECK(interval_secs > 0),
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    workspace     TEXT,
+    created_at    INTEGER NOT NULL,
+    last_run_at   INTEGER,
+    next_run_at   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run
+    ON scheduled_tasks(enabled, next_run_at);
+
 -- 8. Knowledge Graph
 CREATE TABLE IF NOT EXISTS graph_nodes (
     id TEXT PRIMARY KEY,

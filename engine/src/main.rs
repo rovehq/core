@@ -34,6 +34,10 @@ async fn main() -> Result<()> {
         Some(Command::Plugin { action }) => handle_plugin(action).await?,
         Some(Command::Steer { action, dir }) => handle_steering(action, dir).await?,
         Some(Command::Model { action }) => handle_model(action).await?,
+        Some(Command::Schedule { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            rove_engine::cli::schedule::handle_schedule(action, &config).await?;
+        }
         Some(Command::Brain { action }) => rove_engine::cli::brain::execute(action).await?,
         Some(Command::Daemon { port }) => run_daemon(port).await?,
         Some(Command::Doctor) => {

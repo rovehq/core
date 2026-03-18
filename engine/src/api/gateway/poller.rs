@@ -6,6 +6,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::agent::AgentCore;
+use sdk::TaskSource;
 
 use super::{Gateway, Task};
 
@@ -16,12 +17,75 @@ impl Gateway {
 
         loop {
             poller.tick().await;
+            match self.enqueue_due_schedules().await {
+                Ok(count) if count > 0 => info!("Queued {} scheduled task(s)", count),
+                Ok(_) => {}
+                Err(error) => warn!("Schedule enqueue error: {}", error),
+            }
             match self.poll_and_spawn(Arc::clone(&agent)).await {
                 Ok(count) if count > 0 => info!("Spawned {} task(s)", count),
                 Ok(_) => {}
                 Err(error) => warn!("Gateway poll error: {}", error),
             }
         }
+    }
+
+    async fn enqueue_due_schedules(&self) -> anyhow::Result<usize> {
+        let repo = self.db.schedules();
+        let due = repo.due(self.config.poll_limit).await?;
+        if due.is_empty() {
+            return Ok(0);
+        }
+
+        let pending_repo = self.db.pending_tasks();
+        let mut queued = 0;
+
+        for schedule in due {
+            if let Err(error) = repo
+                .mark_dispatched(&schedule.id, schedule.interval_secs)
+                .await
+            {
+                warn!(
+                    schedule_id = %schedule.id,
+                    schedule_name = %schedule.name,
+                    "Failed to update scheduled task after dispatch: {}",
+                    error
+                );
+                continue;
+            }
+
+            let task_id = Uuid::new_v4().to_string();
+            if let Err(error) = pending_repo
+                .create_task(
+                    &task_id,
+                    &schedule.input,
+                    TaskSource::Cli,
+                    None,
+                    schedule.workspace.as_deref(),
+                    None,
+                )
+                .await
+            {
+                warn!(
+                    schedule_id = %schedule.id,
+                    schedule_name = %schedule.name,
+                    task_id = %task_id,
+                    "Failed to enqueue scheduled task: {}",
+                    error
+                );
+                continue;
+            }
+
+            info!(
+                schedule_id = %schedule.id,
+                schedule_name = %schedule.name,
+                task_id = %task_id,
+                "Enqueued scheduled task"
+            );
+            queued += 1;
+        }
+
+        Ok(queued)
     }
 
     async fn poll_and_spawn(&self, agent: Arc<RwLock<AgentCore>>) -> anyhow::Result<usize> {

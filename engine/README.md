@@ -29,4 +29,12 @@ cargo test -p engine
 cargo check -p engine --all-targets
 ```
 
+Recurring background work is available through the CLI scheduler:
+
+```bash
+rove schedule add daily-brief --every-minutes 1440 "prepare my morning brief"
+rove schedule list
+rove schedule remove daily-brief
+```
+
 See [../README.md](../README.md) for the workspace layout.

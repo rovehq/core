@@ -5,7 +5,7 @@ use std::path::Path;
 use std::str::FromStr;
 use tracing::{debug, info};
 
-use super::{PendingTaskRepository, PluginRepository, TaskRepository};
+use super::{PendingTaskRepository, PluginRepository, ScheduleRepository, TaskRepository};
 
 /// Database connection pool.
 pub struct Database {
@@ -91,6 +91,10 @@ impl Database {
     pub fn pending_tasks(&self) -> PendingTaskRepository {
         PendingTaskRepository::new(self.pool.clone())
     }
+
+    pub fn schedules(&self) -> ScheduleRepository {
+        ScheduleRepository::new(self.pool.clone())
+    }
 }
 
 #[cfg(test)]
@@ -128,6 +132,7 @@ mod tests {
         assert!(tables.contains(&"task_steps".to_string()));
         assert!(tables.contains(&"plugins".to_string()));
         assert!(tables.contains(&"pending_tasks".to_string()));
+        assert!(tables.contains(&"scheduled_tasks".to_string()));
         assert!(tables.contains(&"agent_events".to_string()));
 
         db.close().await.unwrap();
