@@ -17,6 +17,11 @@ pub fn resolve_inheritance(child: &mut SkillFile, parent: &SkillFile) -> Result<
             child.meta.tags.push(tag.clone());
         }
     }
+    for domain in &parent.meta.domains {
+        if !child.meta.domains.contains(domain) {
+            child.meta.domains.push(domain.clone());
+        }
+    }
 
     // Merge Activation Settings
     if !child.activation.manual {
@@ -75,6 +80,12 @@ pub fn resolve_inheritance(child: &mut SkillFile, parent: &SkillFile) -> Result<
                 .directives
                 .per_stage
                 .insert(stage.clone(), directive.clone());
+        }
+    }
+
+    for (pattern, hint) in &parent.hints {
+        if !child.hints.contains_key(pattern) {
+            child.hints.insert(pattern.clone(), hint.clone());
         }
     }
 
@@ -235,10 +246,12 @@ mod tests {
                 description: format!("Test skill {}", name),
                 author: "test".to_string(),
                 tags: vec![],
+                domains: vec![],
                 extends: None,
             },
             activation: SkillActivation::default(),
             directives: SkillDirectives::default(),
+            hints: HashMap::new(),
             routing: SkillRouting::default(),
             tools: SkillTools::default(),
             memory: SkillMemory::default(),
@@ -316,6 +329,7 @@ mod tests {
         skills.insert(
             "a".to_string(),
             Skill {
+                id: "a".to_string(),
                 name: "a".to_string(),
                 description: "Skill A".to_string(),
                 content: String::new(),
@@ -330,6 +344,7 @@ mod tests {
         skills.insert(
             "b".to_string(),
             Skill {
+                id: "b".to_string(),
                 name: "b".to_string(),
                 description: "Skill B".to_string(),
                 content: String::new(),

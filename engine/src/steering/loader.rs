@@ -19,6 +19,7 @@ const MAX_USER_PRIORITY: u16 = 90;
 /// An Agent Skill loaded from a TOML or Markdown file
 #[derive(Debug, Clone)]
 pub struct Skill {
+    pub id: String,
     pub name: String,
     pub description: String,
     pub content: String,
@@ -29,7 +30,7 @@ pub struct Skill {
 
 /// The Steering Engine manages the library of available skills
 pub struct SteeringEngine {
-    skills_dir: PathBuf,
+    skills_dirs: Vec<PathBuf>,
     skills: Arc<RwLock<HashMap<String, Skill>>>,
     active: Arc<RwLock<Vec<String>>>,
     // Channel for the watcher to notify the main engine tasks to perform a reload
@@ -39,26 +40,40 @@ pub struct SteeringEngine {
 impl SteeringEngine {
     /// Create a new Steering Engine and load skills, spawning a hot-reload watcher
     pub async fn new(skills_dir: &Path) -> Result<Self> {
+        Self::new_with_workspace(skills_dir, Option::<&Path>::None).await
+    }
+
+    pub async fn new_with_workspace(
+        global_dir: &Path,
+        workspace_dir: Option<&Path>,
+    ) -> Result<Self> {
         // Bootstrap built-in skills if they don't exist
-        if let Err(e) = super::builtins::bootstrap_builtins(skills_dir).await {
+        if let Err(e) = super::builtins::bootstrap_builtins(global_dir).await {
             tracing::warn!("Failed to bootstrap built-in skills: {}", e);
         }
 
         let skills = Arc::new(RwLock::new(HashMap::new()));
         let active = Arc::new(RwLock::new(Vec::new()));
 
-        if !skills_dir.exists() || !skills_dir.is_dir() {
-            info!(
-                "Skills directory {} does not exist yet.",
-                skills_dir.display()
-            );
-            fs::create_dir_all(skills_dir).await.ok();
+        let mut skills_dirs = vec![global_dir.to_path_buf()];
+        if let Some(workspace_dir) = workspace_dir {
+            let workspace_dir = workspace_dir.to_path_buf();
+            if workspace_dir != global_dir {
+                skills_dirs.push(workspace_dir);
+            }
+        }
+
+        for dir in &skills_dirs {
+            if !dir.exists() || !dir.is_dir() {
+                info!("Steering directory {} does not exist yet.", dir.display());
+                fs::create_dir_all(dir).await.ok();
+            }
         }
 
         let (tx, mut rx) = mpsc::channel(100);
 
         let mut engine = Self {
-            skills_dir: skills_dir.to_path_buf(),
+            skills_dirs: skills_dirs.clone(),
             skills: skills.clone(),
             active: active.clone(),
             _watcher_tx: Some(tx.clone()),
@@ -68,7 +83,7 @@ impl SteeringEngine {
         engine.load_all_skills().await?;
 
         // Spawn a background task to listen for file system events and trigger reloads
-        let dir_clone = skills_dir.to_path_buf();
+        let dirs_clone = skills_dirs.clone();
         let skills_clone = skills.clone();
         let active_clone = active.clone();
 
@@ -99,12 +114,17 @@ impl SteeringEngine {
                 }
             };
 
-            if let Err(e) = watcher.watch(&dir_clone, RecursiveMode::Recursive) {
-                error!("Failed to watch skills directory: {}", e);
-                return;
+            for dir in &dirs_clone {
+                if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
+                    error!(
+                        "Failed to watch steering directory {}: {}",
+                        dir.display(),
+                        e
+                    );
+                } else {
+                    info!("Watching for steering changes in {}", dir.display());
+                }
             }
-
-            info!("Watching for skill changes in {}", dir_clone.display());
 
             // Debounce events to prevent thrashing
             loop {
@@ -117,7 +137,7 @@ impl SteeringEngine {
 
                         info!("Detected changes in steering files. Reloading...");
                         // Perform the reload
-                        if let Err(e) = Self::perform_reload(&dir_clone, &skills_clone, &active_clone).await {
+                        if let Err(e) = Self::perform_reload(&dirs_clone, &skills_clone, &active_clone).await {
                             error!("Failed to hot-reload steering skills: {:?}", e);
                         } else {
                             // Let the engine know if we need to manually trigger via tx (reserved for manual hooks)
@@ -137,39 +157,41 @@ impl SteeringEngine {
 
     /// Load all `.toml` and `.md` files in the skills directory (Internal)
     async fn perform_reload(
-        dir: &Path,
+        dirs: &[PathBuf],
         skills_lock: &Arc<RwLock<HashMap<String, Skill>>>,
         active_lock: &Arc<RwLock<Vec<String>>>,
     ) -> Result<()> {
         let mut new_skills = HashMap::new();
 
-        if !dir.exists() {
-            return Ok(());
-        }
-
-        let mut entries = fs::read_dir(dir)
-            .await
-            .context("Failed to read skills directory")?;
-
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if !path.is_file() {
+        for dir in dirs {
+            if !dir.exists() {
                 continue;
             }
 
-            let ext = path.extension().and_then(|s| s.to_str());
-            let result = match ext {
-                Some("toml") => Self::parse_toml_skill(&path).await,
-                Some("md") => Self::parse_md_skill(&path).await,
-                _ => continue,
-            };
+            let mut entries = fs::read_dir(dir)
+                .await
+                .with_context(|| format!("Failed to read steering directory {}", dir.display()))?;
 
-            match result {
-                Ok(skill) => {
-                    new_skills.insert(skill.name.to_lowercase(), skill);
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
                 }
-                Err(e) => {
-                    warn!("Failed to parse skill {}: {}", path.display(), e);
+
+                let ext = path.extension().and_then(|s| s.to_str());
+                let result = match ext {
+                    Some("toml") => Self::parse_toml_skill(&path).await,
+                    Some("md") => Self::parse_md_skill(&path).await,
+                    _ => continue,
+                };
+
+                match result {
+                    Ok(skill) => {
+                        new_skills.insert(skill.id.clone(), skill);
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse steering file {}: {}", path.display(), e);
+                    }
                 }
             }
         }
@@ -200,7 +222,7 @@ impl SteeringEngine {
 
     /// Primary manual load hook (used on startup)
     pub async fn load_all_skills(&mut self) -> Result<()> {
-        Self::perform_reload(&self.skills_dir, &self.skills, &self.active).await
+        Self::perform_reload(&self.skills_dirs, &self.skills, &self.active).await
     }
 
     /// Parse a TOML skill file
@@ -216,13 +238,18 @@ impl SteeringEngine {
         if skill_file.activation.priority > MAX_USER_PRIORITY {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let builtin = [
-                "sensitive",
+                "general",
+                "code",
+                "git",
+                "shell",
+                "security",
+                "careful",
+                "fast",
+                "code-review",
+                "deep-research",
                 "local-only",
                 "local_only",
-                "fast",
-                "careful",
-                "deep-research",
-                "code-review",
+                "sensitive",
             ];
             if !builtin.contains(&stem) {
                 warn!(
@@ -249,6 +276,7 @@ impl SteeringEngine {
         }
 
         Ok(Skill {
+            id: skill_file.meta.id.to_lowercase(),
             name: skill_file.meta.name.clone(),
             description: skill_file.meta.description.clone(),
             content: display_content,
@@ -298,6 +326,11 @@ impl SteeringEngine {
         let description = description.unwrap_or_else(|| "No description provided.".to_string());
 
         Ok(Skill {
+            id: path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_lowercase(),
             name,
             description,
             content: content_str,
@@ -367,8 +400,9 @@ impl SteeringEngine {
         info!("Skill '{}' deactivated", skill_id);
     }
 
-    pub async fn auto_activate(&self, task_input: &str, risk_tier: u8) {
+    pub async fn auto_activate(&self, task_input: &str, risk_tier: u8, domain: Option<&str>) {
         let input_lower = task_input.to_lowercase();
+        let domain_lower = domain.map(|value| value.to_ascii_lowercase());
         let skills = self.skills.read().await;
         let mut active = self.active.write().await;
 
@@ -380,6 +414,13 @@ impl SteeringEngine {
                 Some(c) => c,
                 None => continue,
             };
+
+            let domain_activates = domain_lower.as_ref().is_some_and(|domain| {
+                cfg.meta
+                    .domains
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(domain))
+            });
 
             for pattern in &cfg.activation.auto_when {
                 let should_activate = if let Some(rest) = pattern.strip_prefix("task contains:") {
@@ -398,7 +439,7 @@ impl SteeringEngine {
                     .map(|t| risk_tier >= t)
                     .unwrap_or(false);
 
-                if should_activate || risk_activates {
+                if domain_activates || should_activate || risk_activates {
                     debug!("Auto-activating skill '{}'", skill.name);
                     let key_clone = key.clone();
                     if !active.contains(&key_clone) {
@@ -406,6 +447,11 @@ impl SteeringEngine {
                     }
                     break;
                 }
+            }
+
+            if domain_activates && !active.contains(key) {
+                debug!("Auto-activating steering file '{}' for domain", skill.name);
+                active.push(key.clone());
             }
         }
 
@@ -442,9 +488,14 @@ impl SteeringEngine {
     }
 
     pub async fn get_directives(&self) -> MergedDirectives {
+        self.get_directives_for_task("").await
+    }
+
+    pub async fn get_directives_for_task(&self, task_input: &str) -> MergedDirectives {
         let mut directives = MergedDirectives::default();
         let active = self.active.read().await;
         let skills = self.skills.read().await;
+        let task_input_lower = task_input.to_lowercase();
 
         let mut active_skills: Vec<&Skill> =
             active.iter().filter_map(|key| skills.get(key)).collect();
@@ -488,6 +539,17 @@ impl SteeringEngine {
                         .per_stage
                         .entry(stage.clone())
                         .or_insert_with(|| directive.clone());
+                }
+
+                for (pattern, hint) in &cfg.hints {
+                    if !task_input_lower.is_empty()
+                        && task_input_lower.contains(&pattern.to_ascii_lowercase())
+                    {
+                        if !directives.system_suffix.is_empty() {
+                            directives.system_suffix.push('\n');
+                        }
+                        directives.system_suffix.push_str(hint);
+                    }
                 }
 
                 directives.auto_tags.extend(cfg.memory.auto_tag.clone());

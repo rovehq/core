@@ -17,6 +17,8 @@ pub struct SkillFile {
     #[serde(default)]
     pub directives: SkillDirectives,
     #[serde(default)]
+    pub hints: HashMap<String, String>,
+    #[serde(default)]
     pub routing: SkillRouting,
     #[serde(default)]
     pub tools: SkillTools,
@@ -36,6 +38,8 @@ pub struct SkillMeta {
     pub author: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub domains: Vec<String>,
 
     // Phase 3 Requirements: Extends allowing inheritance
     #[serde(default)]

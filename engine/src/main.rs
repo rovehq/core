@@ -110,15 +110,31 @@ async fn run_daemon(port: u16) -> Result<()> {
 }
 
 async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>) -> Result<()> {
-    let home_dir =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    let steering_dir = dir.unwrap_or_else(|| home_dir.join(".rove").join("steering"));
-    let engine = SteeringEngine::new(&steering_dir).await?;
+    let config = rove_engine::config::Config::load_or_create()?;
+    let steering_dir = dir.unwrap_or_else(|| config.steering.skill_dir.clone());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| config.core.workspace.clone());
+    let workspace_dir = cwd.join(".rove").join("steering");
+    let engine = SteeringEngine::new_with_workspace(&steering_dir, Some(&workspace_dir)).await?;
 
     match action {
         SteeringAction::List => {
-            let all = engine.list_skills().await;
+            let mut all = engine.list_skills().await;
+            all.sort_by(|a, b| a.file_path.cmp(&b.file_path));
             println!("{} steering file(s) loaded", all.len());
+            for skill in all {
+                let domains = skill
+                    .config
+                    .as_ref()
+                    .map(|cfg| {
+                        if cfg.meta.domains.is_empty() {
+                            "-".to_string()
+                        } else {
+                            cfg.meta.domains.join(",")
+                        }
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+                println!("- {} [{}] {}", skill.id, domains, skill.file_path.display());
+            }
         }
         SteeringAction::On { name } => {
             if let Err(error) = engine.activate(&name).await {
@@ -132,13 +148,47 @@ async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>
             println!("Deactivated '{}'", name);
         }
         SteeringAction::Status => {
+            let domain = infer_steering_domain(&cwd);
+            engine.auto_activate("", 0, Some(domain)).await;
             let active = engine.active_skills().await;
-            println!("{} steering file(s) active", active.len());
+            let directives = engine.get_directives().await;
+            println!("Active steering for domain '{}':", domain);
+            if active.is_empty() {
+                println!("(none)");
+            } else {
+                for skill in active {
+                    println!("- {}", skill);
+                }
+            }
+            if !directives.system_prefix.is_empty() {
+                println!();
+                println!("{}", directives.system_prefix);
+            }
+            if !directives.system_suffix.is_empty() {
+                println!();
+                println!("{}", directives.system_suffix);
+            }
         }
-        SteeringAction::Default => println!("Built-in steering files confirmed"),
+        SteeringAction::Default => {
+            rove_engine::steering::bootstrap_builtins(&steering_dir).await?;
+            println!(
+                "Built-in steering files ready in {}",
+                steering_dir.display()
+            );
+        }
     }
 
     Ok(())
+}
+
+fn infer_steering_domain(cwd: &std::path::Path) -> &'static str {
+    if cwd.join("Cargo.toml").exists() || cwd.join("src").exists() {
+        return "code";
+    }
+    if cwd.join(".git").exists() {
+        return "git";
+    }
+    "general"
 }
 
 async fn handle_plugin(action: PluginAction) -> Result<()> {

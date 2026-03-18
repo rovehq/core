@@ -96,7 +96,8 @@ async fn load_steering(config: &Config) -> Option<SteeringEngine> {
     }
 
     let skill_dir = expand_skill_dir(&config.steering.skill_dir);
-    match SteeringEngine::new(&skill_dir).await {
+    let workspace_dir = config.core.workspace.join(".rove").join("steering");
+    match SteeringEngine::new_with_workspace(&skill_dir, Some(&workspace_dir)).await {
         Ok(engine) => Some(engine),
         Err(error) => {
             tracing::warn!("Failed to load steering engine: {}", error);

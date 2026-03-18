@@ -22,11 +22,16 @@ impl AgentCore {
     ) -> Result<TaskContext> {
         self.memory.clear();
         let mut system_prompt = self.tools.system_prompt_for_query(&task.input);
-
-        self.apply_steering(&task.input, risk_tier, &mut system_prompt)
-            .await;
-
         let dispatch_result = self.dispatch_brain.classify(&task.input);
+        let domain_name = dispatch_result.domain.to_string().to_lowercase();
+
+        self.apply_steering(
+            &task.input,
+            risk_tier,
+            Some(&domain_name),
+            &mut system_prompt,
+        )
+        .await;
         let domain_str = dispatch_result.domain.to_string();
 
         debug!(
@@ -57,6 +62,7 @@ impl AgentCore {
         &mut self,
         task_input: &str,
         risk_tier: RiskTier,
+        domain: Option<&str>,
         system_prompt: &mut String,
     ) {
         let Some(steering) = self.steering.as_mut() else {
@@ -68,9 +74,11 @@ impl AgentCore {
             RiskTier::Tier1 => 1,
             RiskTier::Tier2 => 2,
         };
-        let _ = steering.auto_activate(task_input, risk_tier_u8).await;
+        steering
+            .auto_activate(task_input, risk_tier_u8, domain)
+            .await;
 
-        let directives = steering.get_directives().await;
+        let directives = steering.get_directives_for_task(task_input).await;
         if !directives.system_prefix.is_empty() {
             *system_prompt = format!("{}\n\n{}", directives.system_prefix, system_prompt);
         }
