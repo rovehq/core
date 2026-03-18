@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
+use std::fs::OpenOptions;
+use std::path::PathBuf;
 use tracing::{error, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use rove_engine::cli::{Cli, Command, ModelAction, OutputFormat, PluginAction, SteeringAction};
 use rove_engine::server;
@@ -56,9 +58,47 @@ async fn main() -> Result<()> {
 
 fn init_logging(verbose: bool) -> Result<()> {
     let level = if verbose { Level::DEBUG } else { Level::INFO };
-    let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
-    tracing::subscriber::set_global_default(subscriber)
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(format!("rove_engine={}", level.as_str().to_lowercase()))
+    });
+
+    let console_layer = fmt::layer().with_target(false);
+
+    let log_path = log_file_path();
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file_path = log_path.clone();
+    let file_layer = fmt::layer().with_ansi(false).with_writer(move || {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file_path)
+            .expect("failed to open log file")
+    });
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(console_layer)
+        .with(file_layer)
+        .try_init()
         .map_err(|error| anyhow::anyhow!("setting default subscriber failed: {}", error))
+}
+
+fn log_file_path() -> PathBuf {
+    if let Some(data_dir) = std::env::var_os("ROVE_DATA_DIR").filter(|value| !value.is_empty()) {
+        let data_dir = PathBuf::from(data_dir);
+        if let Some(parent) = data_dir.parent() {
+            return parent.join("rove.log");
+        }
+        return data_dir.join("rove.log");
+    }
+
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".rove")
+        .join("rove.log")
 }
 
 async fn run_daemon(port: u16) -> Result<()> {

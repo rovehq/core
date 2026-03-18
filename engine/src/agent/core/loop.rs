@@ -10,6 +10,7 @@ use tracing::{debug, error, warn};
 use crate::gateway::Task;
 use crate::llm::{LLMResponse, ToolCall};
 use crate::risk_assessor::Operation;
+use crate::security::secrets::scrub_text;
 use sdk::errors::EngineError;
 
 use super::{AgentCore, TaskResult, LLM_TIMEOUT_SECS, MAX_RESULT_SIZE};
@@ -209,7 +210,12 @@ impl AgentCore {
         match llm_result {
             Ok(Ok((response, provider))) => Ok((response, provider)),
             Ok(Err(error)) => {
-                error!(task_id = %task_id, iteration, "LLM call failed: {}", error);
+                error!(
+                    task_id = %task_id,
+                    iteration,
+                    "LLM call failed: {}",
+                    scrub_text(&error.to_string())
+                );
                 Err(error.into())
             }
             Err(_) => {

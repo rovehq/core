@@ -24,6 +24,7 @@ impl ToolRegistry {
         match name {
             "read_file" => self.dispatch_read_file(&args).await,
             "write_file" => self.dispatch_write_file(&args).await,
+            "delete_file" => self.dispatch_delete_file(&args).await,
             "list_dir" => self.dispatch_list_dir(&args).await,
             "file_exists" => self.dispatch_file_exists(&args).await,
             "run_command" => self.dispatch_run_command(&args).await,
@@ -82,6 +83,22 @@ impl ToolRegistry {
             .unwrap_or_default();
 
         match fs.write_file(path, content).await {
+            Ok(message) => message,
+            Err(error) => format!("ERROR: {}", error),
+        }
+    }
+
+    async fn dispatch_delete_file(&self, args: &serde_json::Value) -> String {
+        let Some(fs) = &self.fs else {
+            return "ERROR: delete_file tool is not enabled".to_string();
+        };
+
+        let path = args
+            .get("path")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+
+        match fs.delete_file(path).await {
             Ok(message) => message,
             Err(error) => format!("ERROR: {}", error),
         }

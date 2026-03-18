@@ -8,6 +8,7 @@
 
 use super::{LLMProvider, Message};
 use crate::config::LLMConfig;
+use crate::security::secrets::scrub_text;
 use brain::reasoning::LocalBrain;
 use sdk::Brain;
 use std::sync::Arc;
@@ -301,7 +302,7 @@ impl LLMRouter {
                         return Ok((llm_response, "local-brain".to_string()));
                     }
                     Ok(Err(e)) => {
-                        tracing::warn!("LocalBrain failed: {}", e);
+                        tracing::warn!("LocalBrain failed: {}", scrub_text(&e.to_string()));
                     }
                     Err(_) => {
                         tracing::warn!("LocalBrain timed out after 120s");
@@ -356,9 +357,10 @@ impl LLMRouter {
                     return Ok((response, provider.name().to_string()));
                 }
                 Ok(Err(e)) => {
-                    tracing::warn!("Provider {} failed: {}", provider.name(), e);
+                    let scrubbed_error = scrub_text(&e.to_string());
+                    tracing::warn!("Provider {} failed: {}", provider.name(), scrubbed_error);
                     let compact_error = {
-                        let mut text = e.to_string().replace('\n', " ");
+                        let mut text = scrubbed_error.replace('\n', " ");
                         if text.len() > 200 {
                             text.truncate(200);
                             text.push_str("...");

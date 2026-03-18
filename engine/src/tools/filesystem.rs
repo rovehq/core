@@ -148,9 +148,32 @@ impl FilesystemTool {
         }
     }
 
+    /// Delete a file within the workspace.
+    pub async fn delete_file(&self, path: &str) -> Result<String> {
+        let path = self.resolve_path(path)?;
+        info!("Deleting file: {}", path.display());
+
+        let metadata = fs::metadata(&path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to inspect {}: {}", path.display(), e))?;
+        if metadata.is_dir() {
+            return Err(anyhow::anyhow!(
+                "Refusing to delete directory {}; delete_file only removes files",
+                path.display()
+            ));
+        }
+
+        fs::remove_file(&path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete {}: {}", path.display(), e))?;
+
+        Ok(format!("Deleted {}", path.display()))
+    }
+
     /// Resolve and validate a path through the FileSystemGuard.
     fn resolve_path(&self, path: &str) -> Result<PathBuf> {
-        let target = Path::new(path);
+        let expanded = expand_user_path(path);
+        let target = Path::new(&expanded);
         let abs = if target.is_absolute() {
             target.to_path_buf()
         } else {
@@ -162,6 +185,20 @@ impl FilesystemTool {
             anyhow::anyhow!("{}", e)
         })
     }
+}
+
+fn expand_user_path(path: &str) -> PathBuf {
+    if path == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
+    }
+
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+
+    PathBuf::from(path)
 }
 
 /// Format a byte count into a human-readable size string.
@@ -273,6 +310,29 @@ mod tests {
         let result = tool
             .read_file(ssh_dir.join("id_rsa").to_str().unwrap())
             .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_file() {
+        let (temp, tool) = setup();
+        let file = temp.path().join("delete-me.txt");
+        std::fs::write(&file, "hi").unwrap();
+
+        let result = tool.delete_file(file.to_str().unwrap()).await.unwrap();
+        assert!(result.contains("Deleted"));
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_delete_denied_path_blocked() {
+        let (temp, tool) = setup();
+        let ssh_dir = temp.path().join(".ssh");
+        std::fs::create_dir(&ssh_dir).unwrap();
+        let file = ssh_dir.join("id_rsa");
+        std::fs::write(&file, "private key").unwrap();
+
+        let result = tool.delete_file(file.to_str().unwrap()).await;
         assert!(result.is_err());
     }
 }

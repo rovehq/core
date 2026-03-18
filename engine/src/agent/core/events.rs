@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use uuid::Uuid;
 
 use crate::llm::ToolCall;
+use crate::security::secrets::scrub_text;
 
 use super::AgentCore;
 
@@ -12,7 +13,7 @@ impl AgentCore {
         input: &str,
         domain_str: &str,
     ) -> Result<()> {
-        let payload = serde_json::json!({ "content": input }).to_string();
+        let payload = serde_json::json!({ "content": scrub_text(input) }).to_string();
         self.task_repo
             .insert_agent_event(task_id, "thought", &payload, 0, Some(domain_str))
             .await
@@ -29,7 +30,7 @@ impl AgentCore {
     ) -> Result<()> {
         let payload = serde_json::json!({
             "tool_name": tool_call.name,
-            "tool_args": tool_call.arguments,
+            "tool_args": scrub_text(&tool_call.arguments),
             "tool_id": tool_call.id
         })
         .to_string();
@@ -54,7 +55,7 @@ impl AgentCore {
         iteration: usize,
         domain_str: &str,
     ) -> Result<()> {
-        let payload = serde_json::json!({ "observation": observation }).to_string();
+        let payload = serde_json::json!({ "observation": scrub_text(observation) }).to_string();
         self.task_repo
             .insert_agent_event(
                 task_id,
@@ -75,7 +76,7 @@ impl AgentCore {
         iteration: usize,
         domain_str: &str,
     ) -> Result<()> {
-        let payload = serde_json::json!({ "answer": answer }).to_string();
+        let payload = serde_json::json!({ "answer": scrub_text(answer) }).to_string();
         self.task_repo
             .insert_agent_event(
                 task_id,

@@ -45,6 +45,15 @@ fn compile_secret_patterns() -> Vec<Regex> {
     .collect()
 }
 
+pub fn scrub_text(text: &str) -> String {
+    let patterns = get_secret_patterns();
+    let mut result = text.to_string();
+    for pattern in patterns {
+        result = pattern.replace_all(&result, "[REDACTED]").to_string();
+    }
+    result
+}
+
 use keyring::Entry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,12 +192,7 @@ impl SecretManager {
     }
 
     pub fn scrub(&self, text: &str) -> String {
-        let patterns = get_secret_patterns();
-        let mut result = text.to_string();
-        for pattern in patterns {
-            result = pattern.replace_all(&result, "[REDACTED]").to_string();
-        }
-        result
+        scrub_text(text)
     }
 
     pub(crate) async fn lookup_secret(&self, key: &str) -> Option<(String, SecretSource)> {

@@ -24,6 +24,7 @@ use crate::injection_detector::InjectionDetector;
 use crate::llm::router::LLMRouter;
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::{OperationSource, RiskAssessor};
+use crate::security::secrets::scrub_text;
 use crate::steering::loader::SteeringEngine;
 
 use super::{preferences::PreferencesManager, WorkingMemory};
@@ -103,7 +104,7 @@ impl AgentCore {
         let task_id_str = task_id.to_string();
         let task_input = task.input.clone();
 
-        info!("Starting task {}: {}", task_id, task.input);
+        info!("Starting task {}: {}", task_id, scrub_text(&task.input));
 
         self.task_repo
             .create_task(&task_id, &task.input)
@@ -148,7 +149,11 @@ impl AgentCore {
                     .await
                     .context("Failed to mark task as failed")?;
 
-                error!("Task {} failed: {}", task_id, error);
+                error!(
+                    "Task {} failed: {}",
+                    task_id,
+                    scrub_text(&error.to_string())
+                );
                 Err(error)
             }
         }
@@ -182,7 +187,11 @@ impl AgentCore {
                     )
                     .await
                 {
-                    warn!(task_id = %memory_task_id, "Memory ingest failed (non-fatal): {}", error);
+                    warn!(
+                        task_id = %memory_task_id,
+                        "Memory ingest failed (non-fatal): {}",
+                        scrub_text(&error.to_string())
+                    );
                 }
             }));
         }
@@ -190,7 +199,11 @@ impl AgentCore {
         let prefs_manager = self.preferences_manager.clone();
         self.background_jobs.push(tokio::spawn(async move {
             if let Err(error) = prefs_manager.extract_and_update(&task_input, &answer).await {
-                warn!(task_id = %task_id, "Preferences extraction failed (non-fatal): {}", error);
+                warn!(
+                    task_id = %task_id,
+                    "Preferences extraction failed (non-fatal): {}",
+                    scrub_text(&error.to_string())
+                );
             }
         }));
     }

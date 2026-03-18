@@ -6,6 +6,7 @@ use tracing::{debug, info, warn};
 
 use crate::llm::{Message, ToolCall};
 use crate::risk_assessor::{classify_terminal_command, Operation, RiskTier};
+use crate::security::secrets::scrub_text;
 use sdk::errors::EngineError;
 
 use super::{AgentCore, MAX_RESULT_SIZE};
@@ -109,6 +110,7 @@ impl AgentCore {
         } else {
             safe_result.to_string()
         };
+        let result_summary = scrub_text(&result_summary);
 
         if let Err(error) = self
             .task_repo
@@ -170,6 +172,7 @@ impl AgentCore {
         match tool_name {
             "read_file" | "list_dir" | "file_exists" => "read_file",
             "write_file" => "write_file",
+            "delete_file" => "delete_file",
             "run_command" => args
                 .get("command")
                 .and_then(|value| value.as_str())

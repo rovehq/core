@@ -19,6 +19,8 @@ impl ToolRegistry {
             "save",
             "edit",
             "list",
+            "delete",
+            "remove",
             "path",
             "source",
             "project",
@@ -133,6 +135,7 @@ impl ToolRegistry {
             "2. When you have the final answer (after receiving tool results), respond with plain text only — no JSON.".to_string(),
             "3. Never invent tool output. Use a tool only when you need real external state, file contents, command output, or side effects. If the user asks for something you can answer from reasoning alone, answer directly without any tool call.".to_string(),
             "4. If the user explicitly asks you to run a single terminal command, execute exactly that command once, then answer with its output. Do not run extra exploratory commands unless the user asked for additional investigation.".to_string(),
+            "5. If the user asks to read, list, write, or delete a file, use the filesystem tools and rely on their real result. Do not pre-emptively refuse or guess whether access will be allowed; the filesystem gate will enforce policy.".to_string(),
             String::new(),
             "Tool call format (your entire response must be exactly this):".to_string(),
             r#"{"function": "tool_name", "arguments": {"arg1": "value1"}}"#.to_string(),
@@ -154,6 +157,11 @@ impl ToolRegistry {
             parts.push(
                 r#"Arguments: {"path": "file/path", "content": "file contents"}"#.to_string(),
             );
+
+            parts.push(String::new());
+            parts.push("## delete_file".to_string());
+            parts.push("Delete a file. Use this only when the user explicitly asked to remove a file or as part of a clearly destructive action they requested.".to_string());
+            parts.push(r#"Arguments: {"path": "file/path"}"#.to_string());
 
             parts.push(String::new());
             parts.push("## list_dir".to_string());
@@ -211,6 +219,7 @@ impl ToolRegistry {
             names.extend_from_slice(&[
                 "read_file".to_string(),
                 "write_file".to_string(),
+                "delete_file".to_string(),
                 "list_dir".to_string(),
                 "file_exists".to_string(),
             ]);
