@@ -10,6 +10,8 @@ use super::AgentCore;
 
 pub(super) struct TaskContext {
     pub(super) domain_str: String,
+    pub(super) domain: TaskDomain,
+    pub(super) sensitive: bool,
 }
 
 impl AgentCore {
@@ -44,7 +46,11 @@ impl AgentCore {
         self.memory.add_message(Message::system(system_prompt));
         self.memory.add_message(Message::user(&task.input));
 
-        Ok(TaskContext { domain_str })
+        Ok(TaskContext {
+            domain_str,
+            domain: dispatch_result.domain,
+            sensitive: dispatch_result.sensitive,
+        })
     }
 
     async fn apply_steering(

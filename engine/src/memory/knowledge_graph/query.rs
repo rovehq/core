@@ -2,7 +2,7 @@
 //!
 //! Multi-hop reasoning and path finding in the knowledge graph
 
-use super::{GraphNode, KnowledgeGraph};
+use super::{GraphNode, KnowledgeGraph, RelationType};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -181,14 +181,124 @@ impl GraphQuery {
 
         Ok(related)
     }
+
+    /// Build short fact strings from graph relationships that match a question.
+    pub async fn related_facts(&self, question: &str, limit: usize) -> Result<Vec<String>> {
+        let mut facts = Vec::new();
+        let mut seen_nodes = HashSet::new();
+        let mut seen_facts = HashSet::new();
+
+        for term in question_terms(question) {
+            let nodes = self.graph.search_nodes(&term).await?;
+            for node in nodes {
+                if !seen_nodes.insert(node.id.clone()) {
+                    continue;
+                }
+
+                let outgoing = self.graph.get_outgoing_edges(&node.id).await?;
+                for edge in outgoing {
+                    if let Some(target) = self.graph.get_node(&edge.to_id).await? {
+                        let fact = format_relationship(&node, &target, &edge.relation);
+                        if seen_facts.insert(fact.clone()) {
+                            facts.push(fact);
+                            if facts.len() >= limit {
+                                return Ok(facts);
+                            }
+                        }
+                    }
+                }
+
+                let incoming = self.graph.get_incoming_edges(&node.id).await?;
+                for edge in incoming {
+                    if let Some(source) = self.graph.get_node(&edge.from_id).await? {
+                        let fact = format_relationship(&source, &node, &edge.relation);
+                        if seen_facts.insert(fact.clone()) {
+                            facts.push(fact);
+                            if facts.len() >= limit {
+                                return Ok(facts);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(facts)
+    }
+}
+
+fn question_terms(question: &str) -> Vec<String> {
+    const STOP_WORDS: &[&str] = &[
+        "what", "where", "when", "which", "that", "this", "with", "from", "into", "your", "mine",
+        "about", "stored", "store", "using", "work", "project", "please", "remember", "there",
+    ];
+
+    let mut seen = HashSet::new();
+    let mut terms = Vec::new();
+    for token in question
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '/' && ch != '~')
+        .filter(|token| token.len() >= 3)
+    {
+        let term = token.to_ascii_lowercase();
+        if STOP_WORDS.contains(&term.as_str()) || !seen.insert(term.clone()) {
+            continue;
+        }
+        terms.push(term);
+    }
+
+    terms
+}
+
+fn format_relationship(from: &GraphNode, to: &GraphNode, relation: &RelationType) -> String {
+    match relation {
+        RelationType::WorksOn => format!("{} works on {}", from.label, to.label),
+        RelationType::StoredAt => format!("{} is stored at {}", from.label, to.label),
+        RelationType::Uses => format!("{} uses {}", from.label, to.label),
+        RelationType::UsedBy => format!("{} is used by {}", from.label, to.label),
+        _ => format!("{} {} {}", from.label, relation.as_str(), to.label),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::GraphQuery;
+    use super::{format_relationship, question_terms, GraphQuery};
+    use crate::memory::knowledge_graph::{EntityType, GraphNode, RelationType};
 
     #[test]
     fn test_graph_query_creation() {
         assert!(std::any::type_name::<GraphQuery>().contains("GraphQuery"));
+    }
+
+    #[test]
+    fn test_question_terms_filters_noise() {
+        let terms = question_terms("where is my rove project stored");
+        assert_eq!(terms, vec!["rove"]);
+    }
+
+    #[test]
+    fn test_format_relationship_uses_human_text() {
+        let from = GraphNode {
+            id: "project:rove".to_string(),
+            label: "rove".to_string(),
+            node_type: EntityType::Project,
+            properties: serde_json::json!({}),
+            created_at: 0,
+            last_updated: 0,
+            access_count: 0,
+        };
+        let to = GraphNode {
+            id: "file:workspace_rove".to_string(),
+            label: "~/workspace/rove".to_string(),
+            node_type: EntityType::File,
+            properties: serde_json::json!({}),
+            created_at: 0,
+            last_updated: 0,
+            access_count: 0,
+        };
+
+        assert_eq!(
+            format_relationship(&from, &to, &RelationType::StoredAt),
+            "rove is stored at ~/workspace/rove"
+        );
     }
 }

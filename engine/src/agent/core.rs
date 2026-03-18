@@ -26,6 +26,7 @@ use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::{OperationSource, RiskAssessor};
 use crate::security::secrets::scrub_text;
 use crate::steering::loader::SteeringEngine;
+use sdk::TaskDomain;
 
 use super::{preferences::PreferencesManager, WorkingMemory};
 
@@ -132,6 +133,8 @@ impl AgentCore {
                     task_input,
                     task_result.answer.clone(),
                     task_id_str.clone(),
+                    task_result.domain,
+                    task_result.sensitive,
                 );
 
                 info!(
@@ -168,22 +171,27 @@ impl AgentCore {
         }
     }
 
-    fn spawn_post_task_jobs(&mut self, task_input: String, answer: String, task_id: String) {
+    fn spawn_post_task_jobs(
+        &mut self,
+        task_input: String,
+        answer: String,
+        task_id: String,
+        domain: TaskDomain,
+        sensitive: bool,
+    ) {
         if let Some(memory_system) = self.memory_system.clone() {
             let memory_task_input = task_input.clone();
             let memory_answer = answer.clone();
             let memory_task_id = task_id.clone();
 
             self.background_jobs.push(tokio::spawn(async move {
-                use crate::conductor::types::TaskDomain;
-
                 if let Err(error) = memory_system
                     .ingest(
                         &memory_task_input,
                         &memory_answer,
                         &memory_task_id,
-                        &TaskDomain::General,
-                        false,
+                        &domain,
+                        sensitive,
                     )
                     .await
                 {

@@ -146,6 +146,8 @@ impl AgentCore {
                         provider_name,
                         start_time.elapsed().as_millis() as i64,
                         iteration,
+                        context.domain,
+                        context.sensitive,
                     ));
                 }
             }

@@ -5,7 +5,9 @@
 //! Includes fire-and-forget knowledge graph extraction for high-importance memories.
 
 use anyhow::{Context, Result};
+use regex::Regex;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -73,6 +75,7 @@ pub async fn ingest(
             importance: 0.3,
         }
     });
+    let extraction = apply_fact_heuristics(task_input, extraction);
 
     // Clamp importance
     let importance = extraction.importance.clamp(0.0, 1.0);
@@ -113,65 +116,15 @@ pub async fn ingest(
     // Fire-and-forget: extract entities and relationships for knowledge graph
     // Skip if sensitive (privacy) or low importance (noise reduction)
     if !sensitive && importance >= 0.5 {
-        let extractor = Arc::clone(entity_extractor);
-        let graph = Arc::clone(knowledge_graph);
-        let summary = extraction.summary.clone();
-        let mem_id = memory_id.clone();
-
-        tokio::spawn(async move {
-            match extractor.extract(&summary).await {
-                Ok(result) if !result.entities.is_empty() => {
-                    let entity_count = result.entities.len();
-                    let rel_count = result.relationships.len();
-
-                    // Store entities and relationships in knowledge graph
-                    for entity in &result.entities {
-                        let node = crate::knowledge_graph::GraphNode {
-                            id: format!("{}:{}", entity.entity_type.as_str(), entity.label),
-                            label: entity.label.clone(),
-                            node_type: entity.entity_type.clone(),
-                            properties: entity.properties.clone(),
-                            created_at: now,
-                            last_updated: now,
-                            access_count: 0,
-                        };
-
-                        if let Err(e) = graph.upsert_node(&node).await {
-                            warn!(error = %e, entity = %entity.label, "failed to store entity");
-                        }
-                    }
-
-                    for rel in &result.relationships {
-                        let edge = crate::knowledge_graph::GraphEdge {
-                            id: format!(
-                                "{}:{}:{}",
-                                rel.from_label,
-                                rel.relation.as_str(),
-                                rel.to_label
-                            ),
-                            from_id: format!("{}:{}", "unknown", rel.from_label), // Type unknown, will be resolved
-                            to_id: format!("{}:{}", "unknown", rel.to_label),
-                            relation: rel.relation.clone(),
-                            weight: rel.weight,
-                            properties: None,
-                            created_at: now,
-                        };
-
-                        if let Err(e) = graph.add_edge(&edge).await {
-                            warn!(error = %e, from = %rel.from_label, to = %rel.to_label, "failed to store relationship");
-                        }
-                    }
-
-                    debug!(memory_id = %mem_id, entities = entity_count, relationships = rel_count, "extracted entities for knowledge graph");
-                }
-                Ok(_) => {
-                    debug!(memory_id = %mem_id, "no entities extracted");
-                }
-                Err(e) => {
-                    warn!(error = %e, memory_id = %mem_id, "entity extraction failed (non-fatal)");
-                }
-            }
-        });
+        persist_graph_facts(
+            entity_extractor.as_ref(),
+            knowledge_graph.as_ref(),
+            task_input,
+            &extraction.summary,
+            &memory_id,
+            now,
+        )
+        .await;
     }
 
     Ok(IngestResult {
@@ -241,6 +194,348 @@ fn parse_ingest_response(text: &str) -> Option<IngestExtraction> {
     }
 }
 
+fn apply_fact_heuristics(task_input: &str, mut extraction: IngestExtraction) -> IngestExtraction {
+    if let Some(fact) = remembered_fact(task_input) {
+        extraction.summary = fact;
+        extraction.importance = extraction.importance.max(0.85);
+        push_topic(&mut extraction.topics, "remembered_fact");
+    }
+
+    if let Some((key, value)) = user_property(task_input) {
+        extraction.summary = format!("User's {} is {}.", key, value);
+        extraction.importance = extraction.importance.max(0.9);
+        push_topic(&mut extraction.topics, "user_preference");
+    }
+
+    if let Some(workspace_fact) = project_workspace_summary(task_input) {
+        extraction.summary = workspace_fact;
+        extraction.importance = extraction.importance.max(0.8);
+        push_topic(&mut extraction.topics, "project_context");
+    }
+
+    extraction
+}
+
+fn push_topic(topics: &mut Vec<String>, topic: &str) {
+    if !topics.iter().any(|existing| existing == topic) {
+        topics.push(topic.to_string());
+    }
+}
+
+fn remembered_fact(task_input: &str) -> Option<String> {
+    let pattern = Regex::new(r"(?i)^\s*remember(?:\s+that)?\s+(.+?)\s*$").ok()?;
+    let captures = pattern.captures(task_input)?;
+    let fact = captures.get(1)?.as_str().trim().trim_end_matches('.');
+    if fact.is_empty() {
+        return None;
+    }
+
+    Some(format!("Remembered fact: {}.", fact))
+}
+
+fn user_property(task_input: &str) -> Option<(String, String)> {
+    let pattern = Regex::new(r"(?i)^\s*my\s+(.+?)\s+is\s+(.+?)\s*$").ok()?;
+    let captures = pattern.captures(task_input)?;
+    let key = captures.get(1)?.as_str().trim().to_ascii_lowercase();
+    let value = captures
+        .get(2)?
+        .as_str()
+        .trim()
+        .trim_end_matches('.')
+        .to_string();
+    if key.is_empty() || value.is_empty() {
+        return None;
+    }
+
+    Some((key, value))
+}
+
+fn project_workspace_summary(task_input: &str) -> Option<String> {
+    let pattern = Regex::new(
+        r"(?i)^\s*i work on(?:\s+the)?\s+(.+?)(?:\s+project)?\s+in\s+(\S+)\s+using\s+(.+?)\s*$",
+    )
+    .ok()?;
+    let captures = pattern.captures(task_input)?;
+    let project = captures.get(1)?.as_str().trim().trim_start_matches("the ");
+    let path = captures.get(2)?.as_str().trim();
+    let language = captures.get(3)?.as_str().trim().trim_end_matches('.');
+    if project.is_empty() || path.is_empty() || language.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "The {} project is stored at {} and uses {}.",
+        project, path, language
+    ))
+}
+
+struct GraphFacts {
+    entities: Vec<crate::knowledge_graph::Entity>,
+    relationships: Vec<crate::knowledge_graph::Relationship>,
+}
+
+fn extract_graph_facts(task_input: &str) -> GraphFacts {
+    let mut facts = GraphFacts {
+        entities: Vec::new(),
+        relationships: Vec::new(),
+    };
+
+    let Some(summary) = project_workspace_summary(task_input) else {
+        return facts;
+    };
+    let pattern =
+        Regex::new(r"(?i)^The\s+(.+?)\s+project is stored at\s+(\S+)\s+and uses\s+(.+?)\.$").ok();
+    let Some(pattern) = pattern else {
+        return facts;
+    };
+    let Some(captures) = pattern.captures(&summary) else {
+        return facts;
+    };
+
+    let project = captures
+        .get(1)
+        .map(|m| m.as_str().trim())
+        .unwrap_or_default();
+    let path = captures
+        .get(2)
+        .map(|m| m.as_str().trim())
+        .unwrap_or_default();
+    let language = captures
+        .get(3)
+        .map(|m| m.as_str().trim())
+        .unwrap_or_default();
+    if project.is_empty() || path.is_empty() || language.is_empty() {
+        return facts;
+    }
+
+    facts.entities.push(crate::knowledge_graph::Entity {
+        label: "User".to_string(),
+        entity_type: crate::knowledge_graph::EntityType::Person,
+        properties: serde_json::json!({"role": "owner"}),
+    });
+    facts.entities.push(crate::knowledge_graph::Entity {
+        label: project.to_string(),
+        entity_type: crate::knowledge_graph::EntityType::Project,
+        properties: serde_json::json!({"summary": summary}),
+    });
+    facts.entities.push(crate::knowledge_graph::Entity {
+        label: path.to_string(),
+        entity_type: crate::knowledge_graph::EntityType::File,
+        properties: serde_json::json!({"kind": "workspace_path"}),
+    });
+    facts.entities.push(crate::knowledge_graph::Entity {
+        label: language.to_string(),
+        entity_type: crate::knowledge_graph::EntityType::Tool,
+        properties: serde_json::json!({"kind": "language"}),
+    });
+
+    facts
+        .relationships
+        .push(crate::knowledge_graph::Relationship {
+            from_label: "User".to_string(),
+            to_label: project.to_string(),
+            relation: crate::knowledge_graph::RelationType::WorksOn,
+            weight: 1.0,
+        });
+    facts
+        .relationships
+        .push(crate::knowledge_graph::Relationship {
+            from_label: project.to_string(),
+            to_label: path.to_string(),
+            relation: crate::knowledge_graph::RelationType::StoredAt,
+            weight: 1.0,
+        });
+    facts
+        .relationships
+        .push(crate::knowledge_graph::Relationship {
+            from_label: project.to_string(),
+            to_label: language.to_string(),
+            relation: crate::knowledge_graph::RelationType::Uses,
+            weight: 0.9,
+        });
+
+    facts
+}
+
+fn dedupe_entities(
+    entities: Vec<crate::knowledge_graph::Entity>,
+) -> Vec<crate::knowledge_graph::Entity> {
+    let mut deduped = Vec::new();
+    let mut seen = HashMap::new();
+
+    for entity in entities {
+        let key = format!(
+            "{}:{}",
+            entity.entity_type.as_str(),
+            entity.label.to_ascii_lowercase()
+        );
+        if seen.insert(key, ()).is_none() {
+            deduped.push(entity);
+        }
+    }
+
+    deduped
+}
+
+fn dedupe_relationships(
+    relationships: Vec<crate::knowledge_graph::Relationship>,
+) -> Vec<crate::knowledge_graph::Relationship> {
+    let mut deduped = Vec::new();
+    let mut seen = HashMap::new();
+
+    for relationship in relationships {
+        let key = format!(
+            "{}:{}:{}",
+            relationship.from_label.to_ascii_lowercase(),
+            relationship.relation.as_str(),
+            relationship.to_label.to_ascii_lowercase()
+        );
+        if seen.insert(key, ()).is_none() {
+            deduped.push(relationship);
+        }
+    }
+
+    deduped
+}
+
+async fn resolve_node_id(
+    graph: &crate::knowledge_graph::KnowledgeGraph,
+    node_ids: &HashMap<String, String>,
+    label: &str,
+) -> Result<Option<String>> {
+    if let Some(node_id) = node_ids.get(&label.to_ascii_lowercase()) {
+        return Ok(Some(node_id.clone()));
+    }
+
+    Ok(graph.find_node_by_label(label).await?.map(|node| node.id))
+}
+
+async fn persist_graph_facts(
+    extractor: &crate::knowledge_graph::EntityExtractor,
+    graph: &crate::knowledge_graph::KnowledgeGraph,
+    task_input: &str,
+    summary: &str,
+    memory_id: &str,
+    created_at: i64,
+) {
+    let mut entities = Vec::new();
+    let mut relationships = Vec::new();
+
+    match extractor.extract(summary).await {
+        Ok(result) => {
+            entities.extend(result.entities);
+            relationships.extend(result.relationships);
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                memory_id = %memory_id,
+                "entity extraction failed (non-fatal)"
+            );
+        }
+    }
+
+    let heuristic = extract_graph_facts(task_input);
+    entities.extend(heuristic.entities);
+    relationships.extend(heuristic.relationships);
+
+    if entities.is_empty() {
+        debug!(memory_id = %memory_id, "no graph entities extracted");
+        return;
+    }
+
+    let entity_count = entities.len();
+    let rel_count = relationships.len();
+    let mut node_ids = HashMap::new();
+
+    for entity in dedupe_entities(entities) {
+        let node_id = crate::knowledge_graph::KnowledgeGraph::canonical_node_id(
+            &entity.entity_type,
+            &entity.label,
+        );
+        let node = crate::knowledge_graph::GraphNode {
+            id: node_id.clone(),
+            label: entity.label.clone(),
+            node_type: entity.entity_type.clone(),
+            properties: entity.properties.clone(),
+            created_at,
+            last_updated: created_at,
+            access_count: 0,
+        };
+
+        if let Err(error) = graph.upsert_node(&node).await {
+            warn!(error = %error, entity = %entity.label, "failed to store entity");
+            continue;
+        }
+
+        if let Err(error) = graph
+            .link_memory(memory_id, &node_id, 1.0, created_at)
+            .await
+        {
+            warn!(error = %error, entity = %entity.label, "failed to link memory to entity");
+        }
+
+        node_ids.insert(entity.label.to_lowercase(), node_id);
+    }
+
+    for relationship in dedupe_relationships(relationships) {
+        let from_id = match resolve_node_id(graph, &node_ids, &relationship.from_label).await {
+            Ok(Some(id)) => id,
+            Ok(None) => continue,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    label = %relationship.from_label,
+                    "failed to resolve relationship source"
+                );
+                continue;
+            }
+        };
+        let to_id = match resolve_node_id(graph, &node_ids, &relationship.to_label).await {
+            Ok(Some(id)) => id,
+            Ok(None) => continue,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    label = %relationship.to_label,
+                    "failed to resolve relationship target"
+                );
+                continue;
+            }
+        };
+
+        let edge = crate::knowledge_graph::GraphEdge {
+            id: crate::knowledge_graph::KnowledgeGraph::canonical_edge_id(
+                &from_id,
+                &relationship.relation,
+                &to_id,
+            ),
+            from_id,
+            to_id,
+            relation: relationship.relation.clone(),
+            weight: relationship.weight,
+            properties: None,
+            created_at,
+        };
+
+        if let Err(error) = graph.add_edge(&edge).await {
+            warn!(
+                error = %error,
+                from = %relationship.from_label,
+                to = %relationship.to_label,
+                "failed to store relationship"
+            );
+        }
+    }
+
+    debug!(
+        memory_id = %memory_id,
+        entities = entity_count,
+        relationships = rel_count,
+        "extracted entities for knowledge graph"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +578,36 @@ mod tests {
         let result = parse_ingest_response(json);
         assert!(result.is_some());
         assert_eq!(result.unwrap().importance, 1.0);
+    }
+
+    #[test]
+    fn test_apply_fact_heuristics_for_remembered_fact() {
+        let extraction = IngestExtraction {
+            summary: "fallback".to_string(),
+            entities: vec![],
+            topics: vec![],
+            importance: 0.3,
+        };
+
+        let updated = apply_fact_heuristics(
+            "remember that the deploy command is: cargo build --release",
+            extraction,
+        );
+
+        assert!(updated.summary.contains("cargo build --release"));
+        assert!(updated.importance >= 0.85);
+        assert!(updated.topics.contains(&"remembered_fact".to_string()));
+    }
+
+    #[test]
+    fn test_extract_graph_facts_for_workspace_statement() {
+        let facts =
+            extract_graph_facts("I work on the rove project in ~/workspace/rove using Rust");
+        assert_eq!(facts.entities.len(), 4);
+        assert_eq!(facts.relationships.len(), 3);
+        assert!(facts
+            .relationships
+            .iter()
+            .any(|rel| matches!(rel.relation, crate::knowledge_graph::RelationType::StoredAt)));
     }
 }

@@ -18,7 +18,7 @@ Return JSON only. No markdown fences. No preamble.
   "entities": [
     {
       "label": "entity name",
-      "entity_type": "file|function|class|module|concept|person|tool|error|bug|feature",
+      "entity_type": "file|function|class|module|project|concept|person|tool|error|bug|feature",
       "properties": {}
     }
   ],
@@ -26,7 +26,7 @@ Return JSON only. No markdown fences. No preamble.
     {
       "from_label": "entity1",
       "to_label": "entity2",
-      "relation": "calls|imports|references|depends_on|implements|used_by|related_to|caused_by|fixed_by|documented_in",
+      "relation": "calls|imports|references|depends_on|implements|works_on|stored_at|uses|used_by|related_to|caused_by|fixed_by|documented_in",
       "weight": 0.8
     }
   ]
@@ -37,6 +37,7 @@ Entity types:
   function  - functions, methods
   class     - classes, types
   module    - packages, modules
+  project   - repositories, apps, named projects
   concept   - abstract concepts, patterns
   person    - people, users, teams
   tool      - tools, libraries, frameworks
@@ -50,6 +51,9 @@ Relationship types:
   references    - entity A references entity B
   depends_on    - entity A depends on entity B
   implements    - class A implements interface B
+  works_on      - person A works on project B
+  stored_at     - project A is stored at path B
+  uses          - project or file A uses tool B
   used_by       - tool A is used by entity B
   related_to    - general relationship
   caused_by     - error A caused by entity B
@@ -198,6 +202,7 @@ fn parse_entity_type(s: &str) -> EntityType {
         "function" => EntityType::Function,
         "class" => EntityType::Class,
         "module" => EntityType::Module,
+        "project" => EntityType::Project,
         "concept" => EntityType::Concept,
         "person" => EntityType::Person,
         "tool" => EntityType::Tool,
@@ -215,6 +220,9 @@ fn parse_relation_type(s: &str) -> RelationType {
         "references" => RelationType::References,
         "depends_on" => RelationType::DependsOn,
         "implements" => RelationType::ImplementsFor,
+        "works_on" => RelationType::WorksOn,
+        "stored_at" => RelationType::StoredAt,
+        "uses" => RelationType::Uses,
         "used_by" => RelationType::UsedBy,
         "related_to" => RelationType::RelatedTo,
         "caused_by" => RelationType::CausedBy,

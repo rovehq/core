@@ -18,6 +18,7 @@ use super::providers;
 
 pub async fn init_agent_with_db(database: Arc<Database>) -> Result<Arc<RwLock<AgentCore>>> {
     let config = Config::load_or_create()?;
+    let memory_config = config.memory.clone();
     let db_pool = database.pool().clone();
 
     let (providers, local_brain) = providers::build(&config).await?;
@@ -29,13 +30,19 @@ pub async fn init_agent_with_db(database: Arc<Database>) -> Result<Arc<RwLock<Ag
     let rate_limiter = Arc::new(RateLimiter::new(db_pool.clone()));
     let risk_assessor = RiskAssessor::new();
     let task_repo = Arc::new(TaskRepository::new(db_pool.clone()));
-    let memory_system = Arc::new(MemorySystem::new(db_pool, router.clone()));
+    let memory_system = Arc::new(MemorySystem::new_with_config(
+        db_pool,
+        router.clone(),
+        memory_config.clone(),
+    ));
 
     {
         let memory_system = memory_system.clone();
         tokio::spawn(async move {
             memory_system
-                .start_consolidation_loop(std::time::Duration::from_secs(30 * 60))
+                .start_consolidation_loop(std::time::Duration::from_secs(
+                    memory_config.consolidation_interval_mins * 60,
+                ))
                 .await;
         });
     }

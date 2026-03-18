@@ -31,6 +31,7 @@ pub struct GraphEdge {
 }
 
 /// Knowledge graph manager
+#[derive(Clone)]
 pub struct KnowledgeGraph {
     pool: SqlitePool,
 }
@@ -38,6 +39,15 @@ pub struct KnowledgeGraph {
 impl KnowledgeGraph {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    pub fn canonical_node_id(node_type: &EntityType, label: &str) -> String {
+        let normalized = normalize_identifier(label);
+        format!("{}:{}", node_type.as_str(), normalized)
+    }
+
+    pub fn canonical_edge_id(from_id: &str, relation: &RelationType, to_id: &str) -> String {
+        format!("{}:{}:{}", from_id, relation.as_str(), to_id)
     }
 
     /// Add or update a node in the graph
@@ -63,6 +73,32 @@ impl KnowledgeGraph {
         .bind(node.created_at)
         .bind(node.last_updated)
         .bind(node.access_count)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Link an episodic memory to a graph node.
+    pub async fn link_memory(
+        &self,
+        memory_id: &str,
+        node_id: &str,
+        relevance: f32,
+        created_at: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO memory_graph_links (memory_id, node_id, relevance, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(memory_id, node_id) DO UPDATE SET
+                relevance = excluded.relevance
+            "#,
+        )
+        .bind(memory_id)
+        .bind(node_id)
+        .bind(relevance)
+        .bind(created_at)
         .execute(&self.pool)
         .await?;
 
@@ -251,6 +287,40 @@ impl KnowledgeGraph {
 
         Ok(nodes)
     }
+
+    /// Look up a node by label using a case-insensitive exact match first.
+    pub async fn find_node_by_label(&self, label: &str) -> Result<Option<GraphNode>> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, label, type, properties, created_at, last_updated, access_count
+            FROM graph_nodes
+            WHERE lower(label) = lower(?)
+            ORDER BY last_updated DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(label)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            let properties: serde_json::Value = serde_json::from_str(row.get("properties"))?;
+            let type_str: String = row.get("type");
+            let node_type = parse_entity_type(&type_str);
+
+            return Ok(Some(GraphNode {
+                id: row.get("id"),
+                label: row.get("label"),
+                node_type,
+                properties,
+                created_at: row.get("created_at"),
+                last_updated: row.get("last_updated"),
+                access_count: row.get("access_count"),
+            }));
+        }
+
+        Ok(None)
+    }
 }
 
 fn parse_entity_type(s: &str) -> EntityType {
@@ -259,6 +329,7 @@ fn parse_entity_type(s: &str) -> EntityType {
         "function" => EntityType::Function,
         "class" => EntityType::Class,
         "module" => EntityType::Module,
+        "project" => EntityType::Project,
         "concept" => EntityType::Concept,
         "person" => EntityType::Person,
         "tool" => EntityType::Tool,
@@ -276,6 +347,9 @@ fn parse_relation_type(s: &str) -> RelationType {
         "references" => RelationType::References,
         "depends_on" => RelationType::DependsOn,
         "implements" => RelationType::ImplementsFor,
+        "works_on" => RelationType::WorksOn,
+        "stored_at" => RelationType::StoredAt,
+        "uses" => RelationType::Uses,
         "used_by" => RelationType::UsedBy,
         "related_to" => RelationType::RelatedTo,
         "caused_by" => RelationType::CausedBy,
@@ -283,6 +357,23 @@ fn parse_relation_type(s: &str) -> RelationType {
         "documented_in" => RelationType::DocumentedIn,
         other => RelationType::Other(other.to_string()),
     }
+}
+
+fn normalize_identifier(label: &str) -> String {
+    let mut normalized = String::with_capacity(label.len());
+    let mut last_was_sep = false;
+
+    for ch in label.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if !last_was_sep {
+            normalized.push('_');
+            last_was_sep = true;
+        }
+    }
+
+    normalized.trim_matches('_').to_string()
 }
 
 #[cfg(test)]
@@ -293,6 +384,7 @@ mod tests {
     fn test_entity_type_as_str() {
         assert_eq!(EntityType::File.as_str(), "file");
         assert_eq!(EntityType::Function.as_str(), "function");
+        assert_eq!(EntityType::Project.as_str(), "project");
         assert_eq!(EntityType::Concept.as_str(), "concept");
     }
 
@@ -300,6 +392,23 @@ mod tests {
     fn test_relation_type_as_str() {
         assert_eq!(RelationType::Calls.as_str(), "calls");
         assert_eq!(RelationType::Imports.as_str(), "imports");
+        assert_eq!(RelationType::StoredAt.as_str(), "stored_at");
         assert_eq!(RelationType::RelatedTo.as_str(), "related_to");
+    }
+
+    #[test]
+    fn test_canonical_ids_are_stable() {
+        let node_id = KnowledgeGraph::canonical_node_id(&EntityType::Project, "Rove Project");
+        assert_eq!(node_id, "project:rove_project");
+
+        let edge_id = KnowledgeGraph::canonical_edge_id(
+            "project:rove_project",
+            &RelationType::StoredAt,
+            "file:workspace_rove",
+        );
+        assert_eq!(
+            edge_id,
+            "project:rove_project:stored_at:file:workspace_rove"
+        );
     }
 }

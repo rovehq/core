@@ -98,6 +98,7 @@ impl ContextAssembler {
                         let hit_type_label = match hit.hit_type {
                             crate::conductor::memory::HitType::Insight => "Insight",
                             crate::conductor::memory::HitType::Episodic => "Memory",
+                            crate::conductor::memory::HitType::KnowledgeGraph => "Graph",
                             crate::conductor::memory::HitType::TaskTrace => "Task",
                         };
                         let snippet = format!("[{}] {}\n", hit_type_label, hit.content);

@@ -129,6 +129,7 @@ impl ContextLayers {
 pub enum HitType {
     Episodic,
     Insight,
+    KnowledgeGraph,
     TaskTrace,
 }
 

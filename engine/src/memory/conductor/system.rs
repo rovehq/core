@@ -19,6 +19,7 @@ use sqlx::SqlitePool;
 use tracing::{debug, error, info};
 
 use crate::conductor::types::{ConsolidationResult, IngestResult, MemoryHit, TaskDomain};
+use crate::config::MemoryConfig;
 use crate::llm::router::LLMRouter;
 
 // ─────────────────────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ pub struct MemorySystem {
     knowledge_graph: Arc<crate::knowledge_graph::KnowledgeGraph>,
     entity_extractor: Arc<crate::knowledge_graph::EntityExtractor>,
     embedding_generator: Option<Arc<crate::conductor::EmbeddingGenerator>>,
+    config: MemoryConfig,
 }
 
 impl MemorySystem {
@@ -44,6 +46,10 @@ impl MemorySystem {
     /// * `pool` – SQLite connection pool (must have migration 003 applied)
     /// * `router` – LLM router for extraction and consolidation calls
     pub fn new(pool: SqlitePool, router: Arc<LLMRouter>) -> Self {
+        Self::new_with_config(pool, router, MemoryConfig::default())
+    }
+
+    pub fn new_with_config(pool: SqlitePool, router: Arc<LLMRouter>, config: MemoryConfig) -> Self {
         let knowledge_graph = Arc::new(crate::knowledge_graph::KnowledgeGraph::new(pool.clone()));
         let entity_extractor =
             Arc::new(crate::knowledge_graph::EntityExtractor::new(router.clone()));
@@ -54,6 +60,7 @@ impl MemorySystem {
             knowledge_graph,
             entity_extractor,
             embedding_generator: None,
+            config,
         }
     }
 
@@ -104,17 +111,16 @@ impl MemorySystem {
     /// Delegates to the consolidation module for implementation.
     /// Calls decay_importance() after consolidation completes.
     pub async fn consolidate(&self) -> Result<ConsolidationResult> {
-        let min_to_consolidate = 3; // Default min_to_consolidate
-
         let result = crate::conductor::consolidation::consolidate(
             &self.pool,
             &self.router,
-            min_to_consolidate,
+            self.config.min_to_consolidate,
         )
         .await?;
 
         // Apply importance decay after consolidation
-        crate::conductor::decay::decay_importance(&self.pool, true).await?;
+        crate::conductor::decay::decay_importance(&self.pool, self.config.importance_decay_enabled)
+            .await?;
 
         Ok(result)
     }
@@ -132,18 +138,20 @@ impl MemorySystem {
         domain: &TaskDomain,
         team_id: Option<&str>,
     ) -> Result<Vec<MemoryHit>> {
-        let query_limit = 5_usize; // Default query_limit
-        let min_importance = 0.4_f32; // Default min_importance_to_inject
-
-        crate::conductor::query::query(
+        let mut hits = crate::conductor::query::query(
             &self.pool,
             question,
             domain,
             team_id,
-            query_limit,
-            min_importance,
+            self.config.query_limit as usize,
+            self.config.min_importance_to_inject,
         )
-        .await
+        .await?;
+
+        self.append_graph_hits(question, &mut hits, self.config.query_limit as usize)
+            .await?;
+
+        Ok(hits)
     }
 
     /// Query episodic memory using hybrid search (BM25 + cosine similarity).
@@ -155,19 +163,21 @@ impl MemorySystem {
         domain: &TaskDomain,
         team_id: Option<&str>,
     ) -> Result<Vec<MemoryHit>> {
-        let query_limit = 5_usize;
-        let min_importance = 0.4_f32;
-
-        crate::conductor::query::query_hybrid(
+        let mut hits = crate::conductor::query::query_hybrid(
             &self.pool,
             self.embedding_generator.as_ref(),
             question,
             domain,
             team_id,
-            query_limit,
-            min_importance,
+            self.config.query_limit as usize,
+            self.config.min_importance_to_inject,
         )
-        .await
+        .await?;
+
+        self.append_graph_hits(question, &mut hits, self.config.query_limit as usize)
+            .await?;
+
+        Ok(hits)
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -179,6 +189,39 @@ impl MemorySystem {
     /// Delegates to the decay module for implementation.
     pub async fn decay_importance(&self, enabled: bool) -> Result<()> {
         crate::conductor::decay::decay_importance(&self.pool, enabled).await
+    }
+
+    async fn append_graph_hits(
+        &self,
+        question: &str,
+        hits: &mut Vec<MemoryHit>,
+        query_limit: usize,
+    ) -> Result<()> {
+        let graph_query =
+            crate::knowledge_graph::GraphQuery::new(self.knowledge_graph.as_ref().clone());
+        let graph_facts = graph_query.related_facts(question, query_limit).await?;
+        let now = crate::conductor::scorer::unix_now();
+
+        for (index, fact) in graph_facts.into_iter().enumerate() {
+            if hits.iter().any(|hit| hit.content == fact) {
+                continue;
+            }
+
+            hits.push(MemoryHit {
+                id: format!("graph-fact-{}", index),
+                source: "graph".to_string(),
+                content: fact,
+                rank: 0.0,
+                hit_type: crate::conductor::types::HitType::KnowledgeGraph,
+                importance: 0.9,
+                created_at: now,
+                final_score: 0.95 - (index as f32 * 0.01),
+            });
+        }
+
+        sort_hits(hits);
+        hits.truncate(query_limit);
+        Ok(())
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -216,6 +259,25 @@ impl MemorySystem {
             }
         }
     }
+}
+
+fn sort_hits(hits: &mut [MemoryHit]) {
+    hits.sort_by(|a, b| {
+        use std::cmp::Ordering;
+
+        let priority = |hit: &MemoryHit| match hit.hit_type {
+            crate::conductor::types::HitType::Insight => 0_u8,
+            crate::conductor::types::HitType::KnowledgeGraph => 1,
+            crate::conductor::types::HitType::Episodic => 2,
+            crate::conductor::types::HitType::TaskTrace => 3,
+        };
+
+        priority(a).cmp(&priority(b)).then_with(|| {
+            b.final_score
+                .partial_cmp(&a.final_score)
+                .unwrap_or(Ordering::Equal)
+        })
+    });
 }
 
 #[cfg(test)]

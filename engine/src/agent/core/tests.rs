@@ -65,6 +65,8 @@ fn test_task_result_creation() {
         "ollama".to_string(),
         1000,
         5,
+        sdk::TaskDomain::General,
+        false,
     );
 
     assert_eq!(result.task_id, "task-123");
@@ -72,6 +74,8 @@ fn test_task_result_creation() {
     assert_eq!(result.provider_used, "ollama");
     assert_eq!(result.duration_ms, 1000);
     assert_eq!(result.iterations, 5);
+    assert_eq!(result.domain, sdk::TaskDomain::General);
+    assert!(!result.sensitive);
 }
 
 #[tokio::test]

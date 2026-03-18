@@ -49,7 +49,11 @@ pub async fn handle_run(
     let tools = super::bootstrap::build_tools(&database, &runtime_config).await?;
     let steering = load_steering(&runtime_config).await;
     let workspace_locks = Arc::new(WorkspaceLocks::new());
-    let memory_system = Arc::new(MemorySystem::new(db_pool, router.clone()));
+    let memory_system = Arc::new(MemorySystem::new_with_config(
+        db_pool,
+        router.clone(),
+        runtime_config.memory.clone(),
+    ));
 
     let mut agent = AgentCore::new(
         router,
