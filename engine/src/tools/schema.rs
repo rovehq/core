@@ -31,8 +31,27 @@ impl ToolRegistry {
 
     fn should_offer_terminal(query_lower: &str) -> bool {
         [
-            "command", "terminal", "shell", "bash", "zsh", "git", "cargo", "npm", "pnpm", "yarn",
-            "make", "build", "test", "commit", "status", "install", "run ", "execute",
+            "command",
+            "terminal",
+            "shell",
+            "bash",
+            "zsh",
+            "git",
+            "cargo",
+            "npm",
+            "pnpm",
+            "yarn",
+            "make",
+            "build",
+            "test",
+            "commit",
+            "status",
+            "install",
+            "run ",
+            "execute",
+            "branch",
+            "repo",
+            "repository",
         ]
         .iter()
         .any(|keyword| query_lower.contains(keyword))

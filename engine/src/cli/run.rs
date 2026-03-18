@@ -24,20 +24,28 @@ use crate::tools::{FilesystemTool, TerminalTool, ToolRegistry, VisionTool};
 use super::output::OutputFormat;
 
 pub async fn handle_run(task: String, config: &Config, format: OutputFormat) -> Result<()> {
-    let database = Database::new(&database_path(config))
+    let mut runtime_config = config.clone();
+    if let Ok(current_dir) = std::env::current_dir() {
+        runtime_config.core.workspace = current_dir;
+    }
+
+    let database = Database::new(&database_path(&runtime_config))
         .await
         .context("Failed to open database")?;
 
     let secret_manager = Arc::new(SecretManager::new(SERVICE_NAME));
     let secret_cache = Arc::new(SecretCache::new(secret_manager.clone()));
 
-    let providers = build_providers(config, &secret_manager, &secret_cache).await?;
-    let router = Arc::new(LLMRouter::new(providers, Arc::new(config.llm.clone())));
+    let providers = build_providers(&runtime_config, &secret_manager, &secret_cache).await?;
+    let router = Arc::new(LLMRouter::new(
+        providers,
+        Arc::new(runtime_config.llm.clone()),
+    ));
     let rate_limiter = Arc::new(RateLimiter::new(database.pool().clone()));
     let risk_assessor = RiskAssessor::new();
     let task_repo = Arc::new(TaskRepository::new(database.pool().clone()));
-    let tools = Arc::new(build_tools(config)?);
-    let steering = load_steering(config).await;
+    let tools = Arc::new(build_tools(&runtime_config)?);
+    let steering = load_steering(&runtime_config).await;
     let workspace_locks = Arc::new(WorkspaceLocks::new());
 
     let mut agent = AgentCore::new(
@@ -47,7 +55,7 @@ pub async fn handle_run(task: String, config: &Config, format: OutputFormat) -> 
         task_repo,
         tools,
         steering,
-        Arc::new(config.clone()),
+        Arc::new(runtime_config.clone()),
         workspace_locks,
     )?;
 
