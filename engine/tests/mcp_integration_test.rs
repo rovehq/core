@@ -31,6 +31,7 @@ async fn test_mcp_spawner_tracks_configured_servers() {
         command: "echo".to_string(),
         args: vec!["hello".to_string()],
         profile: SandboxProfile::default(),
+        cached_tools: Vec::new(),
         enabled: true,
     };
 
@@ -51,6 +52,7 @@ async fn test_mcp_spawner_filters_disabled_servers() {
             command: "echo".to_string(),
             args: vec![],
             profile: SandboxProfile::default(),
+            cached_tools: Vec::new(),
             enabled: true,
         },
         McpServerConfig {
@@ -60,6 +62,7 @@ async fn test_mcp_spawner_filters_disabled_servers() {
             command: "echo".to_string(),
             args: vec![],
             profile: SandboxProfile::default(),
+            cached_tools: Vec::new(),
             enabled: false,
         },
     ];

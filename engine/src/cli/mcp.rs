@@ -6,9 +6,11 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::api::mcp::{McpSandbox, McpServerConfig, McpSpawner, McpToolDescriptor, SandboxProfile};
 use crate::cli::McpAction;
 use crate::config::Config;
+use crate::runtime::mcp::{
+    McpSandbox, McpServerConfig, McpSpawner, McpToolDescriptor, SandboxProfile,
+};
 
 #[derive(Debug, Clone)]
 struct McpTemplate {
@@ -156,7 +158,7 @@ fn show_server(config: &Config, name: &str) -> Result<()> {
         println!("  - (none)");
     } else {
         for path in &server.profile.read_paths {
-            println!("  - {}", path.display());
+            println!("  - {}", path.to_string_lossy());
         }
     }
     println!("  write_paths:");
@@ -164,7 +166,7 @@ fn show_server(config: &Config, name: &str) -> Result<()> {
         println!("  - (none)");
     } else {
         for path in &server.profile.write_paths {
-            println!("  - {}", path.display());
+            println!("  - {}", path.to_string_lossy());
         }
     }
 
@@ -252,6 +254,7 @@ fn add_server(config: &Config, request: AddServerRequest) -> Result<()> {
         command,
         args,
         profile,
+        cached_tools: Vec::new(),
         enabled: !request.disabled,
     });
     writable.save()?;
@@ -308,6 +311,7 @@ async fn test_server(config: &Config, name: &str) -> Result<()> {
 
     let spawner = Arc::new(McpSpawner::new(vec![server]));
     let tools = spawner.list_tools(name).await?;
+    cache_tools(name, &tools)?;
     println!(
         "MCP server '{}' started successfully and exposed {} tool(s).",
         name,
@@ -326,8 +330,22 @@ async fn list_server_tools(config: &Config, name: &str) -> Result<()> {
 
     let spawner = Arc::new(McpSpawner::new(vec![server]));
     let tools = spawner.list_tools(name).await?;
+    cache_tools(name, &tools)?;
     print_tools(name, &tools)?;
     spawner.stop_all().await;
+    Ok(())
+}
+
+fn cache_tools(name: &str, tools: &[McpToolDescriptor]) -> Result<()> {
+    let mut config = Config::load_or_create()?;
+    let server = config
+        .mcp
+        .servers
+        .iter_mut()
+        .find(|server| server.name == name)
+        .ok_or_else(|| anyhow::anyhow!("unknown MCP server '{}'", name))?;
+    server.cached_tools = tools.to_vec();
+    config.save()?;
     Ok(())
 }
 

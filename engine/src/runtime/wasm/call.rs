@@ -13,6 +13,14 @@ impl WasmRuntime {
 
         self.validate_call_permissions(name, input)?;
 
+        if !self.plugins.contains_key(name) {
+            tracing::debug!(
+                "Plugin '{}' not loaded yet; loading lazily on first call",
+                name
+            );
+            self.load_plugin(name).await?;
+        }
+
         let metadata = self.plugins.get_mut(name).ok_or_else(|| {
             tracing::error!("Plugin '{}' not loaded", name);
             EngineError::PluginNotLoaded(name.to_string())

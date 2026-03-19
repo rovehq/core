@@ -14,7 +14,7 @@ impl McpSandbox {
     ) -> Result<Command, EngineError> {
         debug!("Wrapping MCP command with Seatbelt sandbox");
         let resolved_cmd = resolve_command_path(cmd);
-        let exec_literal = resolved_cmd.display().to_string();
+        let exec_literal = seatbelt_string_literal(&resolved_cmd);
 
         let mut sb_profile = String::from("(version 1)\n(allow default)\n");
         sb_profile.push_str(&format!(
@@ -30,7 +30,7 @@ impl McpSandbox {
             if path.exists() {
                 sb_profile.push_str(&format!(
                     "(allow file-read* (subpath \"{}\"))\n",
-                    path.display()
+                    seatbelt_string_literal(path)
                 ));
             }
         }
@@ -39,12 +39,16 @@ impl McpSandbox {
             if path.exists() {
                 sb_profile.push_str(&format!(
                     "(allow file-write* (subpath \"{}\"))\n",
-                    path.display()
+                    seatbelt_string_literal(path)
                 ));
             }
         }
 
-        let profile_path = std::env::temp_dir().join(format!("rove_mcp_{}.sb", std::process::id()));
+        let profile_path = std::env::temp_dir().join(format!(
+            "rove_mcp_{}_{}.sb",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         std::fs::write(&profile_path, sb_profile).map_err(EngineError::Io)?;
 
         let mut command = Command::new("sandbox-exec");
@@ -54,6 +58,13 @@ impl McpSandbox {
         command.args(args);
         Ok(command)
     }
+}
+
+fn seatbelt_string_literal(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 fn resolve_command_path(cmd: &str) -> PathBuf {

@@ -131,6 +131,9 @@ fn log_file_path() -> PathBuf {
 
 async fn run_daemon(port: u16) -> Result<()> {
     let config = rove_engine::config::Config::load_or_create()?;
+    // Runtime manager bootstrap happens inside CLI bootstrap:
+    // builtins are registered immediately, while plugin schemas are loaded
+    // without starting WASM modules or MCP servers until first use.
     let (agent, database, gateway) = rove_engine::cli::bootstrap::init_daemon().await?;
     gateway.clone().start();
     start_telegram_if_enabled(&config, gateway.clone(), database.clone());

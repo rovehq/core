@@ -31,6 +31,7 @@ async fn test_mcp_echo_server_basic() {
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
         profile: script_profile(&server_path),
+        cached_tools: Vec::new(),
         enabled: true,
     };
 
@@ -85,6 +86,7 @@ async fn test_mcp_echo_server_multiple_calls() {
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
         profile: script_profile(&server_path),
+        cached_tools: Vec::new(),
         enabled: true,
     };
 
@@ -135,6 +137,7 @@ for line in sys.stdin:
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
         profile: script_profile(&server_path),
+        cached_tools: Vec::new(),
         enabled: true,
     };
 
@@ -173,6 +176,7 @@ async fn test_mcp_keepalive_monitoring() {
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
         profile: script_profile(&server_path),
+        cached_tools: Vec::new(),
         enabled: true,
     };
 

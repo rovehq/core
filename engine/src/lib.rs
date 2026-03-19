@@ -15,7 +15,6 @@ pub mod system;
 pub mod tools;
 
 pub use api::gateway;
-pub use api::mcp;
 pub use api::server;
 pub use api::ws_client;
 pub use channels as bot;
@@ -24,6 +23,7 @@ pub use cli::tui;
 pub use config::metadata as info;
 pub use memory::conductor;
 pub use memory::knowledge_graph;
+pub use runtime::mcp;
 pub use security::command_executor;
 pub use security::crypto;
 pub use security::fs_guard;

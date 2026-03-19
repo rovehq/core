@@ -1,13 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sha2::Digest;
-use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::llm::{Message, ToolCall};
-use crate::risk_assessor::{classify_terminal_command, Operation, RiskTier};
+use crate::risk_assessor::{classify_terminal_command, Operation};
 use crate::security::secrets::scrub_text;
 use sdk::errors::EngineError;
+use sdk::TaskSource;
 
 use super::{AgentCore, MAX_RESULT_SIZE};
 
@@ -107,13 +106,15 @@ impl AgentCore {
         tool_call: &ToolCall,
     ) -> Result<ToolExecution> {
         let tool_args = self.parse_tool_arguments(task_id, tool_call);
-        let (tool_tier, approved_by) = self
-            .assess_tool_risk(task_id, &tool_call.name, &tool_args)
-            .await?;
+        let tool_tier = self.audit_risk_tier(&tool_call.name, &tool_args)?;
+        let approved_by = match tool_tier {
+            0 => "auto".to_string(),
+            _ => "registry".to_string(),
+        };
 
         let tool_result = self
-            .dispatch_tool(&tool_call.name, &tool_call.arguments)
-            .await;
+            .dispatch_tool(task_id, &tool_call.name, tool_args.clone())
+            .await?;
         if tool_result.len() > MAX_RESULT_SIZE {
             warn!(
                 task_id = %task_id,
@@ -131,11 +132,12 @@ impl AgentCore {
             .into());
         }
 
-        let safe_result = self.injection_detector.sanitize(&tool_result);
-        self.record_tool_audit(task_id, tool_call, tool_tier, &approved_by, &safe_result)
+        self.record_tool_audit(task_id, tool_call, tool_tier, &approved_by, &tool_result)
             .await;
 
-        Ok(ToolExecution { safe_result })
+        Ok(ToolExecution {
+            safe_result: tool_result,
+        })
     }
 
     fn parse_tool_arguments(&self, task_id: &str, tool_call: &ToolCall) -> serde_json::Value {
@@ -151,16 +153,35 @@ impl AgentCore {
         })
     }
 
-    async fn dispatch_tool(&self, tool_name: &str, arguments_json: &str) -> String {
+    async fn dispatch_tool(
+        &self,
+        task_id: &str,
+        tool_name: &str,
+        args: serde_json::Value,
+    ) -> Result<String> {
         if tool_name == "write_file" {
             if let Some(workspace) = self.tools.workspace() {
                 let lock = self.workspace_locks.get_lock(workspace);
                 let _guard = lock.lock().await;
-                return self.tools.dispatch(tool_name, arguments_json).await;
+                return match self
+                    .tools
+                    .call(tool_name, args, task_id, &self.current_task_source())
+                    .await
+                {
+                    Ok(result) => Ok(stringify_tool_result(result)),
+                    Err(error) => map_tool_error(error),
+                };
             }
         }
 
-        self.tools.dispatch(tool_name, arguments_json).await
+        match self
+            .tools
+            .call(tool_name, args, task_id, &self.current_task_source())
+            .await
+        {
+            Ok(result) => Ok(stringify_tool_result(result)),
+            Err(error) => map_tool_error(error),
+        }
     }
 
     async fn record_tool_audit(
@@ -199,12 +220,7 @@ impl AgentCore {
         }
     }
 
-    async fn assess_tool_risk(
-        &self,
-        task_id: &str,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> Result<(i32, String)> {
+    fn audit_risk_tier(&self, tool_name: &str, args: &serde_json::Value) -> Result<i32> {
         let op_name = self.tool_operation_name(tool_name, args);
 
         let arg_strings = match args {
@@ -216,26 +232,16 @@ impl AgentCore {
         };
 
         let operation = Operation::new(op_name, arg_strings, self.current_source.clone());
-        let tier = self
-            .risk_assessor
-            .assess(&operation)
-            .context("Failed to assess tool risk")?;
-
-        debug!(task_id = %task_id, tool = %tool_name, "Tool '{}' assessed as {:?}", tool_name, tier);
-
-        let approved_by = match tier {
-            RiskTier::Tier0 => "auto".to_string(),
-            RiskTier::Tier1 => self.confirm_tier1(task_id, tool_name).await,
-            RiskTier::Tier2 => self.confirm_tier2(task_id, tool_name).await?,
-        };
+        let tier = self.risk_assessor.assess(&operation)?;
 
         let tier_value = match tier {
-            RiskTier::Tier0 => 0,
-            RiskTier::Tier1 => 1,
-            RiskTier::Tier2 => 2,
+            crate::risk_assessor::RiskTier::Tier0 => 0,
+            crate::risk_assessor::RiskTier::Tier1 => 1,
+            crate::risk_assessor::RiskTier::Tier2 => 2,
         };
 
-        Ok((tier_value, approved_by))
+        debug!(tool = %tool_name, "Tool '{}' assessed as audit tier {}", tool_name, tier_value);
+        Ok(tier_value)
     }
 
     fn tool_operation_name(&self, tool_name: &str, args: &serde_json::Value) -> &'static str {
@@ -253,96 +259,26 @@ impl AgentCore {
         }
     }
 
-    async fn confirm_tier1(&self, task_id: &str, tool_name: &str) -> String {
-        if !self.config.security.confirm_tier1 {
-            debug!(
-                task_id = %task_id,
-                tool = %tool_name,
-                "Tier 1 operation auto-approved (confirm_tier1=false)"
-            );
-            return "auto".to_string();
-        }
-
-        info!(
-            task_id = %task_id,
-            tool = %tool_name,
-            "Tier 1 operation: {} (write/reversible)",
-            tool_name
-        );
-        println!("\n[Tier 1 Risk] The agent wants to run: {}", tool_name);
-
-        let delay_secs = self.config.security.confirm_tier1_delay;
-        println!(
-            "Auto-approving in {} seconds. Press ENTER to approve now...",
-            delay_secs
-        );
-
-        let mut reader = BufReader::new(tokio::io::stdin());
-        let mut buf = String::new();
-
-        match tokio::time::timeout(Duration::from_secs(delay_secs), reader.read_line(&mut buf))
-            .await
-        {
-            Ok(Ok(0)) => {
-                debug!(task_id = %task_id, "stdin not available, auto-approving Tier1");
-                println!("Auto-approved (no stdin).");
-                "auto".to_string()
-            }
-            Ok(Ok(_)) => {
-                println!("Approved by user.");
-                "user".to_string()
-            }
-            Ok(Err(_)) => {
-                debug!(task_id = %task_id, "stdin not available, auto-approving Tier1");
-                "auto".to_string()
-            }
-            Err(_) => {
-                println!("Auto-approved (timeout).");
-                "countdown".to_string()
+    fn current_task_source(&self) -> TaskSource {
+        match self.current_source {
+            crate::risk_assessor::OperationSource::Local => TaskSource::Cli,
+            crate::risk_assessor::OperationSource::Remote => {
+                TaskSource::Remote("runtime".to_string())
             }
         }
     }
+}
 
-    async fn confirm_tier2(&self, task_id: &str, tool_name: &str) -> Result<String> {
-        if !self.config.security.require_explicit_tier2 {
-            debug!(
-                task_id = %task_id,
-                tool = %tool_name,
-                "Tier 2 operation auto-approved (require_explicit_tier2=false)"
-            );
-            return Ok("auto".to_string());
-        }
+fn stringify_tool_result(result: serde_json::Value) -> String {
+    match result {
+        serde_json::Value::String(text) => text,
+        other => other.to_string(),
+    }
+}
 
-        warn!(
-            task_id = %task_id,
-            tool = %tool_name,
-            "Tier 2 operation: {} (destructive/irreversible)",
-            tool_name
-        );
-        println!(
-            "\n[Tier 2 Risk] The agent wants to run a potentially dangerous operation: {}",
-            tool_name
-        );
-        println!("To approve, please type 'Y' and press ENTER. Any other input will abort.");
-
-        let mut reader = BufReader::new(tokio::io::stdin());
-        let mut buf = String::new();
-        match reader.read_line(&mut buf).await {
-            Ok(_)
-                if buf.trim().eq_ignore_ascii_case("y")
-                    || buf.trim().eq_ignore_ascii_case("yes") =>
-            {
-                println!("Approved by user.");
-                Ok("user".to_string())
-            }
-            Ok(_) => Err(EngineError::OperationAbortedByUser.into()),
-            Err(_) => {
-                warn!(
-                    task_id = %task_id,
-                    "Tier 2 operation requires explicit approval but stdin not available"
-                );
-                Err(EngineError::OperationAbortedByUser.into())
-            }
-        }
+fn map_tool_error(error: EngineError) -> Result<String> {
+    match error {
+        EngineError::OperationAbortedByUser => Err(error.into()),
+        other => Ok(format!("ERROR: {}", other)),
     }
 }

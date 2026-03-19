@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{McpServer, McpServerConfig, McpSpawner};
-use crate::api::mcp::SandboxProfile;
+use crate::runtime::mcp::SandboxProfile;
 
 #[test]
 fn test_spawner_creation() {
@@ -12,6 +12,7 @@ fn test_spawner_creation() {
         command: "echo".to_string(),
         args: vec!["hello".to_string()],
         profile: SandboxProfile::default(),
+        cached_tools: Vec::new(),
         enabled: true,
     }];
 
@@ -28,6 +29,7 @@ fn test_disabled_server_not_loaded() {
         command: "echo".to_string(),
         args: vec![],
         profile: SandboxProfile::default(),
+        cached_tools: Vec::new(),
         enabled: false,
     }];
 
@@ -51,6 +53,7 @@ async fn test_server_handle() {
         command: "echo".to_string(),
         args: vec![],
         profile: SandboxProfile::default(),
+        cached_tools: Vec::new(),
         enabled: true,
     }];
 

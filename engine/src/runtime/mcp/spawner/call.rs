@@ -1,4 +1,4 @@
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, warn};
 
 use sdk::errors::EngineError;
@@ -178,17 +178,24 @@ impl McpSpawner {
                 warn!(server = server_name, "MCP server connection lost");
                 instance.crash_count += 1;
                 let crash_count = instance.crash_count;
+                let mut stderr = String::new();
+                let _ = instance.stderr.read_to_string(&mut stderr).await;
                 drop(servers);
 
                 if crash_count >= MAX_RESTART_ATTEMPTS {
                     return Err(EngineError::Plugin(format!(
-                        "MCP server {} crashed {} times, refusing to restart",
-                        server_name, crash_count
+                        "MCP server {} crashed {} times, refusing to restart{}",
+                        server_name,
+                        crash_count,
+                        render_stderr_suffix(&stderr)
                     )));
                 }
 
                 self.stop_server(server_name).await?;
-                return Err(EngineError::Plugin("connection lost".to_string()));
+                return Err(EngineError::Plugin(format!(
+                    "connection lost{}",
+                    render_stderr_suffix(&stderr)
+                )));
             }
             Ok(_) => {}
         }
@@ -229,5 +236,14 @@ impl McpSpawner {
         response
             .result
             .ok_or_else(|| EngineError::Plugin("MCP response missing result field".to_string()))
+    }
+}
+
+fn render_stderr_suffix(stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!(" (stderr: {})", trimmed)
     }
 }

@@ -69,6 +69,25 @@ CREATE TABLE IF NOT EXISTS plugins (
 
 CREATE INDEX IF NOT EXISTS idx_plugins_enabled ON plugins(enabled);
 
+CREATE TABLE IF NOT EXISTS installed_plugins (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    version      TEXT NOT NULL,
+    plugin_type  TEXT NOT NULL,
+    trust_tier   INTEGER NOT NULL DEFAULT 2,
+    manifest     TEXT NOT NULL,
+    binary_path  TEXT,
+    binary_hash  TEXT NOT NULL,
+    signature    TEXT NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    installed_at INTEGER NOT NULL,
+    last_used    INTEGER,
+    config       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_installed_plugins_type
+  ON installed_plugins(plugin_type, enabled);
+
 -- 3. Secrets Cache
 CREATE TABLE IF NOT EXISTS secrets_cache (
     key TEXT PRIMARY KEY,

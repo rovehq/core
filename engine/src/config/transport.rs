@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{default_ws_reconnect_delay, default_ws_url};
-use crate::api::mcp::McpServerConfig;
+use crate::runtime::mcp::McpServerConfig;
 
 /// WebSocket client configuration for connecting to an external UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]

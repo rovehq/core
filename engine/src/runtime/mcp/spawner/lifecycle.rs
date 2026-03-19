@@ -39,12 +39,16 @@ impl McpSpawner {
         let stdout = child.stdout.take().ok_or_else(|| {
             EngineError::Plugin("failed to capture MCP server stdout".to_string())
         })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            EngineError::Plugin("failed to capture MCP server stderr".to_string())
+        })?;
 
         let instance = McpServerInstance {
             config: config.clone(),
             process: child,
             stdin,
             stdout: tokio::io::BufReader::new(stdout),
+            stderr: tokio::io::BufReader::new(stderr),
             crash_count: 0,
             last_activity: std::time::Instant::now(),
         };

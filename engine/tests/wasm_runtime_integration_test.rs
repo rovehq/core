@@ -229,7 +229,7 @@ fn test_unload_all_empty() {
 }
 
 #[tokio::test]
-async fn test_call_plugin_not_loaded() {
+async fn test_call_plugin_triggers_lazy_load() {
     // Create a temporary workspace directory
     let temp_dir = TempDir::new().unwrap();
     let workspace = temp_dir.path().to_path_buf();
@@ -240,13 +240,20 @@ async fn test_call_plugin_not_loaded() {
     let fs_guard = Arc::new(FileSystemGuard::new(workspace).expect("test workspace"));
     let mut runtime = WasmRuntime::new(manifest, crypto, fs_guard);
 
-    // Attempt to call a plugin that's not loaded
+    // First call should attempt a lazy load rather than returning PluginNotLoaded.
     let result = runtime
         .call_plugin("nonexistent", "some_function", b"{}")
         .await;
 
-    // Should fail with PluginNotLoaded error
-    assert!(matches!(result, Err(EngineError::PluginNotLoaded(_))));
+    assert!(result.is_err());
+    assert!(
+        !matches!(result, Err(EngineError::PluginNotLoaded(_))),
+        "lazy load should surface the load failure, not a synthetic not-loaded error"
+    );
+    assert!(
+        !runtime.is_plugin_loaded("nonexistent"),
+        "failed lazy loads must not leave a half-loaded plugin in cache"
+    );
 }
 
 #[tokio::test]

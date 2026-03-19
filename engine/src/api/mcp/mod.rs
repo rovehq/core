@@ -1,10 +1,16 @@
-//! Model Context Protocol (MCP) Integration
+//! api/mcp — Rove as an MCP server
 //!
-//! This module provides secure integration with external MCP servers.
-//! Every MCP server runs inside an OS-level sandbox (Gate 5) to prevent
-//! compromised external processes from accessing the host system.
+//! This module is a compatibility surface for code that still refers to
+//! `api::mcp`. The inward MCP runtime now lives under `runtime/mcp/`.
 //!
-//! Phase 4 — MCP + Gate 5 + WASM Plugins
+//! OUTWARD direction:
+//! external MCP-aware clients -> Rove
+//!
+//! INWARD direction:
+//! Rove -> external MCP servers
+//!
+//! For the inward runtime, sandboxing, spawning, and lifecycle handling,
+//! see `runtime/mcp/`.
 
 pub mod sandbox;
 pub mod spawner;

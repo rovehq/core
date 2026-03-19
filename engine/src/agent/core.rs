@@ -22,7 +22,6 @@ use crate::builtin_tools::ToolRegistry;
 use crate::conductor::MemorySystem;
 use crate::db::tasks::{TaskRepository, TaskStatus};
 use crate::gateway::{Task, WorkspaceLocks};
-use crate::injection_detector::InjectionDetector;
 use crate::llm::router::LLMRouter;
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::{OperationSource, RiskAssessor};
@@ -45,7 +44,6 @@ pub struct AgentCore {
     rate_limiter: Arc<RateLimiter>,
     task_repo: Arc<TaskRepository>,
     tools: Arc<ToolRegistry>,
-    injection_detector: InjectionDetector,
     current_source: OperationSource,
     steering: Option<SteeringEngine>,
     memory_system: Option<Arc<MemorySystem>>,
@@ -73,9 +71,6 @@ impl AgentCore {
         config: Arc<crate::config::Config>,
         workspace_locks: Arc<WorkspaceLocks>,
     ) -> Result<Self> {
-        let injection_detector = InjectionDetector::new().map_err(|error| {
-            anyhow::anyhow!("Failed to initialize injection detector: {}", error)
-        })?;
         let dispatch_brain = brain::dispatch::DispatchBrain::init()
             .map_err(|error| anyhow::anyhow!("Failed to initialize dispatch brain: {}", error))?;
 
@@ -86,7 +81,6 @@ impl AgentCore {
             rate_limiter,
             task_repo,
             tools,
-            injection_detector,
             current_source: OperationSource::Local,
             steering,
             memory_system: None,
