@@ -26,6 +26,8 @@ async fn test_mcp_echo_server_basic() {
 
     let config = McpServerConfig {
         name: "echo".to_string(),
+        template: Some("custom".to_string()),
+        description: Some("test echo server".to_string()),
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
         profile: script_profile(&server_path),
@@ -46,10 +48,17 @@ async fn test_mcp_echo_server_basic() {
             assert!(response.is_object());
             let obj = response.as_object().unwrap();
             assert_eq!(
-                obj.get("method").and_then(|v| v.as_str()),
+                obj.get("structuredContent")
+                    .and_then(|v| v.get("method"))
+                    .and_then(|v| v.as_str()),
                 Some("test_echo")
             );
-            assert_eq!(obj.get("echo").and_then(|v| v.as_str()), Some("success"));
+            assert_eq!(
+                obj.get("structuredContent")
+                    .and_then(|v| v.get("echo"))
+                    .and_then(|v| v.as_str()),
+                Some("success")
+            );
         }
         Err(e) => {
             panic!("MCP call failed: {}", e);
@@ -71,6 +80,8 @@ async fn test_mcp_echo_server_multiple_calls() {
 
     let config = McpServerConfig {
         name: "echo".to_string(),
+        template: Some("custom".to_string()),
+        description: Some("test echo server".to_string()),
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
         profile: script_profile(&server_path),
@@ -119,6 +130,8 @@ for line in sys.stdin:
 
     let config = McpServerConfig {
         name: "malicious".to_string(),
+        template: Some("custom".to_string()),
+        description: Some("malicious server".to_string()),
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
         profile: script_profile(&server_path),
@@ -155,6 +168,8 @@ async fn test_mcp_keepalive_monitoring() {
 
     let config = McpServerConfig {
         name: "echo".to_string(),
+        template: Some("custom".to_string()),
+        description: Some("test echo server".to_string()),
         command: "python3".to_string(),
         args: vec![server_path.to_string_lossy().to_string()],
         profile: script_profile(&server_path),

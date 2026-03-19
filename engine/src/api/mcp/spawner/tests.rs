@@ -7,6 +7,8 @@ use crate::api::mcp::SandboxProfile;
 fn test_spawner_creation() {
     let configs = vec![McpServerConfig {
         name: "test-server".to_string(),
+        template: Some("custom".to_string()),
+        description: Some("test".to_string()),
         command: "echo".to_string(),
         args: vec!["hello".to_string()],
         profile: SandboxProfile::default(),
@@ -21,6 +23,8 @@ fn test_spawner_creation() {
 fn test_disabled_server_not_loaded() {
     let configs = vec![McpServerConfig {
         name: "disabled-server".to_string(),
+        template: Some("custom".to_string()),
+        description: Some("disabled".to_string()),
         command: "echo".to_string(),
         args: vec![],
         profile: SandboxProfile::default(),
@@ -42,6 +46,8 @@ async fn test_unknown_server_rejected() {
 async fn test_server_handle() {
     let configs = vec![McpServerConfig {
         name: "test".to_string(),
+        template: Some("custom".to_string()),
+        description: Some("test".to_string()),
         command: "echo".to_string(),
         args: vec![],
         profile: SandboxProfile::default(),

@@ -53,6 +53,11 @@ impl McpSpawner {
             .write()
             .await
             .insert(name.to_string(), instance);
+        if let Err(error) = self.initialize_server(name).await {
+            let _ = self.stop_server(name).await;
+            return Err(error);
+        }
+
         info!(server = name, "MCP server started successfully");
         Ok(())
     }

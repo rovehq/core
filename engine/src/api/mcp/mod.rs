@@ -10,4 +10,4 @@ pub mod sandbox;
 pub mod spawner;
 
 pub use sandbox::{McpSandbox, SandboxProfile};
-pub use spawner::{McpServer, McpServerConfig, McpSpawner};
+pub use spawner::{McpServer, McpServerConfig, McpSpawner, McpToolDescriptor};

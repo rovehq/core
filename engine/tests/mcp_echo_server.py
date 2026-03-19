@@ -1,18 +1,40 @@
 #!/usr/bin/env python3
-"""
-Simple echo MCP server for testing JSON-RPC communication.
+"""Simple stdio MCP test server."""
 
-This server implements the MCP protocol by:
-1. Reading JSON-RPC requests from stdin (one per line)
-2. Processing the request (echo back the params)
-3. Writing JSON-RPC responses to stdout (one per line)
-
-Usage:
-    python3 mcp_echo_server.py
-"""
-
-import sys
 import json
+import sys
+
+
+TOOLS = [
+    {
+        "name": "test_echo",
+        "description": "Echo the provided arguments",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string"}
+            }
+        }
+    },
+    {
+        "name": "test_multiple",
+        "description": "Echo repeated test payloads",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "iteration": {"type": "integer"}
+            }
+        }
+    },
+    {
+        "name": "test",
+        "description": "Generic test tool",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+]
 
 def main():
     # Ensure line buffering for immediate I/O
@@ -26,7 +48,6 @@ def main():
             # Parse JSON-RPC request
             request = json.loads(line.strip())
             
-            # Validate JSON-RPC 2.0 format
             if request.get("jsonrpc") != "2.0":
                 response = {
                     "jsonrpc": "2.0",
@@ -36,15 +57,58 @@ def main():
                         "message": "Invalid Request: jsonrpc must be '2.0'"
                     }
                 }
-            else:
-                # Echo back the params as the result
+            elif request.get("method") == "initialize":
                 response = {
                     "jsonrpc": "2.0",
                     "id": request.get("id"),
                     "result": {
-                        "method": request.get("method"),
-                        "params": request.get("params"),
-                        "echo": "success"
+                        "protocolVersion": request["params"].get("protocolVersion", "2024-11-05"),
+                        "serverInfo": {
+                            "name": "rove-test-echo",
+                            "version": "0.1.0"
+                        },
+                        "capabilities": {
+                            "tools": {}
+                        }
+                    }
+                }
+            elif request.get("method") == "notifications/initialized":
+                continue
+            elif request.get("method") == "tools/list":
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {
+                        "tools": TOOLS
+                    }
+                }
+            elif request.get("method") == "tools/call":
+                tool_name = request.get("params", {}).get("name")
+                arguments = request.get("params", {}).get("arguments", {})
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "success"
+                            }
+                        ],
+                        "structuredContent": {
+                            "method": tool_name,
+                            "params": arguments,
+                            "echo": "success"
+                        }
+                    }
+                }
+            else:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "error": {
+                        "code": -32601,
+                        "message": f"Method not found: {request.get('method')}"
                     }
                 }
             

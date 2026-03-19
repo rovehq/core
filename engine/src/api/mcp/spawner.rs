@@ -20,17 +20,32 @@ const MAX_RESTART_ATTEMPTS: u32 = 3;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
+    #[serde(default)]
+    pub template: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
     pub command: String,
     pub args: Vec<String>,
     pub profile: SandboxProfile,
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolDescriptor {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, rename = "inputSchema", alias = "input_schema")]
+    pub input_schema: serde_json::Value,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct JsonRpcRequest {
     pub(super) jsonrpc: String,
-    pub(super) id: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) id: Option<serde_json::Value>,
     pub(super) method: String,
+    #[serde(default)]
     pub(super) params: serde_json::Value,
 }
 
@@ -96,6 +111,10 @@ impl McpServer {
         params: serde_json::Value,
     ) -> Result<serde_json::Value, EngineError> {
         self.spawner.call_tool(&self.name, tool_name, params).await
+    }
+
+    pub async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, EngineError> {
+        self.spawner.list_tools(&self.name).await
     }
 
     pub async fn is_running(&self) -> bool {

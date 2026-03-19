@@ -110,6 +110,12 @@ pub enum Command {
         action: SecretsAction,
     },
 
+    /// MCP server management.
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+
     /// Local brain management.
     Brain {
         #[command(subcommand)]
@@ -253,4 +259,73 @@ pub enum SecretsAction {
     List,
     /// Remove a stored secret.
     Remove { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum McpAction {
+    /// List configured MCP servers.
+    List,
+    /// Show one configured MCP server.
+    Show { name: String },
+    /// List built-in and installed MCP templates.
+    Templates,
+    /// Add a configured MCP server.
+    Add {
+        /// Stable server name.
+        name: String,
+
+        /// Template name to apply.
+        #[arg(long, default_value = "custom")]
+        template: String,
+
+        /// Executable command for the MCP server.
+        #[arg(long)]
+        command: Option<String>,
+
+        /// Repeated argument passed to the MCP server command.
+        #[arg(long = "arg")]
+        args: Vec<String>,
+
+        /// Optional human description.
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Allow outbound network access for this server.
+        #[arg(long)]
+        allow_network: bool,
+
+        /// Allow temporary file access.
+        #[arg(long)]
+        allow_tmp: bool,
+
+        /// Allow reading the current workspace.
+        #[arg(long)]
+        workspace_read: bool,
+
+        /// Allow writing the current workspace.
+        #[arg(long)]
+        workspace_write: bool,
+
+        /// Additional allowed read path.
+        #[arg(long = "read", value_name = "PATH")]
+        read_paths: Vec<PathBuf>,
+
+        /// Additional allowed write path.
+        #[arg(long = "write", value_name = "PATH")]
+        write_paths: Vec<PathBuf>,
+
+        /// Add the server in disabled state.
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Enable a configured MCP server.
+    Enable { name: String },
+    /// Disable a configured MCP server.
+    Disable { name: String },
+    /// Remove a configured MCP server.
+    Remove { name: String },
+    /// Verify that a configured MCP server starts and responds to tools/list.
+    Test { name: String },
+    /// List tools exposed by a configured MCP server.
+    Tools { name: String },
 }

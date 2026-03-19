@@ -7,7 +7,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 use rove_engine::channels::TelegramBot;
 use rove_engine::cli::{
-    Cli, Command, ConfigAction, ModelAction, OutputFormat, PluginAction, SecretsAction,
+    Cli, Command, ConfigAction, McpAction, ModelAction, OutputFormat, PluginAction, SecretsAction,
     SteeringAction,
 };
 use rove_engine::config::metadata::SERVICE_NAME;
@@ -64,6 +64,10 @@ async fn main() -> Result<()> {
             handle_config(action, &config).await?;
         }
         Some(Command::Secrets { action }) => handle_secrets(action).await?,
+        Some(Command::Mcp { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            handle_mcp(action, &config).await?;
+        }
         Some(Command::Brain { action }) => rove_engine::cli::brain::execute(action).await?,
         Some(Command::Daemon { port }) => run_daemon(port).await?,
         Some(Command::Doctor) => {
@@ -256,6 +260,10 @@ async fn handle_secrets(action: SecretsAction) -> Result<()> {
         SecretsAction::List => rove_engine::cli::secrets::list().await,
         SecretsAction::Remove { name } => rove_engine::cli::secrets::remove(&name).await,
     }
+}
+
+async fn handle_mcp(action: McpAction, config: &rove_engine::config::Config) -> Result<()> {
+    rove_engine::cli::mcp::handle(action, config).await
 }
 
 fn start_telegram_if_enabled(

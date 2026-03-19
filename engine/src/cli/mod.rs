@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod database_path;
 pub mod doctor;
 pub mod history;
+pub mod mcp;
 pub mod model;
 pub mod output;
 pub mod plugins;

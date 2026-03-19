@@ -150,6 +150,41 @@ impl Config {
         Ok(config)
     }
 
+    /// Save configuration to the default path.
+    pub fn save(&self) -> Result<(), EngineError> {
+        let path = Self::config_path()?;
+        self.save_to_path(&path)
+    }
+
+    /// Save configuration to a specific path after validation and clamping.
+    pub fn save_to_path(&self, path: &Path) -> Result<(), EngineError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                EngineError::Config(format!("Failed to create config directory: {}", e))
+            })?;
+        }
+
+        let mut config = self.clone();
+        config.clamp_and_validate()?;
+
+        let toml_string = toml::to_string_pretty(&config)
+            .map_err(|e| EngineError::Config(format!("Failed to serialize config: {}", e)))?;
+
+        fs::write(path, &toml_string)
+            .map_err(|e| EngineError::Config(format!("Failed to write config file: {}", e)))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(path, perms).map_err(|e| {
+                EngineError::Config(format!("Failed to set config file permissions: {}", e))
+            })?;
+        }
+
+        Ok(())
+    }
+
     /// Get the default configuration file path (~/.rove/config.toml)
     fn default_config_path() -> Result<PathBuf, EngineError> {
         if let Some(path) = std::env::var_os("ROVE_CONFIG_PATH").filter(|value| !value.is_empty()) {

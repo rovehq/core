@@ -26,6 +26,8 @@ async fn test_mcp_spawner_rejects_unknown_server() {
 async fn test_mcp_spawner_tracks_configured_servers() {
     let config = McpServerConfig {
         name: "test-server".to_string(),
+        template: Some("custom".to_string()),
+        description: Some("test server".to_string()),
         command: "echo".to_string(),
         args: vec!["hello".to_string()],
         profile: SandboxProfile::default(),
@@ -44,6 +46,8 @@ async fn test_mcp_spawner_filters_disabled_servers() {
     let configs = vec![
         McpServerConfig {
             name: "enabled".to_string(),
+            template: Some("custom".to_string()),
+            description: Some("enabled".to_string()),
             command: "echo".to_string(),
             args: vec![],
             profile: SandboxProfile::default(),
@@ -51,6 +55,8 @@ async fn test_mcp_spawner_filters_disabled_servers() {
         },
         McpServerConfig {
             name: "disabled".to_string(),
+            template: Some("custom".to_string()),
+            description: Some("disabled".to_string()),
             command: "echo".to_string(),
             args: vec![],
             profile: SandboxProfile::default(),
