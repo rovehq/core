@@ -5,6 +5,7 @@ pub mod embeddings;
 pub mod episodic;
 pub mod evaluator;
 pub mod executor;
+pub mod graph;
 pub mod hybrid;
 pub mod planner;
 pub mod project;
@@ -37,6 +38,7 @@ pub mod memory_types {
 pub use context::ContextAssembler;
 pub use embeddings::EmbeddingGenerator;
 pub use evaluator::Evaluator;
+pub use graph::{DagGraph, DagNode, DagNodeState, DagWave};
 pub use hybrid::{ExecutionLocation, HybridExecutor, StepExecutionResult};
 pub use planner::Planner;
 pub use session::SessionMemory;
