@@ -3,7 +3,7 @@
 //! Interacts with the LLM to generate, refine, and orchestrate `ConductorPlan`s
 //! based on user requests and available tools.
 
-use crate::conductor::types::{ConductorPlan, PlanStep, StepRole, StepType};
+use crate::conductor::types::{ConductorPlan, PlanStep, RoutePolicy, StepRole, StepType};
 
 use crate::llm::{LLMProvider, Message};
 use anyhow::{Context, Result};
@@ -23,6 +23,7 @@ struct RawPlanStep {
     step_type: Option<String>,
     role: Option<String>,
     parallel_safe: Option<bool>,
+    route_policy: Option<String>,
     #[serde(default)]
     dependencies: Vec<String>,
     expected_outcome: Option<String>,
@@ -121,10 +122,15 @@ impl Planner {
                     "Executor" | "executor" => StepRole::Executor,
                     _ => StepRole::for_step_type(&step_type),
                 };
-                let parallel_safe = raw.parallel_safe.unwrap_or(matches!(
-                    &step_type,
-                    StepType::Research | StepType::Verify
-                ));
+                let parallel_safe = raw
+                    .parallel_safe
+                    .unwrap_or(matches!(&step_type, StepType::Research | StepType::Verify));
+                let route_policy = match raw.route_policy.as_deref().unwrap_or("Inherit") {
+                    "LocalOnly" | "local_only" => RoutePolicy::LocalOnly,
+                    "LocalPreferred" | "local_preferred" => RoutePolicy::LocalPreferred,
+                    "CloudOnly" | "cloud_only" => RoutePolicy::CloudOnly,
+                    _ => RoutePolicy::Inherit,
+                };
 
                 PlanStep {
                     id: step_id,
@@ -133,6 +139,7 @@ impl Planner {
                     step_type,
                     role,
                     parallel_safe,
+                    route_policy,
                     dependencies: raw.dependencies,
                     expected_outcome: raw
                         .expected_outcome
@@ -164,6 +171,7 @@ impl Planner {
                     step_type: StepType::Research,
                     role: StepRole::Researcher,
                     parallel_safe: true,
+                    route_policy: RoutePolicy::LocalPreferred,
                     dependencies: vec![],
                     expected_outcome: "Understanding of required changes".to_string(),
                 },
@@ -174,6 +182,7 @@ impl Planner {
                     step_type: StepType::Execute,
                     role: StepRole::Executor,
                     parallel_safe: false,
+                    route_policy: RoutePolicy::Inherit,
                     dependencies: vec!["step_1".to_string()],
                     expected_outcome: "Changes implemented successfully".to_string(),
                 },
@@ -184,6 +193,7 @@ impl Planner {
                     step_type: StepType::Verify,
                     role: StepRole::Verifier,
                     parallel_safe: true,
+                    route_policy: RoutePolicy::LocalPreferred,
                     dependencies: vec!["step_2".to_string()],
                     expected_outcome: "Tests pass and functionality is confirmed".to_string(),
                 },

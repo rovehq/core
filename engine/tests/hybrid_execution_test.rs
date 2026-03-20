@@ -2,7 +2,7 @@
 //!
 //! Tests cloud planning + local execution with DAG concurrency
 
-use rove_engine::conductor::types::{ConductorPlan, PlanStep, StepRole, StepType};
+use rove_engine::conductor::types::{ConductorPlan, PlanStep, RoutePolicy, StepRole, StepType};
 use rove_engine::conductor::HybridExecutor;
 use rove_engine::config::LLMConfig;
 use rove_engine::llm::router::LLMRouter;
@@ -40,6 +40,7 @@ fn test_dag_parallel_execution() {
                 step_type: StepType::Execute,
                 role: StepRole::Executor,
                 parallel_safe: false,
+                route_policy: RoutePolicy::Inherit,
                 dependencies: vec![],
                 expected_outcome: "Done".to_string(),
             },
@@ -50,6 +51,7 @@ fn test_dag_parallel_execution() {
                 step_type: StepType::Execute,
                 role: StepRole::Executor,
                 parallel_safe: false,
+                route_policy: RoutePolicy::Inherit,
                 dependencies: vec![],
                 expected_outcome: "Done".to_string(),
             },
@@ -60,6 +62,7 @@ fn test_dag_parallel_execution() {
                 step_type: StepType::Execute,
                 role: StepRole::Executor,
                 parallel_safe: false,
+                route_policy: RoutePolicy::Inherit,
                 dependencies: vec!["step_1".to_string(), "step_2".to_string()],
                 expected_outcome: "Done".to_string(),
             },
@@ -109,6 +112,7 @@ fn test_dag_cycle_detection() {
                 step_type: StepType::Execute,
                 role: StepRole::Executor,
                 parallel_safe: false,
+                route_policy: RoutePolicy::Inherit,
                 dependencies: vec!["step_2".to_string()], // Cycle!
                 expected_outcome: "Done".to_string(),
             },
@@ -119,6 +123,7 @@ fn test_dag_cycle_detection() {
                 step_type: StepType::Execute,
                 role: StepRole::Executor,
                 parallel_safe: false,
+                route_policy: RoutePolicy::Inherit,
                 dependencies: vec!["step_1".to_string()], // Cycle!
                 expected_outcome: "Done".to_string(),
             },

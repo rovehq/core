@@ -546,6 +546,7 @@ fn unix_timestamp() -> i64 {
 mod tests {
     use super::*;
     use crate::storage::Database;
+    use crate::conductor::types::RoutePolicy;
     use sdk::{Complexity, Route, TaskDomain};
     use std::collections::HashSet;
     use tempfile::TempDir;
@@ -589,6 +590,7 @@ mod tests {
                     step_type: StepType::Research,
                     role: StepRole::Researcher,
                     parallel_safe: true,
+                    route_policy: RoutePolicy::LocalPreferred,
                     dependencies: Vec::new(),
                     description: "read docs".to_string(),
                     expected_outcome: "docs loaded".to_string(),
@@ -599,6 +601,7 @@ mod tests {
                     step_type: StepType::Research,
                     role: StepRole::Researcher,
                     parallel_safe: true,
+                    route_policy: RoutePolicy::LocalPreferred,
                     dependencies: Vec::new(),
                     description: "read code".to_string(),
                     expected_outcome: "code loaded".to_string(),
@@ -609,6 +612,7 @@ mod tests {
                     step_type: StepType::Verify,
                     role: StepRole::Verifier,
                     parallel_safe: true,
+                    route_policy: RoutePolicy::LocalPreferred,
                     dependencies: vec!["step_1".to_string(), "step_2".to_string()],
                     description: "cross-check findings".to_string(),
                     expected_outcome: "validated summary".to_string(),
@@ -626,6 +630,7 @@ mod tests {
             &plan,
             TaskDomain::Code,
             Complexity::Complex,
+            false,
             Route::Local,
         );
         let runner = DagRunner::new();
@@ -665,6 +670,7 @@ mod tests {
             &plan,
             TaskDomain::Code,
             Complexity::Complex,
+            false,
             Route::Local,
         );
         let runner = DagRunner::with_persistence(repo.clone(), task_id, "code");
@@ -702,6 +708,7 @@ mod tests {
             &plan,
             TaskDomain::Code,
             Complexity::Complex,
+            false,
             Route::Cloud,
         );
         let runner = DagRunner::new();

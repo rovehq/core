@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::ConnectOptions;
+use sqlx::Row;
 use std::path::Path;
 use std::str::FromStr;
 use tracing::{debug, info};
@@ -55,7 +56,37 @@ impl Database {
             .await
             .context("Failed to execute schemas/base.sql")?;
 
+        self.ensure_agent_events_parent_task_id()
+            .await
+            .context("Failed to apply agent_events parent_task_id schema patch")?;
+
         info!("Database schema loaded successfully");
+        Ok(())
+    }
+
+    async fn ensure_agent_events_parent_task_id(&self) -> Result<()> {
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(agent_events)")
+            .fetch_all(&self.pool)
+            .await
+            .context("Failed to inspect agent_events columns")?
+            .into_iter()
+            .map(|row| row.get("name"))
+            .collect();
+
+        if !columns.iter().any(|column| column == "parent_task_id") {
+            sqlx::query("ALTER TABLE agent_events ADD COLUMN parent_task_id TEXT")
+                .execute(&self.pool)
+                .await
+                .context("Failed to add agent_events.parent_task_id")?;
+        }
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_agent_events_parent ON agent_events(parent_task_id, step_num)",
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create agent_events parent index")?;
+
         Ok(())
     }
 

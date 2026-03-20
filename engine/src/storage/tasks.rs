@@ -85,6 +85,7 @@ pub struct TaskStep {
 pub struct AgentEvent {
     pub id: String,
     pub task_id: String,
+    pub parent_task_id: Option<String>,
     pub event_type: String,
     pub payload: String,
     pub step_num: i64,
@@ -358,15 +359,30 @@ impl TaskRepository {
         step_num: i64,
         domain: Option<&str>,
     ) -> Result<String> {
+        self.insert_agent_event_with_parent(task_id, None, event_type, payload, step_num, domain)
+            .await
+    }
+
+    pub async fn insert_agent_event_with_parent(
+        &self,
+        task_id: &uuid::Uuid,
+        parent_task_id: Option<&uuid::Uuid>,
+        event_type: &str,
+        payload: &str,
+        step_num: i64,
+        domain: Option<&str>,
+    ) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
         let task_id_str = task_id.to_string();
+        let parent_task_id_str = parent_task_id.map(uuid::Uuid::to_string);
 
         sqlx::query(
-            "INSERT INTO agent_events (id, task_id, event_type, payload, step_num, domain, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO agent_events (id, task_id, parent_task_id, event_type, payload, step_num, domain, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(&id)
         .bind(&task_id_str)
+        .bind(parent_task_id_str)
         .bind(event_type)
         .bind(payload)
         .bind(step_num)
@@ -384,7 +400,7 @@ impl TaskRepository {
     /// Requirements: Phase 1 - Time-travel debugging
     pub async fn get_agent_events(&self, task_id: &str) -> Result<Vec<AgentEvent>> {
         let rows = sqlx::query(
-            "SELECT id, task_id, event_type, payload, step_num, domain, created_at FROM agent_events WHERE task_id = ? ORDER BY step_num ASC"
+            "SELECT id, task_id, parent_task_id, event_type, payload, step_num, domain, created_at FROM agent_events WHERE task_id = ? ORDER BY step_num ASC"
         )
         .bind(task_id)
         .fetch_all(&self.pool)
@@ -396,6 +412,31 @@ impl TaskRepository {
             .map(|r| AgentEvent {
                 id: r.get("id"),
                 task_id: r.get("task_id"),
+                parent_task_id: r.get("parent_task_id"),
+                event_type: r.get("event_type"),
+                payload: r.get("payload"),
+                step_num: r.get("step_num"),
+                domain: r.get("domain"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    pub async fn get_agent_events_by_parent(&self, parent_task_id: &str) -> Result<Vec<AgentEvent>> {
+        let rows = sqlx::query(
+            "SELECT id, task_id, parent_task_id, event_type, payload, step_num, domain, created_at FROM agent_events WHERE parent_task_id = ? ORDER BY created_at ASC, step_num ASC"
+        )
+        .bind(parent_task_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch child agent events")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| AgentEvent {
+                id: r.get("id"),
+                task_id: r.get("task_id"),
+                parent_task_id: r.get("parent_task_id"),
                 event_type: r.get("event_type"),
                 payload: r.get("payload"),
                 step_num: r.get("step_num"),

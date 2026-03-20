@@ -38,6 +38,16 @@ impl StepRole {
     }
 }
 
+/// Routing constraint for a DAG node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RoutePolicy {
+    LocalOnly,
+    LocalPreferred,
+    CloudOnly,
+    #[default]
+    Inherit,
+}
+
 /// Represents an individual step within a task plan
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanStep {
@@ -48,6 +58,8 @@ pub struct PlanStep {
     pub role: StepRole,
     #[serde(default)]
     pub parallel_safe: bool,
+    #[serde(default)]
+    pub route_policy: RoutePolicy,
     pub dependencies: Vec<String>,
     pub description: String,
     pub expected_outcome: String,

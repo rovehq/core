@@ -15,7 +15,7 @@ use crate::conductor::graph::DagGraph;
 use crate::conductor::policy::StepExecutionPolicy;
 use crate::conductor::runner::{DagNodeExecution, DagNodeExecutor, DagRunner};
 use crate::conductor::routing::DagRoutingPolicy;
-use crate::conductor::types::{ConductorPlan, PlanStep, StepRole, StepType};
+use crate::conductor::types::{ConductorPlan, PlanStep, RoutePolicy, StepRole, StepType};
 use crate::llm::router::LLMRouter;
 use crate::llm::{LLMResponse, Message};
 use anyhow::{Context, Result};
@@ -253,6 +253,7 @@ impl HybridExecutor {
             plan,
             TaskDomain::General,
             Complexity::Complex,
+            false,
             preferred_route,
         );
         DagRoutingPolicy::new(self.local_brain.is_some()).assign_routes(&mut graph, plan);
@@ -398,8 +399,12 @@ impl HybridExecutor {
                     order: i as u32,
                     description: raw.description,
                     step_type,
-                    role,
+                    role: role.clone(),
                     parallel_safe,
+                    route_policy: match role {
+                        StepRole::Researcher | StepRole::Verifier => RoutePolicy::LocalPreferred,
+                        StepRole::Executor => RoutePolicy::Inherit,
+                    },
                     dependencies: raw.dependencies,
                     expected_outcome: raw.expected_outcome,
                 }
@@ -434,6 +439,7 @@ mod tests {
             step_type: StepType::Execute,
             role: StepRole::Executor,
             parallel_safe: false,
+            route_policy: RoutePolicy::Inherit,
             dependencies: deps,
             expected_outcome: "Done".to_string(),
         }

@@ -6,7 +6,9 @@
 
 pub mod core;
 pub mod preferences;
+pub mod subagent;
 pub mod working_memory;
 
 pub use core::{AgentCore, TaskResult};
+pub use subagent::{SubagentOutput, SubagentResult, SubagentRunner};
 pub use working_memory::WorkingMemory;

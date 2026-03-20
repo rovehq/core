@@ -425,6 +425,7 @@ mod tests {
         let event = AgentEvent {
             id: "event-1".to_string(),
             task_id: "task-1".to_string(),
+            parent_task_id: None,
             event_type: "dag_step_started".to_string(),
             payload: r#"{"step_id":"step_2","role":"verifier","route":"local"}"#.to_string(),
             step_num: 10,

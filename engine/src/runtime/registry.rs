@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -277,6 +278,19 @@ impl ToolRegistry {
             })
             .cloned()
             .collect()
+    }
+
+    pub async fn schemas_named(&self, allowed: &HashSet<String>) -> Vec<ToolSchema> {
+        let mut schemas = self
+            .tools
+            .read()
+            .await
+            .values()
+            .filter(|schema| allowed.contains(&schema.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        schemas.sort_by(|left, right| left.name.cmp(&right.name));
+        schemas
     }
 
     pub async fn call(

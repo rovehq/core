@@ -141,6 +141,98 @@ impl LLMRouter {
         self.local_brain.clone()
     }
 
+    pub async fn has_local_model(&self) -> bool {
+        if let Some(local_brain) = &self.local_brain {
+            if local_brain.check_available().await {
+                return true;
+            }
+        }
+
+        for provider in &self.providers {
+            if provider.is_local() && provider.check_health().await {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub async fn call_named_provider(
+        &self,
+        provider_name: &str,
+        messages: &[Message],
+    ) -> super::Result<(super::LLMResponse, String)> {
+        if provider_name == "local-brain" {
+            if let Some(result) = self.try_local_brain(messages).await {
+                return result;
+            }
+            return Err(super::LLMError::ProviderUnavailable(
+                "local-brain is unavailable".to_string(),
+            ));
+        }
+
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.name() == provider_name)
+            .map(|provider| provider.as_ref())
+            .ok_or_else(|| {
+                super::LLMError::ProviderUnavailable(format!(
+                    "Provider '{}' is not configured",
+                    provider_name
+                ))
+            })?;
+
+        self.call_provider_once(provider, messages).await
+    }
+
+    pub async fn call_local_only(
+        &self,
+        messages: &[Message],
+    ) -> super::Result<(super::LLMResponse, String)> {
+        if let Some(result) = self.try_local_brain(messages).await {
+            if result.is_ok() {
+                return result;
+            }
+        }
+
+        let providers = self
+            .providers
+            .iter()
+            .filter(|provider| provider.is_local())
+            .map(|provider| provider.as_ref())
+            .collect::<Vec<_>>();
+        self.call_provider_group(providers, messages, "No local model is available")
+            .await
+    }
+
+    pub async fn call_cloud_only(
+        &self,
+        messages: &[Message],
+    ) -> super::Result<(super::LLMResponse, String)> {
+        let profile = self.analyze_task(messages);
+        let providers = self
+            .rank_providers(&profile)
+            .into_iter()
+            .filter(|provider| !provider.is_local())
+            .collect::<Vec<_>>();
+        self.call_provider_group(providers, messages, "No cloud provider is available")
+            .await
+    }
+
+    pub async fn call_local_preferred(
+        &self,
+        messages: &[Message],
+        sensitivity_override: Option<bool>,
+    ) -> super::Result<(super::LLMResponse, String)> {
+        match self.call_local_only(messages).await {
+            Ok(result) => return Ok(result),
+            Err(_) => {}
+        }
+
+        self.call_with_sensitivity(messages, sensitivity_override).await
+    }
+
     /// Analyze task characteristics from message history
     ///
     /// This method examines the conversation history to determine:
@@ -456,6 +548,57 @@ impl LLMRouter {
                 "All LLM providers failed: {}",
                 failures.join("; ")
             )))
+        }
+    }
+
+    async fn call_provider_group(
+        &self,
+        providers: Vec<&dyn LLMProvider>,
+        messages: &[Message],
+        unavailable_message: &str,
+    ) -> super::Result<(super::LLMResponse, String)> {
+        use super::LLMError;
+
+        let mut failures = Vec::new();
+        for provider in providers {
+            match self.call_provider_once(provider, messages).await {
+                Ok(result) => return Ok(result),
+                Err(error) => failures.push(scrub_text(&error.to_string())),
+            }
+        }
+
+        if failures.is_empty() {
+            Err(LLMError::ProviderUnavailable(unavailable_message.to_string()))
+        } else {
+            Err(LLMError::ProviderUnavailable(format!(
+                "{}: {}",
+                unavailable_message,
+                failures.join("; ")
+            )))
+        }
+    }
+
+    async fn call_provider_once(
+        &self,
+        provider: &dyn LLMProvider,
+        messages: &[Message],
+    ) -> super::Result<(super::LLMResponse, String)> {
+        use super::LLMError;
+
+        if !provider.check_health().await {
+            return Err(LLMError::ProviderUnavailable(format!(
+                "{} failed health check",
+                provider.name()
+            )));
+        }
+
+        let timeout_secs = if provider.is_local() { 120 } else { 30 };
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), provider.generate(messages))
+            .await
+        {
+            Ok(Ok(response)) => Ok((response, provider.name().to_string())),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(LLMError::Timeout),
         }
     }
 

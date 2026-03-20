@@ -1,179 +1,108 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use sdk::Route;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use sdk::{Complexity, Route, SubagentRole, SubagentSpec, TaskDomain, TaskSource};
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
-use tracing::warn;
 use uuid::Uuid;
 
+use crate::agent::{SubagentResult, SubagentRunner};
 use crate::conductor::{
-    DagNodeExecution, DagNodeExecutor, DagRoutingPolicy, DagRunner, DagRunReport, HybridExecutor,
-    StepExecutionPolicy,
+    DagNodeExecution, DagNodeExecutor, DagRoutingPolicy, DagRunReport, DagRunner, HybridExecutor,
+    PlanStep, StepRole,
 };
-use crate::conductor::types::StepRole;
 use crate::gateway::Task;
-use crate::llm::{Message, MessageRole, ToolCall, LLMResponse};
+use crate::llm::{Message, MessageRole};
 use crate::security::secrets::scrub_text;
 
 use super::prompt::TaskContext;
-use super::{AgentCore, TaskResult, MAX_RESULT_SIZE};
+use super::{AgentCore, TaskResult};
 
-const DAG_STEP_MAX_ITERATIONS: usize = 8;
-
-struct AgentDagExecutor<'a> {
-    agent: &'a AgentCore,
-    task_id: Uuid,
-    domain_str: String,
+struct AgentDagExecutor {
+    router: Arc<crate::llm::router::LLMRouter>,
+    task_repo: Arc<crate::storage::TaskRepository>,
+    tools: Arc<crate::builtin_tools::ToolRegistry>,
+    memory_system: Option<Arc<crate::conductor::MemorySystem>>,
+    workspace_locks: Arc<crate::gateway::WorkspaceLocks>,
+    parent_task_id: Uuid,
+    source: TaskSource,
+    domain: TaskDomain,
+    complexity: Complexity,
+    sensitive: bool,
     steering_after_write_commands: Vec<String>,
-    executed_steering_commands: Arc<Mutex<HashSet<String>>>,
 }
 
 #[async_trait]
-impl DagNodeExecutor for AgentDagExecutor<'_> {
+impl DagNodeExecutor for AgentDagExecutor {
     async fn execute_node(
         &self,
-        step: &crate::conductor::PlanStep,
+        step: &PlanStep,
         dependency_context: &str,
         route: Route,
     ) -> Result<DagNodeExecution> {
-        let started_at = Instant::now();
-        let policy = StepExecutionPolicy::for_step(step, route);
-        let tool_prompt = self.agent.tools.system_prompt_for_query(&step.description);
-        let system_prompt = format!(
-            "{}\n\nSPECIALIST POLICY:\n{}",
-            tool_prompt,
-            policy.system_prompt(step, dependency_context)
+        let spec = self.subagent_spec_for_step(step);
+        let runner = SubagentRunner::new(
+            spec,
+            self.parent_task_id,
+            self.domain,
+            self.complexity,
+            step.route_policy.clone(),
+            self.sensitive,
+            self.source.clone(),
+            dependency_context.to_string(),
+            step.expected_outcome.clone(),
+            Arc::clone(&self.router),
+            Arc::clone(&self.task_repo),
+            Arc::clone(&self.tools),
+            self.memory_system.clone(),
+            Arc::clone(&self.workspace_locks),
+            if matches!(step.role, StepRole::Executor) {
+                self.steering_after_write_commands.clone()
+            } else {
+                Vec::new()
+            },
         );
 
-        let mut messages = vec![
-            Message::system(system_prompt),
-            Message::user(step.description.clone()),
-        ];
-        let mut tool_call_counts: HashMap<u64, u32> = HashMap::new();
-        let mut event_iteration = 1_usize;
-
-        for _ in 0..DAG_STEP_MAX_ITERATIONS {
-            let (response, provider_name) = self
-                .agent
-                .router
-                .call_with_sensitivity(&messages, Some(self.agent.current_task_sensitive))
-                .await
-                .context("DAG step LLM call failed")?;
-
-            match response {
-                LLMResponse::ToolCall(tool_call) => {
-                    self.execute_dag_tool_call(
-                        &tool_call,
-                        &mut tool_call_counts,
-                        &mut messages,
-                        &mut event_iteration,
-                    )
-                    .await?;
-                }
-                LLMResponse::FinalAnswer(answer) => {
-                    if answer.content.len() > MAX_RESULT_SIZE {
-                        return Err(anyhow!(
-                            "DAG step {} produced oversized result ({} bytes)",
-                            step.id,
-                            answer.content.len()
-                        ));
-                    }
-
-                    return Ok(DagNodeExecution {
-                        step_id: step.id.clone(),
-                        output: answer.content,
-                        route: provider_route(&provider_name),
-                        duration_ms: started_at.elapsed().as_millis() as u64,
-                        role: step.role.clone(),
-                    });
-                }
-            }
+        match tokio::spawn(async move { runner.run().await })
+            .await
+            .context("subagent join failed")?
+        {
+            SubagentResult::Completed(output) => Ok(DagNodeExecution {
+                step_id: step.id.clone(),
+                output: output.output,
+                route: output
+                    .provider_used
+                    .as_deref()
+                    .map(provider_route)
+                    .unwrap_or(route),
+                duration_ms: 0,
+                role: step.role.clone(),
+            }),
+            SubagentResult::TimedOut(output) => Err(anyhow!(
+                "subagent timed out for step {}: {}",
+                step.id,
+                output.error.unwrap_or_else(|| "timeout".to_string())
+            )),
+            SubagentResult::Failed(output) => Err(anyhow!(
+                "subagent failed for step {}: {}",
+                step.id,
+                output.error.unwrap_or_else(|| "unknown failure".to_string())
+            )),
         }
-
-        Err(anyhow!(
-            "DAG step {} exceeded {} tool iterations",
-            step.id,
-            DAG_STEP_MAX_ITERATIONS
-        ))
     }
 }
 
-impl AgentDagExecutor<'_> {
-    async fn execute_dag_tool_call(
-        &self,
-        tool_call: &ToolCall,
-        tool_call_counts: &mut HashMap<u64, u32>,
-        messages: &mut Vec<Message>,
-        event_iteration: &mut usize,
-    ) -> Result<()> {
-        self.run_single_tool_call(tool_call, tool_call_counts, messages, event_iteration)
-            .await?;
-
-        if tool_call.name == "write_file" {
-            self.run_after_write_commands(tool_call_counts, messages, event_iteration)
-                .await?;
+impl AgentDagExecutor {
+    fn subagent_spec_for_step(&self, step: &PlanStep) -> SubagentSpec {
+        SubagentSpec {
+            role: step_role_to_subagent_role(&step.role),
+            task: step.description.clone(),
+            tools_allowed: tools_allowed_for_step(step),
+            memory_budget: memory_budget_for_step(step),
+            model_override: None,
+            max_steps: 8,
+            timeout_secs: 120,
         }
-
-        Ok(())
-    }
-
-    async fn run_single_tool_call(
-        &self,
-        tool_call: &ToolCall,
-        tool_call_counts: &mut HashMap<u64, u32>,
-        messages: &mut Vec<Message>,
-        event_iteration: &mut usize,
-    ) -> Result<()> {
-        record_step_tool_call(&self.task_id, tool_call_counts, tool_call)?;
-        self.agent
-            .insert_tool_call_event(&self.task_id, tool_call, *event_iteration, &self.domain_str)
-            .await?;
-        let execution = self
-            .agent
-            .execute_tool_call(&self.task_id.to_string(), tool_call)
-            .await?;
-
-        messages.push(self.agent.assistant_tool_message(&self.task_id, tool_call));
-        messages.push(Message::tool_result(&execution.safe_result, &tool_call.id));
-        self.agent
-            .insert_observation_event(
-                &self.task_id,
-                &execution.safe_result,
-                *event_iteration,
-                &self.domain_str,
-            )
-            .await?;
-        *event_iteration += 1;
-
-        Ok(())
-    }
-
-    async fn run_after_write_commands(
-        &self,
-        tool_call_counts: &mut HashMap<u64, u32>,
-        messages: &mut Vec<Message>,
-        event_iteration: &mut usize,
-    ) -> Result<()> {
-        for command in &self.steering_after_write_commands {
-            let inserted = {
-                let mut executed = self.executed_steering_commands.lock().unwrap();
-                executed.insert(command.clone())
-            };
-            if !inserted {
-                continue;
-            }
-
-            let tool_call = ToolCall::new(
-                format!("dag-steering-{}-{}", self.task_id, event_iteration),
-                "run_command",
-                serde_json::json!({ "command": command }).to_string(),
-            );
-            self.run_single_tool_call(&tool_call, tool_call_counts, messages, event_iteration)
-                .await?;
-        }
-
-        Ok(())
     }
 }
 
@@ -212,6 +141,7 @@ impl AgentCore {
             &plan,
             context.domain,
             context.complexity,
+            context.sensitive,
             context.route,
         );
         DagRoutingPolicy::new(self.router.local_brain().is_some()).assign_routes(&mut graph, &plan);
@@ -219,11 +149,17 @@ impl AgentCore {
         let runner =
             DagRunner::with_persistence(self.task_repo.clone(), *task_id, context.domain_str.clone());
         let executor = AgentDagExecutor {
-            agent: self,
-            task_id: *task_id,
-            domain_str: context.domain_str.clone(),
+            router: self.router.clone(),
+            task_repo: self.task_repo.clone(),
+            tools: self.tools.clone(),
+            memory_system: self.memory_system.clone(),
+            workspace_locks: self.workspace_locks.clone(),
+            parent_task_id: *task_id,
+            source: task.source.clone(),
+            domain: context.domain,
+            complexity: context.complexity,
+            sensitive: context.sensitive,
             steering_after_write_commands: self.steering_after_write_commands.clone(),
-            executed_steering_commands: Arc::new(Mutex::new(HashSet::new())),
         };
         let report = runner
             .run(graph, &plan, &executor)
@@ -356,37 +292,36 @@ fn message_role(message: &Message) -> &'static str {
     }
 }
 
-fn record_step_tool_call(
-    task_id: &Uuid,
-    tool_call_counts: &mut HashMap<u64, u32>,
-    tool_call: &ToolCall,
-) -> Result<()> {
-    let key = stable_tool_hash(tool_call);
-    let count = tool_call_counts.entry(key).or_default();
-    *count += 1;
-
-    if *count >= 3 {
-        warn!(
-            task_id = %task_id,
-            tool = %tool_call.name,
-            "DAG step repeated tool '{}' with identical arguments 3 times",
-            tool_call.name
-        );
-        return Err(anyhow!(
-            "Tool '{}' with identical arguments called 3 times in DAG step",
-            tool_call.name
-        ));
+fn step_role_to_subagent_role(role: &StepRole) -> SubagentRole {
+    match role {
+        StepRole::Researcher => SubagentRole::Researcher,
+        StepRole::Executor => SubagentRole::Executor,
+        StepRole::Verifier => SubagentRole::Verifier,
     }
-
-    Ok(())
 }
 
-fn stable_tool_hash(tool_call: &ToolCall) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+fn memory_budget_for_step(step: &PlanStep) -> usize {
+    match step.role {
+        StepRole::Researcher => 1200,
+        StepRole::Executor => 900,
+        StepRole::Verifier => 800,
+    }
+}
 
-    let mut hasher = DefaultHasher::new();
-    tool_call.name.hash(&mut hasher);
-    tool_call.arguments.hash(&mut hasher);
-    hasher.finish()
+fn tools_allowed_for_step(step: &PlanStep) -> Vec<String> {
+    let mut tools = HashSet::new();
+    tools.insert("read_file".to_string());
+    tools.insert("list_dir".to_string());
+    tools.insert("file_exists".to_string());
+    tools.insert("capture_screen".to_string());
+
+    if matches!(step.role, StepRole::Executor) {
+        tools.insert("write_file".to_string());
+        tools.insert("delete_file".to_string());
+        tools.insert("run_command".to_string());
+    }
+
+    let mut tools = tools.into_iter().collect::<Vec<_>>();
+    tools.sort();
+    tools
 }

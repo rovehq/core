@@ -24,6 +24,7 @@ pub mod types;
 pub mod manifest;
 pub mod permission;
 pub mod plugin;
+pub mod subagent;
 
 /// Brain system types and traits
 pub mod brain;
@@ -42,5 +43,6 @@ pub use db_handle::{DbHandle, DbHandleImpl};
 pub use errors::{EngineError, RoveErrorExt};
 pub use manifest::{CoreToolEntry, Manifest, PluginEntry, PluginPermissions};
 pub use network_handle::{NetworkHandle, NetworkHandleImpl};
+pub use subagent::{SubagentRole, SubagentSpec};
 pub use task::TaskSource;
 pub use tool_io::{ToolError, ToolInput, ToolOutput};

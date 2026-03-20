@@ -351,6 +351,7 @@ VALUES
 CREATE TABLE IF NOT EXISTS agent_events (
     id          TEXT    PRIMARY KEY,
     task_id     TEXT    NOT NULL,
+    parent_task_id TEXT,
     event_type  TEXT    NOT NULL,
     payload     TEXT    NOT NULL,
     step_num    INTEGER NOT NULL,
@@ -359,6 +360,7 @@ CREATE TABLE IF NOT EXISTS agent_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_events_task ON agent_events(task_id, step_num);
+CREATE INDEX IF NOT EXISTS idx_agent_events_parent ON agent_events(parent_task_id, step_num);
 CREATE INDEX IF NOT EXISTS idx_agent_events_domain ON agent_events(domain);
 CREATE INDEX IF NOT EXISTS idx_agent_events_created ON agent_events(created_at DESC);
 

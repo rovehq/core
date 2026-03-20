@@ -1,7 +1,7 @@
 use sdk::{Complexity, Route, TaskDomain};
 use serde::{Deserialize, Serialize};
 
-use super::types::ConductorPlan;
+use super::types::{ConductorPlan, RoutePolicy};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum DagNodeState {
@@ -20,6 +20,7 @@ pub struct DagNode {
     pub state: DagNodeState,
     pub attempt: u32,
     pub route: Route,
+    pub route_policy: RoutePolicy,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub output: Option<String>,
@@ -40,6 +41,7 @@ pub struct DagGraph {
     pub goal: String,
     pub domain: TaskDomain,
     pub complexity: Complexity,
+    pub sensitive: bool,
     pub preferred_route: Route,
     pub nodes: Vec<DagNode>,
     pub waves: Vec<DagWave>,
@@ -53,6 +55,7 @@ impl DagGraph {
         plan: &ConductorPlan,
         domain: TaskDomain,
         complexity: Complexity,
+        sensitive: bool,
         preferred_route: Route,
     ) -> Self {
         let nodes = plan
@@ -67,6 +70,7 @@ impl DagGraph {
                 },
                 attempt: 0,
                 route: preferred_route,
+                route_policy: step.route_policy.clone(),
                 started_at: None,
                 finished_at: None,
                 output: None,
@@ -80,6 +84,7 @@ impl DagGraph {
             goal: plan.original_goal.clone(),
             domain,
             complexity,
+            sensitive,
             preferred_route,
             nodes,
             waves: Vec::new(),
@@ -199,7 +204,7 @@ impl DagGraph {
 mod tests {
     use sdk::{Complexity, Route, TaskDomain};
 
-    use crate::conductor::types::{ConductorPlan, ExecutionMode, PlanStep, StepRole, StepType};
+    use crate::conductor::types::{ConductorPlan, ExecutionMode, PlanStep, RoutePolicy, StepRole, StepType};
 
     use super::{DagGraph, DagNodeState};
 
@@ -216,6 +221,7 @@ mod tests {
                     step_type: StepType::Research,
                     role: StepRole::Researcher,
                     parallel_safe: true,
+                    route_policy: RoutePolicy::LocalPreferred,
                     dependencies: Vec::new(),
                     description: "research".to_string(),
                     expected_outcome: "facts".to_string(),
@@ -226,6 +232,7 @@ mod tests {
                     step_type: StepType::Execute,
                     role: StepRole::Executor,
                     parallel_safe: false,
+                    route_policy: RoutePolicy::Inherit,
                     dependencies: vec!["step_1".to_string()],
                     description: "execute".to_string(),
                     expected_outcome: "change".to_string(),
@@ -243,6 +250,7 @@ mod tests {
             &plan,
             TaskDomain::Code,
             Complexity::Complex,
+            false,
             Route::Local,
         );
 
@@ -258,6 +266,7 @@ mod tests {
             &plan,
             TaskDomain::Code,
             Complexity::Complex,
+            false,
             Route::Local,
         );
 
@@ -278,6 +287,7 @@ mod tests {
             &plan,
             TaskDomain::Code,
             Complexity::Complex,
+            false,
             Route::Local,
         );
 

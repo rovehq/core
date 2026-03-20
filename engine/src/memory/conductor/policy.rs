@@ -77,7 +77,7 @@ impl StepExecutionPolicy {
 mod tests {
     use sdk::Route;
 
-    use crate::conductor::types::{PlanStep, StepRole, StepType};
+    use crate::conductor::types::{PlanStep, RoutePolicy, StepRole, StepType};
 
     use super::StepExecutionPolicy;
 
@@ -92,6 +92,7 @@ mod tests {
             },
             role,
             parallel_safe: false,
+            route_policy: RoutePolicy::Inherit,
             dependencies: Vec::new(),
             description: "do the thing".to_string(),
             expected_outcome: "done".to_string(),

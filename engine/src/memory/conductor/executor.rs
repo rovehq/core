@@ -204,6 +204,7 @@ impl Executor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conductor::types::RoutePolicy;
 
     fn make_step(step_type: StepType) -> PlanStep {
         let role = crate::conductor::types::StepRole::for_step_type(&step_type);
@@ -215,6 +216,7 @@ mod tests {
             step_type,
             role,
             parallel_safe,
+            route_policy: RoutePolicy::Inherit,
             dependencies: vec![],
             expected_outcome: "done".to_string(),
         }

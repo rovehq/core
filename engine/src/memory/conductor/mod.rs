@@ -51,5 +51,5 @@ pub use session::SessionMemory;
 pub use system::MemorySystem;
 pub use types::{
     ConductorPlan, ConsolidationResult, ContextLayers, HitType, IngestResult, MemoryBudget,
-    MemoryHit, PlanStep, StepResult, StepType,
+    MemoryHit, PlanStep, RoutePolicy, StepResult, StepRole, StepType,
 };

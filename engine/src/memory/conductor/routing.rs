@@ -1,7 +1,7 @@
 use sdk::{Complexity, Route, TaskDomain};
 
 use super::graph::DagGraph;
-use super::types::{ConductorPlan, PlanStep, StepRole};
+use super::types::{ConductorPlan, PlanStep, RoutePolicy, StepRole};
 
 pub struct DagRoutingPolicy {
     local_brain_available: bool,
@@ -15,11 +15,37 @@ impl DagRoutingPolicy {
     }
 
     pub fn assign_routes(&self, graph: &mut DagGraph, plan: &ConductorPlan) {
+        let leaf_steps = leaf_step_ids(plan);
         for step in &plan.steps {
-            let route = self.route_for_step(step, graph.domain, graph.complexity, graph.preferred_route);
+            let route_policy =
+                self.route_policy_for_step(step, graph.sensitive, leaf_steps.contains(&step.id));
+            let route = self.route_for_step(
+                step,
+                graph.domain,
+                graph.complexity,
+                graph.preferred_route,
+                &route_policy,
+            );
             if let Some(node) = graph.node_mut(&step.id) {
+                node.route_policy = route_policy;
                 node.route = route;
             }
+        }
+    }
+
+    fn route_policy_for_step(
+        &self,
+        step: &PlanStep,
+        sensitive: bool,
+        is_leaf: bool,
+    ) -> RoutePolicy {
+        if sensitive && is_leaf {
+            return RoutePolicy::LocalOnly;
+        }
+
+        match step.role {
+            StepRole::Researcher | StepRole::Verifier => RoutePolicy::LocalPreferred,
+            StepRole::Executor => RoutePolicy::Inherit,
         }
     }
 
@@ -29,7 +55,27 @@ impl DagRoutingPolicy {
         domain: TaskDomain,
         complexity: Complexity,
         preferred_route: Route,
+        route_policy: &RoutePolicy,
     ) -> Route {
+        match route_policy {
+            RoutePolicy::LocalOnly => {
+                return if self.local_brain_available {
+                    Route::Local
+                } else {
+                    Route::Local
+                };
+            }
+            RoutePolicy::CloudOnly => return Route::Cloud,
+            RoutePolicy::LocalPreferred => {
+                return if self.local_brain_available {
+                    Route::Local
+                } else {
+                    Route::Ollama
+                };
+            }
+            RoutePolicy::Inherit => {}
+        }
+
         match step.role {
             StepRole::Researcher | StepRole::Verifier => {
                 if self.local_brain_available {
@@ -64,11 +110,26 @@ impl DagRoutingPolicy {
     }
 }
 
+fn leaf_step_ids(plan: &ConductorPlan) -> std::collections::HashSet<String> {
+    let mut depended_on = std::collections::HashSet::new();
+    for step in &plan.steps {
+        for dependency in &step.dependencies {
+            depended_on.insert(dependency.clone());
+        }
+    }
+
+    plan.steps
+        .iter()
+        .filter(|step| !depended_on.contains(&step.id))
+        .map(|step| step.id.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use sdk::{Complexity, Route, TaskDomain};
 
-    use crate::conductor::types::{PlanStep, StepRole, StepType};
+    use crate::conductor::types::{PlanStep, RoutePolicy, StepRole, StepType};
 
     use super::DagRoutingPolicy;
 
@@ -83,6 +144,7 @@ mod tests {
             },
             role,
             parallel_safe: false,
+            route_policy: RoutePolicy::Inherit,
             dependencies: Vec::new(),
             description: "do work".to_string(),
             expected_outcome: "done".to_string(),
@@ -97,6 +159,7 @@ mod tests {
             TaskDomain::Code,
             Complexity::Complex,
             Route::Cloud,
+            &RoutePolicy::Inherit,
         );
         assert_eq!(route, Route::Local);
     }
@@ -109,6 +172,7 @@ mod tests {
             TaskDomain::General,
             Complexity::Medium,
             Route::Cloud,
+            &RoutePolicy::Inherit,
         );
         assert_eq!(route, Route::Ollama);
     }
@@ -121,6 +185,7 @@ mod tests {
             TaskDomain::Code,
             Complexity::Complex,
             Route::Cloud,
+            &RoutePolicy::Inherit,
         );
         assert_eq!(route, Route::Cloud);
     }
@@ -133,7 +198,17 @@ mod tests {
             TaskDomain::General,
             Complexity::Medium,
             Route::Cloud,
+            &RoutePolicy::Inherit,
         );
         assert_eq!(route, Route::Ollama);
+    }
+
+    #[test]
+    fn sensitive_leaf_nodes_become_local_only() {
+        let policy = DagRoutingPolicy::new(false);
+        assert_eq!(
+            policy.route_policy_for_step(&make_step(StepRole::Verifier), true, true),
+            RoutePolicy::LocalOnly
+        );
     }
 }

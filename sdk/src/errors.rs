@@ -130,8 +130,14 @@ pub enum EngineError {
     #[error("Tool not loaded: {0}")]
     ToolNotLoaded(String),
 
+    #[error("Tool not permitted: {0}")]
+    ToolNotPermitted(String),
+
     #[error("Tool error: {0}")]
     ToolError(String),
+
+    #[error("Route unavailable: {0}")]
+    RouteUnavailable(String),
 
     // Security errors
     #[error("Invalid signature")]
@@ -237,7 +243,9 @@ impl RoveErrorExt for EngineError {
             Self::ToolNotFound(_) => "The requested tool is not available",
             Self::ToolNotInManifest(_) => "Tool not found in manifest. Check installation",
             Self::ToolNotLoaded(_) => "Tool not loaded. Try restarting the daemon",
+            Self::ToolNotPermitted(_) => "This tool is not permitted for the current agent",
             Self::ToolError(_) => "Tool operation failed",
+            Self::RouteUnavailable(_) => "The requested execution route is not available",
 
             // Security errors
             Self::InvalidSignature => "Security verification failed. File may be tampered",
