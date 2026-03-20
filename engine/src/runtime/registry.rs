@@ -231,6 +231,41 @@ impl ToolRegistry {
         }
     }
 
+    pub async fn register_wasm_tool(
+        &mut self,
+        plugin_name: &str,
+        tool_name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: Value,
+        domains: Vec<String>,
+    ) {
+        let name = tool_name.into();
+        if self.wasm_tools.iter().any(|entry| entry.name == name) {
+            debug!("WASM tool '{}' already registered, skipping", name);
+            return;
+        }
+
+        let description = description.into();
+        self.wasm_tools.push(WasmToolInfo {
+            name: name.clone(),
+            description: description.clone(),
+            parameters: parameters.clone(),
+            plugin_name: plugin_name.to_string(),
+            domains: domains.clone(),
+        });
+
+        self.register(ToolSchema {
+            name,
+            description,
+            parameters,
+            source: ToolSource::Wasm {
+                plugin_id: plugin_name.to_string(),
+            },
+            domains,
+        })
+        .await;
+    }
+
     pub fn register_mcp_spawner(&mut self, spawner: Arc<McpSpawner>) {
         self.mcp_spawner = Some(spawner);
     }

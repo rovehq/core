@@ -1,5 +1,6 @@
 use sdk::errors::EngineError;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const SDK_VERSION: &str = "0.1.0";
 
@@ -52,6 +53,22 @@ pub struct PathPattern(pub String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DomainPattern(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ToolCatalog {
+    #[serde(default)]
+    pub tools: Vec<DeclaredTool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeclaredTool {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub parameters: Value,
+    #[serde(default)]
+    pub domains: Vec<String>,
+}
 
 impl Manifest {
     pub fn from_json(json: &str) -> Result<Self, EngineError> {
@@ -122,6 +139,17 @@ impl Manifest {
     }
 }
 
+impl ToolCatalog {
+    pub fn from_json(raw: Option<&str>) -> Result<Self, EngineError> {
+        match raw {
+            Some(raw) if !raw.trim().is_empty() => serde_json::from_str(raw).map_err(|error| {
+                EngineError::Config(format!("Invalid plugin runtime config JSON: {error}"))
+            }),
+            _ => Ok(Self::default()),
+        }
+    }
+}
+
 impl PluginType {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -172,7 +200,7 @@ impl TryFrom<i64> for TrustTier {
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, PluginType, TrustTier, SDK_VERSION};
+    use super::{Manifest, PluginType, ToolCatalog, TrustTier, SDK_VERSION};
 
     #[test]
     fn parses_and_validates_manifest_json() {
@@ -256,5 +284,26 @@ mod tests {
         assert!(error
             .to_string()
             .contains("does not match installed_plugins type"));
+    }
+
+    #[test]
+    fn parses_tool_catalog_from_runtime_config() {
+        let catalog = ToolCatalog::from_json(Some(
+            r#"{
+                "tools": [
+                    {
+                        "name": "echo",
+                        "description": "Echo the input",
+                        "parameters": {"type":"object"},
+                        "domains": ["all", "general"]
+                    }
+                ]
+            }"#,
+        ))
+        .expect("catalog");
+
+        assert_eq!(catalog.tools.len(), 1);
+        assert_eq!(catalog.tools[0].name, "echo");
+        assert_eq!(catalog.tools[0].domains, vec!["all", "general"]);
     }
 }
