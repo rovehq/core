@@ -7,6 +7,7 @@ pub mod native;
 pub mod registry;
 pub mod wasm;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sdk::errors::EngineError;
@@ -83,11 +84,7 @@ impl RuntimeManager {
             }
         };
 
-        let effective_mcp_configs = if mcp_configs.is_empty() {
-            config.mcp.servers.clone()
-        } else {
-            mcp_configs
-        };
+        let effective_mcp_configs = merge_mcp_configs(&config.mcp.servers, mcp_configs);
         let mcp = if effective_mcp_configs.is_empty() {
             None
         } else {
@@ -253,16 +250,39 @@ fn load_installed_mcp_configs(
             }
         };
 
-        let config = serde_json::from_str::<McpServerConfig>(raw).map_err(|error| {
+        let mut config = serde_json::from_str::<McpServerConfig>(raw).map_err(|error| {
             EngineError::Config(format!(
                 "Invalid MCP runtime config for '{}': {}",
                 plugin.name, error
             ))
         })?;
+        config.enabled = plugin.enabled;
         configs.push(config);
     }
 
     Ok(configs)
+}
+
+fn merge_mcp_configs(
+    configured: &[McpServerConfig],
+    installed: Vec<McpServerConfig>,
+) -> Vec<McpServerConfig> {
+    let mut merged = BTreeMap::new();
+
+    for server in configured.iter().cloned() {
+        merged.insert(server.name.clone(), server);
+    }
+
+    for server in installed {
+        if merged.insert(server.name.clone(), server.clone()).is_some() {
+            warn!(
+                server = %server.name,
+                "Installed MCP plugin overrides config-backed MCP server"
+            );
+        }
+    }
+
+    merged.into_values().collect()
 }
 
 fn sdk_manifest_from_installed_plugins(installed_plugins: &[InstalledPlugin]) -> SdkManifest {
@@ -330,9 +350,10 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::config::Config;
+    use crate::runtime::mcp::SandboxProfile;
     use crate::storage::{Database, InstalledPlugin};
 
-    use super::RuntimeManager;
+    use super::{merge_mcp_configs, RuntimeManager};
 
     #[tokio::test]
     async fn runtime_build_registers_installed_plugin_schemas() {
@@ -452,5 +473,51 @@ mod tests {
         let schemas = runtime.registry.schemas_for("all").await;
 
         assert!(!schemas.iter().any(|schema| schema.name == "legacy_echo"));
+    }
+
+    #[test]
+    fn merge_mcp_configs_prefers_installed_servers_on_name_collision() {
+        let configured = vec![
+            super::McpServerConfig {
+                name: "github".to_string(),
+                template: Some("github".to_string()),
+                description: Some("config".to_string()),
+                command: "config-command".to_string(),
+                args: vec!["one".to_string()],
+                profile: SandboxProfile::default(),
+                cached_tools: Vec::new(),
+                enabled: true,
+            },
+            super::McpServerConfig {
+                name: "slack".to_string(),
+                template: Some("slack".to_string()),
+                description: Some("config".to_string()),
+                command: "slack-command".to_string(),
+                args: Vec::new(),
+                profile: SandboxProfile::default(),
+                cached_tools: Vec::new(),
+                enabled: true,
+            },
+        ];
+        let installed = vec![super::McpServerConfig {
+            name: "github".to_string(),
+            template: Some("github".to_string()),
+            description: Some("installed".to_string()),
+            command: "installed-command".to_string(),
+            args: vec!["two".to_string()],
+            profile: SandboxProfile::default(),
+            cached_tools: Vec::new(),
+            enabled: true,
+        }];
+
+        let merged = merge_mcp_configs(&configured, installed);
+
+        assert_eq!(merged.len(), 2);
+        let github = merged
+            .iter()
+            .find(|server| server.name == "github")
+            .expect("github server");
+        assert_eq!(github.command, "installed-command");
+        assert_eq!(github.args, vec!["two"]);
     }
 }
