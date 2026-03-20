@@ -276,11 +276,23 @@ async fn handle_plugin(action: PluginAction) -> Result<()> {
         PluginAction::List => {
             rove_engine::cli::plugins::handle_list(&config, OutputFormat::Text).await?;
         }
-        PluginAction::Install { name } => {
-            println!("Plugin install for '{}' is not implemented yet.", name);
+        PluginAction::Inspect { name } => {
+            rove_engine::cli::plugins::handle_inspect(&config, &name).await?;
+        }
+        PluginAction::Enable { name } => {
+            rove_engine::cli::plugins::handle_set_enabled(&config, &name, true).await?;
+        }
+        PluginAction::Disable { name } => {
+            rove_engine::cli::plugins::handle_set_enabled(&config, &name, false).await?;
+        }
+        PluginAction::Install { source } => {
+            println!(
+                "Plugin install from '{}' is not implemented yet. The next slice will add package verification and install.",
+                source
+            );
         }
         PluginAction::Remove { name } => {
-            println!("Plugin removal for '{}' is not implemented yet.", name);
+            rove_engine::cli::plugins::handle_remove(&config, &name).await?;
         }
     }
     Ok(())

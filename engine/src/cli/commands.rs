@@ -156,9 +156,15 @@ pub enum Command {
 #[derive(Subcommand, Debug)]
 pub enum PluginAction {
     /// Install a plugin.
-    Install { name: String },
+    Install { source: String },
     /// List installed plugins.
     List,
+    /// Show one installed plugin.
+    Inspect { name: String },
+    /// Enable an installed plugin.
+    Enable { name: String },
+    /// Disable an installed plugin.
+    Disable { name: String },
     /// Remove a plugin.
     Remove { name: String },
 }
