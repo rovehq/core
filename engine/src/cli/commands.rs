@@ -157,6 +157,8 @@ pub enum Command {
 pub enum PluginAction {
     /// Install a plugin.
     Install { source: String },
+    /// Upgrade or replace an installed plugin from a package directory.
+    Upgrade { source: String },
     /// List installed plugins.
     List,
     /// Show one installed plugin.

@@ -32,11 +32,43 @@ pub async fn handle_install(config: &Config, source: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn handle_upgrade(config: &Config, source: &str) -> Result<()> {
+    let database = open_database(config).await?;
+    let crypto = CryptoModule::new().context("Failed to initialize plugin verifier")?;
+    let installed = upgrade_from_directory(config, &database, &crypto, Path::new(source)).await?;
+
+    println!(
+        "Upgraded plugin '{}' [{}] to version {}",
+        installed.name, installed.id, installed.version
+    );
+
+    Ok(())
+}
+
 pub(super) async fn install_from_directory(
     config: &Config,
     database: &Database,
     crypto: &CryptoModule,
     source: &Path,
+) -> Result<crate::storage::InstalledPlugin> {
+    install_with_mode(config, database, crypto, source, false).await
+}
+
+async fn upgrade_from_directory(
+    config: &Config,
+    database: &Database,
+    crypto: &CryptoModule,
+    source: &Path,
+) -> Result<crate::storage::InstalledPlugin> {
+    install_with_mode(config, database, crypto, source, true).await
+}
+
+async fn install_with_mode(
+    config: &Config,
+    database: &Database,
+    crypto: &CryptoModule,
+    source: &Path,
+    replace_existing: bool,
 ) -> Result<crate::storage::InstalledPlugin> {
     let package_root = resolve_package_root(source)?;
     let manifest_raw = read_required_file(&package_root.join(MANIFEST_FILE))?;
@@ -57,7 +89,12 @@ pub(super) async fn install_from_directory(
         .id
         .clone()
         .unwrap_or_else(|| default_plugin_id(&manifest.name));
-    ensure_not_installed(database, &install_id, &manifest.name).await?;
+
+    if replace_existing {
+        remove_existing_plugin_artifacts(config, database, &install_id, &manifest.name).await?;
+    } else {
+        ensure_not_installed(database, &install_id, &manifest.name).await?;
+    }
 
     let payload_source =
         resolve_payload_source(&package_root, &manifest, &package, runtime_rel.as_deref())?;
@@ -128,6 +165,46 @@ async fn ensure_not_installed(
     Ok(())
 }
 
+async fn remove_existing_plugin_artifacts(
+    config: &Config,
+    database: &Database,
+    install_id: &str,
+    manifest_name: &str,
+) -> Result<()> {
+    let existing = database
+        .installed_plugins()
+        .get_plugin(install_id)
+        .await
+        .context("Failed to check installed plugin ids")?
+        .or(database
+            .installed_plugins()
+            .get_plugin_by_name(manifest_name)
+            .await
+            .context("Failed to check installed plugin names")?);
+
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+
+    database
+        .installed_plugins()
+        .delete_plugin(&existing.id)
+        .await
+        .context("Failed to remove existing plugin before upgrade")?;
+
+    let install_dir = install_directory(config, &existing.id);
+    if install_dir.exists() {
+        fs::remove_dir_all(&install_dir).with_context(|| {
+            format!(
+                "Failed to remove previous install directory '{}'",
+                install_dir.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -140,7 +217,7 @@ mod tests {
     use crate::security::crypto::CryptoModule;
     use crate::storage::Database;
 
-    use super::install_from_directory;
+    use super::{install_from_directory, upgrade_from_directory};
     use crate::cli::plugins::package::{
         default_plugin_id, MANIFEST_FILE, PACKAGE_FILE, RUNTIME_FILE,
     };
@@ -306,5 +383,66 @@ mod tests {
             .expect_err("sdk mismatch should fail");
 
         assert!(error.to_string().contains("targets SDK version"));
+    }
+
+    #[tokio::test]
+    async fn upgrade_replaces_existing_plugin_record() {
+        let signing_key = SigningKey::from_bytes(&[11u8; 32]);
+        let crypto = CryptoModule::with_key(signing_key.verifying_key());
+        let first_dir = TempDir::new().expect("first package dir");
+        let second_dir = TempDir::new().expect("second package dir");
+        let (_db_dir, database) = test_database().await;
+        let data_dir = TempDir::new().expect("data dir");
+        let workspace = TempDir::new().expect("workspace dir");
+
+        let mut config = Config::default();
+        config.core.data_dir = data_dir.path().to_path_buf();
+        config.core.workspace = workspace.path().to_path_buf();
+
+        fs::write(first_dir.path().join("echo.wasm"), b"first wasm").expect("write first wasm");
+        fs::write(first_dir.path().join(RUNTIME_FILE), r#"{"tools":[]}"#)
+            .expect("write first runtime");
+        let first_hash = CryptoModule::compute_hash(b"first wasm");
+        let first_sig = hex::encode(signing_key.sign(first_hash.as_bytes()).to_bytes());
+        write_signed_manifest(
+            first_dir.path(),
+            &signing_key,
+            "Echo Skill",
+            "Skill",
+            "Reviewed",
+            "0.1.0",
+        );
+        write_package(first_dir.path(), "echo.wasm", &first_hash, &first_sig);
+        install_from_directory(&config, &database, &crypto, first_dir.path())
+            .await
+            .expect("install first package");
+
+        fs::write(second_dir.path().join("echo.wasm"), b"second wasm").expect("write second wasm");
+        fs::write(second_dir.path().join(RUNTIME_FILE), r#"{"tools":[]}"#)
+            .expect("write second runtime");
+        let second_hash = CryptoModule::compute_hash(b"second wasm");
+        let second_sig = hex::encode(signing_key.sign(second_hash.as_bytes()).to_bytes());
+        write_signed_manifest(
+            second_dir.path(),
+            &signing_key,
+            "Echo Skill",
+            "Skill",
+            "Reviewed",
+            "0.1.0",
+        );
+        write_package(second_dir.path(), "echo.wasm", &second_hash, &second_sig);
+
+        let upgraded = upgrade_from_directory(&config, &database, &crypto, second_dir.path())
+            .await
+            .expect("upgrade package");
+
+        let stored = database
+            .installed_plugins()
+            .get_plugin(&upgraded.id)
+            .await
+            .expect("fetch upgraded plugin")
+            .expect("stored upgraded plugin");
+
+        assert_eq!(stored.binary_hash, second_hash);
     }
 }

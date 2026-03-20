@@ -288,6 +288,9 @@ async fn handle_plugin(action: PluginAction) -> Result<()> {
         PluginAction::Install { source } => {
             rove_engine::cli::plugins::handle_install(&config, &source).await?;
         }
+        PluginAction::Upgrade { source } => {
+            rove_engine::cli::plugins::handle_upgrade(&config, &source).await?;
+        }
         PluginAction::Remove { name } => {
             rove_engine::cli::plugins::handle_remove(&config, &name).await?;
         }
