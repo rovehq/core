@@ -3,7 +3,9 @@ use clap::Parser;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use tracing::{error, Level};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{
+    filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+};
 
 use rove_engine::channels::TelegramBot;
 use rove_engine::cli::{
@@ -21,7 +23,11 @@ async fn main() -> Result<()> {
     if let Some(path) = cli.config.as_ref() {
         std::env::set_var("ROVE_CONFIG_PATH", path);
     }
-    init_logging(cli.verbose)?;
+    init_logging(
+        cli.verbose,
+        console_log_level(&cli),
+        should_honor_console_env_filter(&cli),
+    )?;
 
     match cli.command {
         None => rove_engine::cli::repl::run().await?,
@@ -31,12 +37,14 @@ async fn main() -> Result<()> {
             prompt,
             yes,
             stream,
+            view,
         }) => {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::run::handle_run(
                 prompt.join(" "),
                 yes,
                 stream,
+                view,
                 &config,
                 OutputFormat::Text,
             )
@@ -84,12 +92,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_logging(verbose: bool) -> Result<()> {
+fn init_logging(
+    verbose: bool,
+    console_level: LevelFilter,
+    honor_console_env_filter: bool,
+) -> Result<()> {
     let level = if verbose { Level::DEBUG } else { Level::INFO };
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(format!("rove_engine={}", level.as_str().to_lowercase()))
-    });
-
+    let default_filter = EnvFilter::new(format!("rove_engine={}", level.as_str().to_lowercase()));
     let console_layer = fmt::layer().with_target(false);
 
     let log_path = log_file_path();
@@ -106,12 +115,49 @@ fn init_logging(verbose: bool) -> Result<()> {
             .expect("failed to open log file")
     });
 
+    let console_layer = if honor_console_env_filter {
+        if let Ok(env_filter) = EnvFilter::try_from_default_env() {
+            console_layer.with_filter(env_filter).boxed()
+        } else {
+            console_layer.with_filter(console_level).boxed()
+        }
+    } else {
+        console_layer.with_filter(console_level).boxed()
+    };
+
+    let file_filter = EnvFilter::try_from_default_env().unwrap_or(default_filter);
+    let file_layer = file_layer.with_filter(file_filter).boxed();
+
     tracing_subscriber::registry()
-        .with(env_filter)
         .with(console_layer)
         .with(file_layer)
         .try_init()
         .map_err(|error| anyhow::anyhow!("setting default subscriber failed: {}", error))
+}
+
+fn console_log_level(cli: &Cli) -> LevelFilter {
+    if cli.verbose {
+        return LevelFilter::DEBUG;
+    }
+
+    match &cli.command {
+        Some(Command::Task { view, .. }) if matches!(view, rove_engine::cli::TaskView::Logs) => {
+            LevelFilter::INFO
+        }
+        Some(Command::Task { .. }) => LevelFilter::ERROR,
+        _ => LevelFilter::INFO,
+    }
+}
+
+fn should_honor_console_env_filter(cli: &Cli) -> bool {
+    if cli.verbose {
+        return true;
+    }
+
+    matches!(
+        &cli.command,
+        Some(Command::Task { view, .. }) if matches!(view, rove_engine::cli::TaskView::Logs)
+    )
 }
 
 fn log_file_path() -> PathBuf {

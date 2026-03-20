@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use super::output::TaskView;
+
 /// Rove command-line interface.
 #[derive(Parser, Debug)]
 #[command(
@@ -49,6 +51,10 @@ pub enum Command {
         /// Stream task progress while it runs.
         #[arg(long)]
         stream: bool,
+
+        /// Presentation mode for task execution.
+        #[arg(long, value_enum, default_value_t = TaskView::Clean)]
+        view: TaskView,
     },
 
     /// Show recent task history.

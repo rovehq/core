@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use serde_json::json;
+use brain::dispatch::DispatchBrain;
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -17,14 +17,16 @@ use crate::memory::conductor::MemorySystem;
 use crate::security::rate_limiter::RateLimiter;
 use crate::security::risk_assessor::RiskAssessor;
 use crate::steering::loader::SteeringEngine;
-use crate::storage::{AgentEvent, Database, PendingTaskStatus, TaskRepository};
+use crate::storage::{Database, PendingTaskStatus, TaskRepository};
 
-use super::output::OutputFormat;
+use super::output::{OutputFormat, TaskView};
+use super::task_view::{self, DispatchSummary};
 
 pub async fn handle_run(
     task: String,
     auto_approve: bool,
     stream: bool,
+    view: TaskView,
     config: &Config,
     format: OutputFormat,
 ) -> Result<()> {
@@ -37,18 +39,20 @@ pub async fn handle_run(
         runtime_config.security.require_explicit_tier2 = false;
     }
 
+    let task_view = view.with_stream(stream);
+
     if daemon::is_running().unwrap_or(false) && !auto_approve {
-        return handle_daemon_run(task, stream, &runtime_config, format).await;
+        return handle_daemon_run(task, &runtime_config, format, task_view).await;
     }
 
-    handle_local_run(task, stream, &runtime_config, format).await
+    handle_local_run(task, &runtime_config, format, task_view).await
 }
 
 async fn handle_local_run(
     task: String,
-    stream: bool,
     runtime_config: &Config,
     format: OutputFormat,
+    view: TaskView,
 ) -> Result<()> {
     let database = Database::new(&database_path(runtime_config))
         .await
@@ -88,17 +92,19 @@ async fn handle_local_run(
 
     let agent_task = Task::build_from_cli(task.clone());
     let task_id = agent_task.id;
-    print_start(&task, format)?;
+    let dispatch = preview_dispatch(&task, view);
+    task_view::print_start(&task, &task_id.to_string(), format, view, dispatch.as_ref())?;
 
     let result = {
         let mut task_future = std::pin::pin!(agent.process_task(agent_task));
         let mut stream_state = StreamState::default();
+        stream_state.last_progress_at = Some(Instant::now());
 
         loop {
             tokio::select! {
                 result = &mut task_future => break result,
-                _ = sleep(Duration::from_millis(250)), if stream => {
-                    stream_task_events(&event_repo, &task_id.to_string(), &mut stream_state).await?;
+                _ = sleep(Duration::from_millis(250)), if view.wants_progress() => {
+                    stream_task_events(&event_repo, &task_id.to_string(), &mut stream_state, view).await?;
                 }
             }
         }
@@ -106,19 +112,30 @@ async fn handle_local_run(
 
     match result {
         Ok(task_result) => {
-            print_success(
+            let completion_dispatch = dispatch.or_else(|| {
+                Some(DispatchSummary::new(
+                    task_result.domain.to_string().to_lowercase(),
+                    infer_complexity_from_iterations(task_result.iterations).to_string(),
+                    task_result.sensitive,
+                    None,
+                    None,
+                ))
+            });
+            task_view::print_success(
                 &task_result.task_id,
                 &task_result.answer,
                 &task_result.provider_used,
                 task_result.duration_ms,
                 task_result.iterations,
                 format,
+                view,
+                completion_dispatch.as_ref(),
             )?;
             agent.drain_background_jobs().await;
             Ok(())
         }
         Err(error) => {
-            print_failure(&error, format)?;
+            task_view::print_failure(&error, format, view)?;
             Err(error)
         }
     }
@@ -126,9 +143,9 @@ async fn handle_local_run(
 
 async fn handle_daemon_run(
     task: String,
-    stream: bool,
     runtime_config: &Config,
     format: OutputFormat,
+    view: TaskView,
 ) -> Result<()> {
     let database = Arc::new(
         Database::new(&database_path(runtime_config))
@@ -137,21 +154,24 @@ async fn handle_daemon_run(
     );
     let gateway = Gateway::new(database.clone(), GatewayConfig::from_config(runtime_config))?;
 
-    print_start(&task, format)?;
     let task_id = gateway.submit_cli(&task, None).await?;
+    let dispatch = load_pending_dispatch(database.pending_tasks().get_task(&task_id).await?);
+    task_view::print_start(&task, &task_id, format, view, dispatch.as_ref())?;
     let mut stream_state = StreamState::default();
     let started = Instant::now();
     let task_repo = database.tasks();
 
     loop {
-        if stream {
-            stream_task_events(&task_repo, &task_id, &mut stream_state).await?;
-        }
-
         let pending = database.pending_tasks().get_task(&task_id).await?;
         let Some(pending) = pending else {
             anyhow::bail!("Task {} disappeared before completion", task_id);
         };
+
+        maybe_print_status_change(&pending.status, &mut stream_state, format, view)?;
+
+        if view.wants_progress() {
+            stream_task_events(&task_repo, &task_id, &mut stream_state, view).await?;
+        }
 
         match pending.status {
             PendingTaskStatus::Pending | PendingTaskStatus::Running => {
@@ -164,19 +184,21 @@ async fn handle_daemon_run(
                     .await?
                     .unwrap_or_else(|| "Task completed".to_string());
                 let (provider, duration_ms) = load_task_details(&task_repo, &task_id).await?;
-                print_success(
+                task_view::print_success(
                     &task_id,
                     &answer,
                     provider.as_deref().unwrap_or("unknown"),
                     duration_ms.unwrap_or_else(|| started.elapsed().as_millis() as i64),
                     0,
                     format,
+                    view,
+                    dispatch.as_ref(),
                 )?;
                 return Ok(());
             }
             PendingTaskStatus::Failed => {
                 let error = pending.error.unwrap_or_else(|| "Task failed".to_string());
-                print_failure(&anyhow::anyhow!(error.clone()), format)?;
+                task_view::print_failure(&anyhow::anyhow!(error.clone()), format, view)?;
                 anyhow::bail!(error);
             }
         }
@@ -210,92 +232,18 @@ fn expand_skill_dir(skill_dir: &Path) -> std::path::PathBuf {
     skill_dir.to_path_buf()
 }
 
-fn print_start(task: &str, format: OutputFormat) -> Result<()> {
-    match format {
-        OutputFormat::Text => {
-            println!("Executing task: {}", task);
-            println!();
-        }
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "status": "running",
-                    "task": task,
-                }))?
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn print_success(
-    task_id: &str,
-    answer: &str,
-    provider_used: &str,
-    duration_ms: i64,
-    iterations: usize,
-    format: OutputFormat,
-) -> Result<()> {
-    match format {
-        OutputFormat::Text => {
-            println!("Result:");
-            println!("{}", answer);
-            println!();
-            println!("Task completed successfully");
-            println!("  Task ID: {}", task_id);
-            println!("  Provider: {}", provider_used);
-            println!("  Duration: {}ms", duration_ms);
-            println!("  Iterations: {}", iterations);
-        }
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "status": "completed",
-                    "task_id": task_id,
-                    "answer": answer,
-                    "provider": provider_used,
-                    "duration_ms": duration_ms,
-                    "iterations": iterations,
-                }))?
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn print_failure(error: &anyhow::Error, format: OutputFormat) -> Result<()> {
-    match format {
-        OutputFormat::Text => {
-            println!("Task failed: {}", error);
-        }
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "status": "failed",
-                    "error": error.to_string(),
-                }))?
-            );
-        }
-    }
-
-    Ok(())
-}
-
 #[derive(Default)]
 struct StreamState {
     seen_events: usize,
     last_progress_at: Option<Instant>,
+    last_status: Option<PendingTaskStatus>,
 }
 
 async fn stream_task_events(
     task_repo: &TaskRepository,
     task_id: &str,
     state: &mut StreamState,
+    view: TaskView,
 ) -> Result<()> {
     let events = task_repo
         .get_agent_events(task_id)
@@ -303,7 +251,7 @@ async fn stream_task_events(
         .unwrap_or_default();
     if state.seen_events < events.len() {
         for event in events.iter().skip(state.seen_events) {
-            print_stream_event(event);
+            task_view::print_stream_event(event, view);
         }
         state.seen_events = events.len();
         state.last_progress_at = Some(Instant::now());
@@ -315,29 +263,31 @@ async fn stream_task_events(
         .map(|instant| instant.elapsed() >= Duration::from_secs(1))
         .unwrap_or(true);
     if should_ping {
-        println!("...waiting for task progress");
+        match view {
+            TaskView::Logs => println!("[wait] awaiting task progress"),
+            TaskView::Live => println!("Waiting for task progress..."),
+            TaskView::Clean | TaskView::Gist => {}
+        }
         state.last_progress_at = Some(Instant::now());
     }
 
     Ok(())
 }
 
-fn print_stream_event(event: &AgentEvent) {
-    match event.event_type.as_str() {
-        "tool_call" => println!("tool: {}", event.payload),
-        "observation" => println!("observation: {}", summarize_line(&event.payload)),
-        "error" => println!("error: {}", summarize_line(&event.payload)),
-        _ => {}
+fn maybe_print_status_change(
+    status: &PendingTaskStatus,
+    state: &mut StreamState,
+    format: OutputFormat,
+    view: TaskView,
+) -> Result<()> {
+    if state.last_status.as_ref() == Some(status) {
+        return Ok(());
     }
-}
 
-fn summarize_line(text: &str) -> String {
-    let single_line = text.replace('\n', " ");
-    if single_line.len() > 120 {
-        format!("{}...", &single_line[..117])
-    } else {
-        single_line
-    }
+    task_view::print_status_change(status.clone(), format, view)?;
+    state.last_status = Some(status.clone());
+    state.last_progress_at = Some(Instant::now());
+    Ok(())
 }
 
 async fn load_task_details(
@@ -349,4 +299,33 @@ async fn load_task_details(
     Ok(task
         .map(|task| (task.provider_used, task.duration_ms))
         .unwrap_or((None, None)))
+}
+
+fn preview_dispatch(task: &str, view: TaskView) -> Option<DispatchSummary> {
+    if matches!(view, TaskView::Gist) {
+        return None;
+    }
+
+    let brain = DispatchBrain::init().ok()?;
+    let dispatch = brain.classify(task);
+    Some(DispatchSummary::new(
+        dispatch.domain_label,
+        format!("{:?}", dispatch.complexity).to_lowercase(),
+        dispatch.sensitive,
+        Some(dispatch.domain_confidence),
+        Some(format!("{:?}", dispatch.route).to_lowercase()),
+    ))
+}
+
+fn load_pending_dispatch(pending: Option<crate::storage::PendingTask>) -> Option<DispatchSummary> {
+    pending
+        .map(|task| DispatchSummary::new(task.domain, task.complexity, task.sensitive, None, None))
+}
+
+fn infer_complexity_from_iterations(iterations: usize) -> &'static str {
+    match iterations {
+        0 | 1 => "simple",
+        2..=4 => "medium",
+        _ => "complex",
+    }
 }

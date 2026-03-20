@@ -17,9 +17,10 @@ pub mod schedule;
 pub mod secrets;
 pub mod setup;
 pub mod status;
+pub mod task_view;
 pub mod tui;
 pub mod unlock;
 pub mod update;
 
 pub use commands::*;
-pub use output::OutputFormat;
+pub use output::{OutputFormat, TaskView};
