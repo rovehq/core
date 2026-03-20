@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{Mutex, RwLock};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::config::Config;
 use crate::runtime::{
@@ -167,68 +167,6 @@ impl ToolRegistry {
             domains: vec!["vision".to_string(), "all".to_string()],
         })
         .await;
-    }
-
-    pub async fn register_tools_from_plugin_manifest(
-        &mut self,
-        plugin_name: &str,
-        plugin_manifest_json: &str,
-    ) {
-        let Ok(val) = serde_json::from_str::<Value>(plugin_manifest_json) else {
-            warn!("Failed to parse plugin manifest for '{}'", plugin_name);
-            return;
-        };
-
-        let tools = match val.get("tools").and_then(Value::as_array) {
-            Some(tools) => tools.clone(),
-            None => return,
-        };
-
-        self.wasm_tools.retain(|tool| {
-            tool.plugin_name != plugin_name
-                || tools
-                    .iter()
-                    .any(|entry| entry["name"].as_str() == Some(&tool.name))
-        });
-
-        let domains = derive_domains_from_name(plugin_name);
-
-        for tool in tools {
-            let Some(name) = tool["name"].as_str().map(ToOwned::to_owned) else {
-                continue;
-            };
-            if self.wasm_tools.iter().any(|entry| entry.name == name) {
-                continue;
-            }
-
-            let description = tool["description"]
-                .as_str()
-                .unwrap_or("WASM tool")
-                .to_string();
-            let parameters = tool
-                .get("parameters")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-
-            self.wasm_tools.push(WasmToolInfo {
-                name: name.clone(),
-                description: description.clone(),
-                parameters: parameters.clone(),
-                plugin_name: plugin_name.to_string(),
-                domains: domains.clone(),
-            });
-
-            self.register(ToolSchema {
-                name,
-                description,
-                parameters,
-                source: ToolSource::Wasm {
-                    plugin_id: plugin_name.to_string(),
-                },
-                domains: domains.clone(),
-            })
-            .await;
-        }
     }
 
     pub async fn register_wasm_tool(

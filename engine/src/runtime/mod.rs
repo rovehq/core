@@ -47,15 +47,6 @@ impl RuntimeManager {
             .get_enabled_plugins()
             .await
             .map_err(|error| EngineError::Database(error.to_string()))?;
-        let legacy_plugins = if installed_plugins.is_empty() {
-            database
-                .plugins()
-                .get_enabled_plugins()
-                .await
-                .map_err(|error| EngineError::Database(error.to_string()))?
-        } else {
-            Vec::new()
-        };
         let wasm_manifest = sdk_manifest_from_installed_plugins(&installed_plugins);
         let mcp_configs = load_installed_mcp_configs(&installed_plugins).unwrap_or_else(|error| {
             warn!("Failed to load installed MCP configs: {}", error);
@@ -73,19 +64,14 @@ impl RuntimeManager {
             }
         };
 
-        let wasm = if wasm_manifest.plugins.is_empty() && legacy_plugins.is_empty() {
+        let wasm = if wasm_manifest.plugins.is_empty() {
             None
         } else {
             match CryptoModule::new() {
                 Ok(crypto) => {
                     let fs_guard = Arc::new(FileSystemGuard::new(config.core.workspace.clone())?);
-                    let manifest = if wasm_manifest.plugins.is_empty() {
-                        legacy_wasm_manifest(&legacy_plugins)
-                    } else {
-                        wasm_manifest
-                    };
                     Some(Arc::new(Mutex::new(WasmRuntime::new(
-                        manifest,
+                        wasm_manifest,
                         Arc::new(crypto),
                         fs_guard,
                     ))))
@@ -122,16 +108,7 @@ impl RuntimeManager {
 
         builtin::register_all(&mut registry, config.core.workspace.clone()).await?;
 
-        if installed_plugins.is_empty() {
-            for plugin in &legacy_plugins {
-                registry
-                    .register_tools_from_plugin_manifest(&plugin.name, &plugin.manifest_json)
-                    .await;
-            }
-        } else {
-            register_installed_plugin_schemas(&mut registry, native.as_ref(), &installed_plugins)
-                .await;
-        }
+        register_installed_plugin_schemas(&mut registry, native.as_ref(), &installed_plugins).await;
 
         if let Some(spawner) = &mcp {
             registry.register_mcp_spawner(Arc::clone(spawner));
@@ -337,31 +314,6 @@ fn sdk_manifest_from_installed_plugins(installed_plugins: &[InstalledPlugin]) ->
     }
 }
 
-fn legacy_wasm_manifest(enabled_plugins: &[crate::storage::Plugin]) -> SdkManifest {
-    SdkManifest {
-        version: "1.0.0".to_string(),
-        team_public_key: String::new(),
-        signature: String::new(),
-        generated_at: String::new(),
-        core_tools: Vec::new(),
-        plugins: enabled_plugins
-            .iter()
-            .map(|plugin| PluginEntry {
-                name: plugin.name.clone(),
-                version: plugin.version.clone(),
-                path: plugin.wasm_path.clone(),
-                hash: plugin.wasm_hash.clone(),
-                permissions: PluginPermissions::default(),
-                allowed_imports: vec![
-                    "extism:host/env".to_string(),
-                    "wasi_snapshot_preview1".to_string(),
-                ],
-                trust_tier: 0,
-            })
-            .collect(),
-    }
-}
-
 fn empty_sdk_manifest() -> SdkManifest {
     SdkManifest {
         version: "1.0.0".to_string(),
@@ -456,5 +408,49 @@ mod tests {
         let schemas = runtime.registry.schemas_for("general").await;
 
         assert!(schemas.iter().any(|schema| schema.name == "echo_text"));
+    }
+
+    #[tokio::test]
+    async fn runtime_build_ignores_legacy_plugin_rows() {
+        let workspace = TempDir::new().expect("workspace");
+        let data = TempDir::new().expect("data");
+        let database = Database::new(&data.path().join("runtime-legacy.db"))
+            .await
+            .expect("database");
+
+        database
+            .plugins()
+            .register_plugin(
+                "legacy-echo",
+                "legacy-echo",
+                "0.1.0",
+                "legacy-echo.wasm",
+                "abc123",
+                r#"{
+                    "tools": [
+                        {
+                            "name": "legacy_echo",
+                            "description": "Legacy echo tool",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {}
+                            }
+                        }
+                    ]
+                }"#,
+            )
+            .await
+            .expect("legacy plugin row");
+
+        let mut config = Config::default();
+        config.core.workspace = workspace.path().to_path_buf();
+        config.mcp.servers.clear();
+
+        let runtime = RuntimeManager::build(&database, &config)
+            .await
+            .expect("runtime manager");
+        let schemas = runtime.registry.schemas_for("all").await;
+
+        assert!(!schemas.iter().any(|schema| schema.name == "legacy_echo"));
     }
 }
