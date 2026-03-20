@@ -25,6 +25,10 @@ pub async fn handle_replay(task_id: String, config: &Config, format: OutputForma
         .get_task_steps(&task_uuid)
         .await
         .context("Failed to fetch task steps")?;
+    let events = task_repo
+        .get_agent_events(&task_id)
+        .await
+        .context("Failed to fetch task events")?;
 
     match format {
         OutputFormat::Text => {
@@ -50,6 +54,15 @@ pub async fn handle_replay(task_id: String, config: &Config, format: OutputForma
                 println!("  {}", step.content);
                 println!();
             }
+
+            println!("Events ({} total):", events.len());
+            println!();
+
+            for event in events {
+                println!("Event {}: {}", event.step_num, event.event_type);
+                println!("  {}", event.payload);
+                println!();
+            }
         }
         OutputFormat::Json => {
             println!(
@@ -57,7 +70,9 @@ pub async fn handle_replay(task_id: String, config: &Config, format: OutputForma
                 serde_json::to_string_pretty(&json!({
                     "task": task,
                     "steps": steps,
+                    "events": events,
                     "step_count": steps.len(),
+                    "event_count": events.len(),
                 }))?
             );
         }

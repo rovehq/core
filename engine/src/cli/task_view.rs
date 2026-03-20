@@ -297,6 +297,11 @@ fn render_event(event: &AgentEvent, view: TaskView) -> Option<String> {
             "tool_call" => Some(format!("Tool: {}", summarize_line(&event.payload))),
             "observation" => Some(format!("Observation: {}", summarize_line(&event.payload))),
             "error" => Some(format!("Error: {}", summarize_line(&event.payload))),
+            "dag_wave_started" => dag_wave_line(&event.payload),
+            "dag_step_started" => dag_step_line("started", &event.payload),
+            "dag_step_succeeded" => dag_step_line("done", &event.payload),
+            "dag_step_failed" => dag_step_line("failed", &event.payload),
+            "dag_step_blocked" => dag_step_line("blocked", &event.payload),
             _ => None,
         },
         TaskView::Logs => Some(format!(
@@ -305,6 +310,44 @@ fn render_event(event: &AgentEvent, view: TaskView) -> Option<String> {
             event.payload.replace('\n', "\\n")
         )),
     }
+}
+
+fn dag_wave_line(payload: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let wave = json.get("wave")?.as_u64()?;
+    let steps = json
+        .get("steps")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+
+    Some(format!("Wave {wave}: {steps}"))
+}
+
+fn dag_step_line(status: &str, payload: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let step_id = json.get("step_id")?.as_str()?;
+    let role = json
+        .get("role")
+        .and_then(|value| value.as_str())
+        .unwrap_or("step");
+    let route = json
+        .get("route")
+        .and_then(|value| value.as_str())
+        .unwrap_or("-");
+    let error = json.get("error").and_then(|value| value.as_str());
+
+    let mut line = format!("Step {step_id} {status} ({role} · {route})");
+    if let Some(error) = error {
+        line.push_str(&format!(": {}", summarize_line(error)));
+    }
+    Some(line)
 }
 
 fn summarize_line(text: &str) -> String {
@@ -374,6 +417,24 @@ mod tests {
         assert_eq!(
             render_status_change(PendingTaskStatus::Pending, TaskView::Live).as_deref(),
             Some("Status: queued")
+        );
+    }
+
+    #[test]
+    fn live_view_shows_dag_step_events() {
+        let event = AgentEvent {
+            id: "event-1".to_string(),
+            task_id: "task-1".to_string(),
+            event_type: "dag_step_started".to_string(),
+            payload: r#"{"step_id":"step_2","role":"verifier","route":"local"}"#.to_string(),
+            step_num: 10,
+            domain: Some("code".to_string()),
+            created_at: 0,
+        };
+
+        assert_eq!(
+            render_event(&event, TaskView::Live).as_deref(),
+            Some("Step step_2 started (verifier · local)")
         );
     }
 }
