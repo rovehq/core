@@ -2,7 +2,7 @@
 //!
 //! Tests cloud planning + local execution with DAG concurrency
 
-use rove_engine::conductor::types::{ConductorPlan, PlanStep, StepType};
+use rove_engine::conductor::types::{ConductorPlan, PlanStep, StepRole, StepType};
 use rove_engine::conductor::HybridExecutor;
 use rove_engine::config::LLMConfig;
 use rove_engine::llm::router::LLMRouter;
@@ -38,6 +38,8 @@ fn test_dag_parallel_execution() {
                 order: 0,
                 description: "Independent step 1".to_string(),
                 step_type: StepType::Execute,
+                role: StepRole::Executor,
+                parallel_safe: false,
                 dependencies: vec![],
                 expected_outcome: "Done".to_string(),
             },
@@ -46,6 +48,8 @@ fn test_dag_parallel_execution() {
                 order: 1,
                 description: "Independent step 2".to_string(),
                 step_type: StepType::Execute,
+                role: StepRole::Executor,
+                parallel_safe: false,
                 dependencies: vec![],
                 expected_outcome: "Done".to_string(),
             },
@@ -54,6 +58,8 @@ fn test_dag_parallel_execution() {
                 order: 2,
                 description: "Depends on both".to_string(),
                 step_type: StepType::Execute,
+                role: StepRole::Executor,
+                parallel_safe: false,
                 dependencies: vec!["step_1".to_string(), "step_2".to_string()],
                 expected_outcome: "Done".to_string(),
             },
@@ -101,6 +107,8 @@ fn test_dag_cycle_detection() {
                 order: 0,
                 description: "Step 1".to_string(),
                 step_type: StepType::Execute,
+                role: StepRole::Executor,
+                parallel_safe: false,
                 dependencies: vec!["step_2".to_string()], // Cycle!
                 expected_outcome: "Done".to_string(),
             },
@@ -109,6 +117,8 @@ fn test_dag_cycle_detection() {
                 order: 1,
                 description: "Step 2".to_string(),
                 step_type: StepType::Execute,
+                role: StepRole::Executor,
+                parallel_safe: false,
                 dependencies: vec!["step_1".to_string()], // Cycle!
                 expected_outcome: "Done".to_string(),
             },
@@ -159,6 +169,8 @@ fn test_plan_parsing() {
 
     assert_eq!(plan.steps.len(), 2);
     assert_eq!(plan.steps[0].id, "step_1");
+    assert_eq!(plan.steps[0].role, StepRole::Executor);
+    assert!(!plan.steps[0].parallel_safe);
     assert_eq!(plan.steps[1].dependencies.len(), 1);
     assert_eq!(plan.steps[1].dependencies[0], "step_1");
 }

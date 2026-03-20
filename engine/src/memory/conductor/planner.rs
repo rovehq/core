@@ -3,7 +3,7 @@
 //! Interacts with the LLM to generate, refine, and orchestrate `ConductorPlan`s
 //! based on user requests and available tools.
 
-use crate::conductor::types::{ConductorPlan, PlanStep, StepType};
+use crate::conductor::types::{ConductorPlan, PlanStep, StepRole, StepType};
 
 use crate::llm::{LLMProvider, Message};
 use anyhow::{Context, Result};
@@ -21,6 +21,8 @@ struct RawPlanStep {
     id: Option<String>,
     description: String,
     step_type: Option<String>,
+    role: Option<String>,
+    parallel_safe: Option<bool>,
     #[serde(default)]
     dependencies: Vec<String>,
     expected_outcome: Option<String>,
@@ -38,12 +40,14 @@ impl Planner {
             Output ONLY a JSON array of steps. Each step object must have:\n\
             - \"description\": string describing what to do\n\
             - \"step_type\": one of \"Research\", \"Execute\", or \"Verify\"\n\
+            - \"role\": one of \"Researcher\", \"Executor\", or \"Verifier\"\n\
+            - \"parallel_safe\": boolean, true only for read-only gather or verification steps\n\
             - \"dependencies\": array of step ids this depends on (empty for first step)\n\
             - \"expected_outcome\": string describing success criteria\n\n\
             Example output:\n\
-            [{\"description\":\"Analyze the codebase\",\"step_type\":\"Research\",\"dependencies\":[],\"expected_outcome\":\"Understanding of code structure\"},\
-            {\"description\":\"Implement changes\",\"step_type\":\"Execute\",\"dependencies\":[\"step_1\"],\"expected_outcome\":\"Code modified\"},\
-            {\"description\":\"Run tests\",\"step_type\":\"Verify\",\"dependencies\":[\"step_2\"],\"expected_outcome\":\"All tests pass\"}]\n\n\
+            [{\"description\":\"Analyze the codebase\",\"step_type\":\"Research\",\"role\":\"Researcher\",\"parallel_safe\":true,\"dependencies\":[],\"expected_outcome\":\"Understanding of code structure\"},\
+            {\"description\":\"Implement changes\",\"step_type\":\"Execute\",\"role\":\"Executor\",\"parallel_safe\":false,\"dependencies\":[\"step_1\"],\"expected_outcome\":\"Code modified\"},\
+            {\"description\":\"Run tests\",\"step_type\":\"Verify\",\"role\":\"Verifier\",\"parallel_safe\":true,\"dependencies\":[\"step_2\"],\"expected_outcome\":\"All tests pass\"}]\n\n\
             Output ONLY the JSON array, no markdown, no explanation."
         );
         let user_prompt = Message::user(goal);
@@ -111,12 +115,24 @@ impl Planner {
                     "Verify" | "verify" => StepType::Verify,
                     _ => StepType::Execute,
                 };
+                let role = match raw.role.as_deref().unwrap_or("") {
+                    "Researcher" | "researcher" => StepRole::Researcher,
+                    "Verifier" | "verifier" => StepRole::Verifier,
+                    "Executor" | "executor" => StepRole::Executor,
+                    _ => StepRole::for_step_type(&step_type),
+                };
+                let parallel_safe = raw.parallel_safe.unwrap_or(matches!(
+                    &step_type,
+                    StepType::Research | StepType::Verify
+                ));
 
                 PlanStep {
                     id: step_id,
                     order: i as u32,
                     description: raw.description,
                     step_type,
+                    role,
+                    parallel_safe,
                     dependencies: raw.dependencies,
                     expected_outcome: raw
                         .expected_outcome
@@ -146,6 +162,8 @@ impl Planner {
                     order: 0,
                     description: format!("Analyze how to achieve: {}", goal),
                     step_type: StepType::Research,
+                    role: StepRole::Researcher,
+                    parallel_safe: true,
                     dependencies: vec![],
                     expected_outcome: "Understanding of required changes".to_string(),
                 },
@@ -154,6 +172,8 @@ impl Planner {
                     order: 1,
                     description: "Implement the required changes".to_string(),
                     step_type: StepType::Execute,
+                    role: StepRole::Executor,
+                    parallel_safe: false,
                     dependencies: vec!["step_1".to_string()],
                     expected_outcome: "Changes implemented successfully".to_string(),
                 },
@@ -162,6 +182,8 @@ impl Planner {
                     order: 2,
                     description: "Verify the implementation".to_string(),
                     step_type: StepType::Verify,
+                    role: StepRole::Verifier,
+                    parallel_safe: true,
                     dependencies: vec!["step_2".to_string()],
                     expected_outcome: "Tests pass and functionality is confirmed".to_string(),
                 },
@@ -184,17 +206,21 @@ mod tests {
         let planner = Planner::new(Arc::new(provider));
 
         let json = r#"[
-            {"description": "Read the config file", "step_type": "Research", "dependencies": [], "expected_outcome": "Config understood"},
-            {"description": "Modify the settings", "step_type": "Execute", "dependencies": ["step_1"], "expected_outcome": "Settings changed"},
-            {"description": "Run validation", "step_type": "Verify", "dependencies": ["step_2"], "expected_outcome": "Config valid"}
+            {"description": "Read the config file", "step_type": "Research", "role": "Researcher", "parallel_safe": true, "dependencies": [], "expected_outcome": "Config understood"},
+            {"description": "Modify the settings", "step_type": "Execute", "role": "Executor", "parallel_safe": false, "dependencies": ["step_1"], "expected_outcome": "Settings changed"},
+            {"description": "Run validation", "step_type": "Verify", "role": "Verifier", "parallel_safe": true, "dependencies": ["step_2"], "expected_outcome": "Config valid"}
         ]"#;
 
         let steps = planner.parse_steps(json).unwrap();
         assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].id, "step_1");
         assert_eq!(steps[0].step_type, StepType::Research);
+        assert_eq!(steps[0].role, StepRole::Researcher);
+        assert!(steps[0].parallel_safe);
         assert_eq!(steps[1].step_type, StepType::Execute);
+        assert_eq!(steps[1].role, StepRole::Executor);
         assert_eq!(steps[2].step_type, StepType::Verify);
+        assert_eq!(steps[2].role, StepRole::Verifier);
         assert_eq!(steps[1].dependencies, vec!["step_1"]);
     }
 
@@ -207,7 +233,7 @@ mod tests {
         let planner = Planner::new(Arc::new(provider));
 
         let json = r#"Here is the plan:
-        [{"description": "Do the thing", "step_type": "Execute", "dependencies": [], "expected_outcome": "Done"}]
+        [{"description": "Do the thing", "step_type": "Execute", "role": "Executor", "parallel_safe": false, "dependencies": [], "expected_outcome": "Done"}]
         Hope this helps!"#;
 
         let steps = planner.parse_steps(json).unwrap();
@@ -228,6 +254,8 @@ mod tests {
         let steps = planner.parse_steps(json).unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].step_type, StepType::Execute); // default
+        assert_eq!(steps[0].role, StepRole::Executor); // derived default
+        assert!(!steps[0].parallel_safe); // writes default to serial
         assert_eq!(steps[0].expected_outcome, "Step completed"); // default
     }
 
@@ -244,7 +272,13 @@ mod tests {
         assert!(plan.original_goal.contains("Fix the bug"));
         assert!(plan.created_at > 0);
         assert_eq!(plan.steps[0].step_type, StepType::Research);
+        assert_eq!(plan.steps[0].role, StepRole::Researcher);
+        assert!(plan.steps[0].parallel_safe);
         assert_eq!(plan.steps[1].step_type, StepType::Execute);
+        assert_eq!(plan.steps[1].role, StepRole::Executor);
+        assert!(!plan.steps[1].parallel_safe);
         assert_eq!(plan.steps[2].step_type, StepType::Verify);
+        assert_eq!(plan.steps[2].role, StepRole::Verifier);
+        assert!(plan.steps[2].parallel_safe);
     }
 }

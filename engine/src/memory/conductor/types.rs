@@ -19,12 +19,35 @@ pub enum StepType {
     Verify,
 }
 
+/// Specialist role assigned to a plan step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum StepRole {
+    Researcher,
+    #[default]
+    Executor,
+    Verifier,
+}
+
+impl StepRole {
+    pub fn for_step_type(step_type: &StepType) -> Self {
+        match step_type {
+            StepType::Research => Self::Researcher,
+            StepType::Verify => Self::Verifier,
+            StepType::Execute => Self::Executor,
+        }
+    }
+}
+
 /// Represents an individual step within a task plan
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanStep {
     pub id: String,
     pub order: u32,
     pub step_type: StepType,
+    #[serde(default)]
+    pub role: StepRole,
+    #[serde(default)]
+    pub parallel_safe: bool,
     pub dependencies: Vec<String>,
     pub description: String,
     pub expected_outcome: String,

@@ -52,6 +52,7 @@ impl Executor {
         let system = Message::system(format!(
             "You are executing a plan step. Your job is to complete this step using the available tools.\n\
             Step type: {:?}\n\
+            Assigned role: {:?}\n\
             Step description: {}\n\
             Expected outcome: {}\n\n\
             Previous context:\n{}\n\n\
@@ -60,7 +61,7 @@ impl Executor {
             - write_file(path, content): Write content to a file\n\
             - execute_command(command): Run a shell command\n\n\
             When you have completed the step, provide your final answer summarizing what was done and any important findings.",
-            step.step_type, step.description, step.expected_outcome, context
+            step.step_type, step.role, step.description, step.expected_outcome, context
         ));
 
         let user_msg = Message::user(&step.description);
@@ -207,11 +208,15 @@ mod tests {
     use super::*;
 
     fn make_step(step_type: StepType) -> PlanStep {
+        let role = crate::conductor::types::StepRole::for_step_type(&step_type);
+        let parallel_safe = matches!(&step_type, StepType::Research | StepType::Verify);
         PlanStep {
             id: "test_step".to_string(),
             order: 0,
             description: "test step".to_string(),
             step_type,
+            role,
+            parallel_safe,
             dependencies: vec![],
             expected_outcome: "done".to_string(),
         }

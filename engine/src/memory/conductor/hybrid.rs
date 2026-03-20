@@ -11,7 +11,7 @@
 //! 3. Each step executed by local brain (if available) or cloud fallback
 //! 4. Sensitive data never sent to cloud during execution
 
-use crate::conductor::types::{ConductorPlan, PlanStep};
+use crate::conductor::types::{ConductorPlan, PlanStep, StepRole, StepType};
 use crate::llm::router::LLMRouter;
 use crate::llm::{LLMResponse, Message};
 use anyhow::{Context, Result};
@@ -43,6 +43,7 @@ pub struct StepExecutionResult {
     pub success: bool,
     pub output: String,
     pub execution_time_ms: u64,
+    pub role: StepRole,
     pub executed_by: ExecutionLocation,
 }
 
@@ -51,6 +52,30 @@ pub struct StepExecutionResult {
 pub enum ExecutionLocation {
     LocalBrain,
     Cloud,
+}
+
+fn select_executable_steps(ready: &[String], steps: &[PlanStep]) -> Result<Vec<String>> {
+    let mut serial = Vec::new();
+    let mut parallel = Vec::new();
+
+    for step_id in ready {
+        let step = steps
+            .iter()
+            .find(|step| step.id == *step_id)
+            .ok_or_else(|| anyhow::anyhow!("Step not found: {step_id}"))?;
+
+        if step.parallel_safe {
+            parallel.push(step_id.clone());
+        } else {
+            serial.push(step_id.clone());
+        }
+    }
+
+    if !serial.is_empty() {
+        return Ok(vec![serial[0].clone()]);
+    }
+
+    Ok(parallel)
 }
 
 impl HybridExecutor {
@@ -74,14 +99,16 @@ impl HybridExecutor {
             Output ONLY a JSON array of steps. Each step must have:\n\
             - \"id\": unique identifier (e.g., \"step_1\")\n\
             - \"description\": what to do in this step\n\
+            - \"role\": one of \"Researcher\", \"Executor\", or \"Verifier\"\n\
+            - \"parallel_safe\": true only for read-only gather or verification steps\n\
             - \"dependencies\": array of step IDs this depends on (empty for independent steps)\n\
             - \"expected_outcome\": success criteria\n\n\
             Make steps as independent as possible to enable parallel execution.\n\
             Keep steps small and focused (1-2 actions per step).\n\n\
             Example:\n\
-            [{\"id\":\"step_1\",\"description\":\"Read config.toml\",\"dependencies\":[],\"expected_outcome\":\"Config loaded\"},\
-            {\"id\":\"step_2\",\"description\":\"Read main.rs\",\"dependencies\":[],\"expected_outcome\":\"Code loaded\"},\
-            {\"id\":\"step_3\",\"description\":\"Analyze both files\",\"dependencies\":[\"step_1\",\"step_2\"],\"expected_outcome\":\"Analysis complete\"}]\n\n\
+            [{\"id\":\"step_1\",\"description\":\"Read config.toml\",\"role\":\"Researcher\",\"parallel_safe\":true,\"dependencies\":[],\"expected_outcome\":\"Config loaded\"},\
+            {\"id\":\"step_2\",\"description\":\"Read main.rs\",\"role\":\"Researcher\",\"parallel_safe\":true,\"dependencies\":[],\"expected_outcome\":\"Code loaded\"},\
+            {\"id\":\"step_3\",\"description\":\"Analyze both files\",\"role\":\"Verifier\",\"parallel_safe\":true,\"dependencies\":[\"step_1\",\"step_2\"],\"expected_outcome\":\"Analysis complete\"}]\n\n\
             Output ONLY the JSON array."
         );
 
@@ -145,6 +172,7 @@ impl HybridExecutor {
                             success: true,
                             output,
                             execution_time_ms: elapsed,
+                            role: step.role.clone(),
                             executed_by: ExecutionLocation::LocalBrain,
                         });
                     }
@@ -168,6 +196,7 @@ impl HybridExecutor {
             success: true,
             output,
             execution_time_ms: elapsed,
+            role: step.role.clone(),
             executed_by: ExecutionLocation::Cloud,
         })
     }
@@ -181,9 +210,10 @@ impl HybridExecutor {
     ) -> Result<String> {
         let system = format!(
             "Execute this step: {}\n\
+            Assigned specialist role: {:?}\n\
             Expected outcome: {}\n\n\
             Context from previous steps:\n{}",
-            step.description, step.expected_outcome, context
+            step.description, step.role, step.expected_outcome, context
         );
 
         let messages = vec![sdk::Message {
@@ -203,9 +233,10 @@ impl HybridExecutor {
     async fn execute_with_cloud(&self, step: &PlanStep, context: &str) -> Result<String> {
         let system = Message::system(format!(
             "Execute this step: {}\n\
+            Assigned specialist role: {:?}\n\
             Expected outcome: {}\n\n\
             Context from previous steps:\n{}",
-            step.description, step.expected_outcome, context
+            step.description, step.role, step.expected_outcome, context
         ));
 
         let user = Message::user(&step.description);
@@ -311,12 +342,16 @@ impl HybridExecutor {
                 return Err(anyhow::anyhow!("Deadlock: no steps ready to execute"));
             }
 
-            info!("Executing {} steps concurrently: {:?}", ready.len(), ready);
+            let executable = select_executable_steps(&ready, steps)?;
+            info!(
+                "Executing {} step(s) this wave: {:?}",
+                executable.len(),
+                executable
+            );
 
-            // Execute ready steps concurrently
             let mut handles = vec![];
 
-            for step_id in &ready {
+            for step_id in &executable {
                 let step = steps
                     .iter()
                     .find(|s| &s.id == step_id)
@@ -379,8 +414,6 @@ impl HybridExecutor {
 
     /// Parse plan JSON from LLM response
     pub fn parse_plan(&self, content: &str, goal: &str) -> Result<ConductorPlan> {
-        use crate::conductor::types::StepType;
-
         // Extract JSON array
         let json_str = if let Some(start) = content.find('[') {
             if let Some(end) = content.rfind(']') {
@@ -396,6 +429,8 @@ impl HybridExecutor {
         struct RawStep {
             id: String,
             description: String,
+            role: Option<String>,
+            parallel_safe: Option<bool>,
             #[serde(default)]
             dependencies: Vec<String>,
             expected_outcome: String,
@@ -407,13 +442,31 @@ impl HybridExecutor {
         let steps = raw_steps
             .into_iter()
             .enumerate()
-            .map(|(i, raw)| PlanStep {
-                id: raw.id,
-                order: i as u32,
-                description: raw.description,
-                step_type: StepType::Execute,
-                dependencies: raw.dependencies,
-                expected_outcome: raw.expected_outcome,
+            .map(|(i, raw)| {
+                let role = match raw.role.as_deref().unwrap_or("executor") {
+                    "Researcher" | "researcher" => StepRole::Researcher,
+                    "Verifier" | "verifier" => StepRole::Verifier,
+                    _ => StepRole::Executor,
+                };
+                let step_type = match role {
+                    StepRole::Researcher => StepType::Research,
+                    StepRole::Verifier => StepType::Verify,
+                    StepRole::Executor => StepType::Execute,
+                };
+                let parallel_safe =
+                    raw.parallel_safe
+                        .unwrap_or(matches!(&step_type, StepType::Research | StepType::Verify));
+
+                PlanStep {
+                    id: raw.id,
+                    order: i as u32,
+                    description: raw.description,
+                    step_type,
+                    role,
+                    parallel_safe,
+                    dependencies: raw.dependencies,
+                    expected_outcome: raw.expected_outcome,
+                }
             })
             .collect();
 
@@ -434,7 +487,7 @@ impl HybridExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conductor::types::StepType;
+    use crate::conductor::types::{StepRole, StepType};
     use crate::config::LLMConfig;
 
     fn make_test_step(id: &str, deps: Vec<String>) -> PlanStep {
@@ -443,6 +496,8 @@ mod tests {
             order: 0,
             description: format!("Step {}", id),
             step_type: StepType::Execute,
+            role: StepRole::Executor,
+            parallel_safe: false,
             dependencies: deps,
             expected_outcome: "Done".to_string(),
         }
