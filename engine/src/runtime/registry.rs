@@ -663,18 +663,16 @@ impl ToolRegistry {
 
     async fn call_native(
         &self,
-        _lib_path: &str,
+        lib_path: &str,
         tool_name: &str,
-        _args: Value,
+        args: Value,
     ) -> Result<Value, EngineError> {
-        let _runtime = self
+        let native_runtime = self
             .native_runtime
             .as_ref()
             .ok_or_else(|| EngineError::ToolNotLoaded(tool_name.to_string()))?;
-        Err(EngineError::ToolError(format!(
-            "native tool '{}' is registered but native lazy dispatch is not wired yet",
-            tool_name
-        )))
+        let mut runtime = native_runtime.lock().await;
+        runtime.call_registered_tool(lib_path, tool_name, args)
     }
 
     async fn call_mcp(

@@ -57,6 +57,46 @@ impl NativeRuntime {
         Ok(tool_path)
     }
 
+    pub(super) fn verify_registered_library_path(
+        &self,
+        lib_path: &str,
+    ) -> Result<PathBuf, EngineError> {
+        let registration = self.registered_libraries.get(lib_path).ok_or_else(|| {
+            tracing::error!(
+                "Native library '{}' was called before registration metadata was loaded",
+                lib_path
+            );
+            EngineError::ToolNotInManifest(lib_path.to_string())
+        })?;
+
+        let tool_path = PathBuf::from(lib_path);
+
+        self.crypto
+            .verify_file(&tool_path, &registration.hash)
+            .map_err(|error| {
+                tracing::error!(
+                    "Native hash verification failed for '{}': {}",
+                    tool_path.display(),
+                    error
+                );
+                error
+            })?;
+
+        self.crypto
+            .verify_file_signature(&tool_path, &registration.signature)
+            .map_err(|error| {
+                tracing::error!(
+                    "Native signature verification failed for '{}': {}",
+                    tool_path.display(),
+                    error
+                );
+                self.delete_compromised_file(&tool_path);
+                error
+            })?;
+
+        Ok(tool_path)
+    }
+
     fn delete_compromised_file(&self, tool_path: &PathBuf) {
         if let Err(error) = std::fs::remove_file(tool_path) {
             tracing::error!(

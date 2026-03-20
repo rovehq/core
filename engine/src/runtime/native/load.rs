@@ -5,27 +5,58 @@ use sdk::{
     errors::EngineError,
 };
 
-use super::NativeRuntime;
+use super::{LoadedLibrary, NativeRuntime};
 
 impl NativeRuntime {
     pub fn load_tool(&mut self, name: &str, ctx: CoreContext) -> Result<(), EngineError> {
         tracing::info!("Loading core tool: {}", name);
 
         let tool_path = self.verified_tool_path(name)?;
-        tracing::info!("All four gates passed for '{}', loading library...", name);
+        self.ctx = ctx;
+        self.load_library_path(tool_path, name)
+    }
+
+    pub(super) fn load_registered_library(
+        &mut self,
+        lib_path: &str,
+        tool_name: &str,
+    ) -> Result<(), EngineError> {
+        let tool_path = self.verify_registered_library_path(lib_path)?;
+        self.load_library_path(tool_path, tool_name)
+    }
+
+    fn load_library_path(
+        &mut self,
+        tool_path: std::path::PathBuf,
+        tool_name: &str,
+    ) -> Result<(), EngineError> {
+        let library_key = tool_path.display().to_string();
+        if self.loaded_libraries.contains_key(&library_key) {
+            self.loaded_tools
+                .insert(tool_name.to_string(), library_key.to_string());
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Native verification passed for '{}', loading {}",
+            tool_name,
+            tool_path.display()
+        );
 
         let library = unsafe { self.load_library(&tool_path)? };
-        let mut tool = unsafe { Self::create_tool_instance(&library, name, &tool_path)? };
+        let mut tool = unsafe { Self::create_tool_instance(&library, tool_name, &tool_path)? };
 
-        tool.start(ctx).map_err(|error| {
-            tracing::error!("Failed to start tool '{}': {}", name, error);
+        tool.start(self.ctx.clone()).map_err(|error| {
+            tracing::error!("Failed to start tool '{}': {}", tool_name, error);
             error
         })?;
 
-        self.tools.insert(name.to_string(), tool);
-        self.libraries.insert(name.to_string(), library);
+        self.loaded_tools
+            .insert(tool_name.to_string(), library_key.clone());
+        self.loaded_libraries
+            .insert(library_key, LoadedLibrary { tool, library });
 
-        tracing::info!("Core tool '{}' loaded successfully", name);
+        tracing::info!("Core tool '{}' loaded successfully", tool_name);
         Ok(())
     }
 

@@ -129,7 +129,8 @@ impl RuntimeManager {
                     .await;
             }
         } else {
-            register_installed_plugin_schemas(&mut registry, &installed_plugins).await;
+            register_installed_plugin_schemas(&mut registry, native.as_ref(), &installed_plugins)
+                .await;
         }
 
         if let Some(spawner) = &mcp {
@@ -162,6 +163,7 @@ impl RuntimeManager {
 
 async fn register_installed_plugin_schemas(
     registry: &mut ToolRegistry,
+    native_runtime: Option<&Arc<Mutex<NativeRuntime>>>,
     installed_plugins: &[InstalledPlugin],
 ) {
     for plugin in installed_plugins {
@@ -221,6 +223,15 @@ async fn register_installed_plugin_schemas(
                     );
                     continue;
                 };
+
+                if let Some(native_runtime) = native_runtime {
+                    let mut runtime = native_runtime.lock().await;
+                    runtime.register_library(
+                        binary_path.clone(),
+                        plugin.binary_hash.clone(),
+                        plugin.signature.clone(),
+                    );
+                }
 
                 for tool in catalog.tools {
                     let domains = if tool.domains.is_empty() {
