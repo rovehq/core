@@ -12,6 +12,7 @@
 //! 4. Sensitive data never sent to cloud during execution
 
 use crate::conductor::graph::DagGraph;
+use crate::conductor::policy::StepExecutionPolicy;
 use crate::conductor::runner::{DagNodeExecution, DagNodeExecutor, DagRunner};
 use crate::conductor::types::{ConductorPlan, PlanStep, StepRole, StepType};
 use crate::llm::router::LLMRouter;
@@ -71,13 +72,17 @@ impl DagNodeExecutor for HybridNodeExecutor {
         route: Route,
     ) -> Result<DagNodeExecution> {
         let start = std::time::Instant::now();
+        let policy = StepExecutionPolicy::for_step(step, route);
         let mut executed_route = route;
 
-        if matches!(route, Route::Local) {
+        if matches!(policy.preferred_route, Route::Local) {
             if let Some(local_brain) = &self.local_brain {
                 if local_brain.check_available().await {
                     debug!("Executing step {} with local brain", step.id);
-                    match self.execute_with_local(local_brain, step, dependency_context).await {
+                    match self
+                        .execute_with_local(local_brain, step, dependency_context, &policy)
+                        .await
+                    {
                         Ok(output) => {
                             let elapsed = start.elapsed().as_millis() as u64;
                             return Ok(DagNodeExecution {
@@ -124,14 +129,9 @@ impl HybridNodeExecutor {
         local_brain: &Arc<LocalBrain>,
         step: &PlanStep,
         context: &str,
+        policy: &StepExecutionPolicy,
     ) -> Result<String> {
-        let system = format!(
-            "Execute this step: {}\n\
-            Assigned specialist role: {:?}\n\
-            Expected outcome: {}\n\n\
-            Context from previous steps:\n{}",
-            step.description, step.role, step.expected_outcome, context
-        );
+        let system = policy.system_prompt(step, context);
 
         let messages = vec![sdk::Message {
             role: "user".to_string(),
@@ -147,13 +147,8 @@ impl HybridNodeExecutor {
     }
 
     async fn execute_with_router(&self, step: &PlanStep, context: &str) -> Result<String> {
-        let system = Message::system(format!(
-            "Execute this step: {}\n\
-            Assigned specialist role: {:?}\n\
-            Expected outcome: {}\n\n\
-            Context from previous steps:\n{}",
-            step.description, step.role, step.expected_outcome, context
-        ));
+        let policy = StepExecutionPolicy::for_step(step, Route::Cloud);
+        let system = Message::system(policy.system_prompt(step, context));
 
         let user = Message::user(&step.description);
 

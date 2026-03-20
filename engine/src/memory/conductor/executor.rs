@@ -3,6 +3,7 @@
 //! Executes individual `PlanStep`s by dispatching to the appropriate tools
 //! (filesystem, terminal, vision) based on the step type and LLM guidance.
 
+use crate::conductor::policy::StepExecutionPolicy;
 use crate::conductor::types::{PlanStep, StepResult, StepType};
 
 use crate::builtin_tools::FilesystemTool;
@@ -10,6 +11,7 @@ use crate::builtin_tools::TerminalTool;
 use crate::llm::router::LLMRouter;
 use crate::llm::{LLMResponse, Message};
 use anyhow::Result;
+use sdk::Route;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, warn};
@@ -47,21 +49,17 @@ impl Executor {
         let mut tools_used = Vec::new();
         let mut logs = String::new();
         let mut context_extracted = String::new();
+        let policy = StepExecutionPolicy::for_step(step, Route::Ollama);
 
         // Build messages for the LLM with step context
         let system = Message::system(format!(
-            "You are executing a plan step. Your job is to complete this step using the available tools.\n\
-            Step type: {:?}\n\
-            Assigned role: {:?}\n\
-            Step description: {}\n\
-            Expected outcome: {}\n\n\
-            Previous context:\n{}\n\n\
+            "{}\n\n\
             Available tools:\n\
             - read_file(path): Read a file's contents\n\
             - write_file(path, content): Write content to a file\n\
             - execute_command(command): Run a shell command\n\n\
             When you have completed the step, provide your final answer summarizing what was done and any important findings.",
-            step.step_type, step.role, step.description, step.expected_outcome, context
+            policy.system_prompt(step, context)
         ));
 
         let user_msg = Message::user(&step.description);
