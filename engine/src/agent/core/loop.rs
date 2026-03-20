@@ -67,7 +67,7 @@ impl AgentCore {
             return Ok(result);
         }
 
-        if matches!(context.complexity, sdk::Complexity::Complex) {
+        if self.should_use_dag_execution(&context) {
             return self.execute_dag_task(task_id, &task, &context, start_time).await;
         }
 

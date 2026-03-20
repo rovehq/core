@@ -96,6 +96,21 @@ impl DagNodeExecutor for AgentDagExecutor<'_> {
 }
 
 impl AgentCore {
+    pub(super) fn should_use_dag_execution(&self, context: &TaskContext) -> bool {
+        match context.complexity {
+            sdk::Complexity::Complex => true,
+            sdk::Complexity::Medium => matches!(
+                context.domain,
+                sdk::TaskDomain::Code
+                    | sdk::TaskDomain::Git
+                    | sdk::TaskDomain::Shell
+                    | sdk::TaskDomain::Browser
+                    | sdk::TaskDomain::Data
+            ),
+            sdk::Complexity::Simple => false,
+        }
+    }
+
     pub(super) async fn execute_dag_task(
         &self,
         task_id: &Uuid,

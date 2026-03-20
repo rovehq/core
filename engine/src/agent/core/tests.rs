@@ -165,3 +165,26 @@ async fn test_complex_task_uses_dag_execution_path() {
     assert!(events.iter().any(|event| event.event_type == "dag_step_succeeded"));
     assert!(events.iter().any(|event| event.event_type == "answer"));
 }
+
+#[tokio::test]
+async fn test_medium_code_task_uses_dag_execution_path() {
+    let plan = r#"[
+        {"id":"step_1","description":"Build the project","role":"Executor","parallel_safe":false,"dependencies":[],"expected_outcome":"Project built"},
+        {"id":"step_2","description":"Run the tests","role":"Verifier","parallel_safe":true,"dependencies":["step_1"],"expected_outcome":"Tests verified"}
+    ]"#;
+    let responses = vec![
+        LLMResponse::FinalAnswer(FinalAnswer::new(plan)),
+        LLMResponse::FinalAnswer(FinalAnswer::new("build complete")),
+        LLMResponse::FinalAnswer(FinalAnswer::new("tests passed")),
+    ];
+    let provider: Box<dyn LLMProvider> =
+        Box::new(MockSequenceProvider::new("mock-cloud", responses));
+
+    let (_temp_dir, mut agent) = setup_test_agent_with_providers(vec![provider]).await;
+    let task = Task::build_from_cli("build the project and then run tests");
+    let result = agent.process_task(task).await.expect("medium task should succeed");
+
+    assert_eq!(result.answer, "tests passed");
+    assert_eq!(result.provider_used, "dag[cloud]");
+    assert_eq!(result.iterations, 2);
+}
