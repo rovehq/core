@@ -46,13 +46,13 @@ pub async fn handle_remove(config: &Config, selector: &str) -> Result<()> {
     Ok(())
 }
 
-async fn open_database(config: &Config) -> Result<Database> {
+pub(super) async fn open_database(config: &Config) -> Result<Database> {
     Database::new(&database_path(config))
         .await
         .context("Failed to open database")
 }
 
-async fn list_installed_plugins(database: &Database) -> Result<Vec<InstalledPlugin>> {
+pub(super) async fn list_installed_plugins(database: &Database) -> Result<Vec<InstalledPlugin>> {
     database
         .installed_plugins()
         .list_plugins()
@@ -60,7 +60,10 @@ async fn list_installed_plugins(database: &Database) -> Result<Vec<InstalledPlug
         .context("Failed to list installed plugins")
 }
 
-async fn resolve_installed_plugin(database: &Database, selector: &str) -> Result<InstalledPlugin> {
+pub(super) async fn resolve_installed_plugin(
+    database: &Database,
+    selector: &str,
+) -> Result<InstalledPlugin> {
     if let Some(plugin) = database
         .installed_plugins()
         .get_plugin(selector)
@@ -115,7 +118,11 @@ fn print_plugin_list(plugins: &[InstalledPlugin]) {
 
     println!("Installed plugins:");
     for plugin in plugins {
-        let state = if plugin.enabled { "enabled" } else { "disabled" };
+        let state = if plugin.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
         println!(
             "- {} [{}] type={} version={} tier={}",
             plugin.name, state, plugin.plugin_type, plugin.version, plugin.trust_tier
@@ -236,7 +243,9 @@ mod tests {
             .expect("disable plugin");
         assert!(!disabled.enabled);
 
-        let listed = list_installed_plugins(&database).await.expect("list plugins");
+        let listed = list_installed_plugins(&database)
+            .await
+            .expect("list plugins");
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].enabled);
     }
@@ -257,7 +266,9 @@ mod tests {
             .expect("remove plugin");
         assert_eq!(removed.id, "plugin-3");
 
-        let listed = list_installed_plugins(&database).await.expect("list plugins");
+        let listed = list_installed_plugins(&database)
+            .await
+            .expect("list plugins");
         assert!(listed.is_empty());
     }
 }
