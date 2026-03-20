@@ -4,6 +4,7 @@
 //! iterative ReAct loop implemented in the child modules below.
 
 mod events;
+mod dag;
 mod r#loop;
 mod prompt;
 mod result;

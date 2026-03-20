@@ -137,6 +137,10 @@ impl LLMRouter {
         }
     }
 
+    pub fn local_brain(&self) -> Option<Arc<LocalBrain>> {
+        self.local_brain.clone()
+    }
+
     /// Analyze task characteristics from message history
     ///
     /// This method examines the conversation history to determine:

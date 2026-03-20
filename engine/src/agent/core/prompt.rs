@@ -6,13 +6,15 @@ use crate::gateway::Task;
 use crate::llm::Message;
 use crate::risk_assessor::RiskTier;
 use crate::steering::types::MergedDirectives;
-use sdk::TaskDomain;
+use sdk::{Complexity, Route, TaskDomain};
 
 use super::AgentCore;
 
 pub(super) struct TaskContext {
     pub(super) domain_str: String,
     pub(super) domain: TaskDomain,
+    pub(super) complexity: Complexity,
+    pub(super) route: Route,
     pub(super) sensitive: bool,
 }
 
@@ -62,6 +64,8 @@ impl AgentCore {
         Ok(TaskContext {
             domain_str,
             domain: dispatch_result.domain,
+            complexity: dispatch_result.complexity,
+            route: dispatch_result.route,
             sensitive: dispatch_result.sensitive,
         })
     }
