@@ -11,6 +11,7 @@ pub mod planner;
 pub mod project;
 pub mod prompt;
 pub mod query;
+pub mod runner;
 pub mod scorer;
 pub mod session;
 pub mod system;
@@ -41,6 +42,7 @@ pub use evaluator::Evaluator;
 pub use graph::{DagGraph, DagNode, DagNodeState, DagWave};
 pub use hybrid::{ExecutionLocation, HybridExecutor, StepExecutionResult};
 pub use planner::Planner;
+pub use runner::{DagNodeExecution, DagNodeExecutor, DagRunReport, DagRunner};
 pub use session::SessionMemory;
 pub use system::MemorySystem;
 pub use types::{

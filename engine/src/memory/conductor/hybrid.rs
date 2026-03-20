@@ -11,12 +11,15 @@
 //! 3. Each step executed by local brain (if available) or cloud fallback
 //! 4. Sensitive data never sent to cloud during execution
 
+use crate::conductor::graph::DagGraph;
+use crate::conductor::runner::{DagNodeExecution, DagNodeExecutor, DagRunner};
 use crate::conductor::types::{ConductorPlan, PlanStep, StepRole, StepType};
 use crate::llm::router::LLMRouter;
 use crate::llm::{LLMResponse, Message};
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use brain::reasoning::LocalBrain;
-use sdk::Brain;
+use sdk::{Brain, Complexity, Route, TaskDomain};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -54,28 +57,117 @@ pub enum ExecutionLocation {
     Cloud,
 }
 
-fn select_executable_steps(ready: &[String], steps: &[PlanStep]) -> Result<Vec<String>> {
-    let mut serial = Vec::new();
-    let mut parallel = Vec::new();
+struct HybridNodeExecutor {
+    router: Arc<LLMRouter>,
+    local_brain: Option<Arc<LocalBrain>>,
+}
 
-    for step_id in ready {
-        let step = steps
-            .iter()
-            .find(|step| step.id == *step_id)
-            .ok_or_else(|| anyhow::anyhow!("Step not found: {step_id}"))?;
+#[async_trait]
+impl DagNodeExecutor for HybridNodeExecutor {
+    async fn execute_node(
+        &self,
+        step: &PlanStep,
+        dependency_context: &str,
+        route: Route,
+    ) -> Result<DagNodeExecution> {
+        let start = std::time::Instant::now();
+        let mut executed_route = route;
 
-        if step.parallel_safe {
-            parallel.push(step_id.clone());
-        } else {
-            serial.push(step_id.clone());
+        if matches!(route, Route::Local) {
+            if let Some(local_brain) = &self.local_brain {
+                if local_brain.check_available().await {
+                    debug!("Executing step {} with local brain", step.id);
+                    match self.execute_with_local(local_brain, step, dependency_context).await {
+                        Ok(output) => {
+                            let elapsed = start.elapsed().as_millis() as u64;
+                            return Ok(DagNodeExecution {
+                                step_id: step.id.clone(),
+                                output,
+                                route: Route::Local,
+                                duration_ms: elapsed,
+                                role: step.role.clone(),
+                            });
+                        }
+                        Err(error) => {
+                            warn!("Local brain failed for step {}: {}", step.id, error);
+                            executed_route = Route::Cloud;
+                        }
+                    }
+                } else {
+                    executed_route = Route::Cloud;
+                }
+            } else {
+                executed_route = Route::Cloud;
+            }
+        }
+
+        debug!("Executing step {} with {:?}", step.id, executed_route);
+        let output = self
+            .execute_with_router(step, dependency_context)
+            .await
+            .context("Router execution failed")?;
+        let elapsed = start.elapsed().as_millis() as u64;
+
+        Ok(DagNodeExecution {
+            step_id: step.id.clone(),
+            output,
+            route: executed_route,
+            duration_ms: elapsed,
+            role: step.role.clone(),
+        })
+    }
+}
+
+impl HybridNodeExecutor {
+    async fn execute_with_local(
+        &self,
+        local_brain: &Arc<LocalBrain>,
+        step: &PlanStep,
+        context: &str,
+    ) -> Result<String> {
+        let system = format!(
+            "Execute this step: {}\n\
+            Assigned specialist role: {:?}\n\
+            Expected outcome: {}\n\n\
+            Context from previous steps:\n{}",
+            step.description, step.role, step.expected_outcome, context
+        );
+
+        let messages = vec![sdk::Message {
+            role: "user".to_string(),
+            content: step.description.clone(),
+        }];
+
+        let response = local_brain
+            .complete(&system, &messages, &[])
+            .await
+            .context("Local brain execution failed")?;
+
+        Ok(response.content)
+    }
+
+    async fn execute_with_router(&self, step: &PlanStep, context: &str) -> Result<String> {
+        let system = Message::system(format!(
+            "Execute this step: {}\n\
+            Assigned specialist role: {:?}\n\
+            Expected outcome: {}\n\n\
+            Context from previous steps:\n{}",
+            step.description, step.role, step.expected_outcome, context
+        ));
+
+        let user = Message::user(&step.description);
+
+        let (response, _) = self
+            .router
+            .call(&[system, user])
+            .await
+            .context("Cloud execution failed")?;
+
+        match response {
+            LLMResponse::FinalAnswer(answer) => Ok(answer.content),
+            LLMResponse::ToolCall(call) => Ok(format!("Tool call: {}({})", call.name, call.arguments)),
         }
     }
-
-    if !serial.is_empty() {
-        return Ok(vec![serial[0].clone()]);
-    }
-
-    Ok(parallel)
 }
 
 impl HybridExecutor {
@@ -142,117 +234,51 @@ impl HybridExecutor {
     ) -> Result<HashMap<String, StepExecutionResult>> {
         info!("Executing plan: {} ({} steps)", plan.id, plan.steps.len());
 
-        // Build dependency graph
-        let dag = self.build_dag(&plan.steps)?;
+        self.build_dag(&plan.steps)?;
 
-        // Execute steps in topological order with concurrency
-        self.execute_dag(&dag, &plan.steps).await?;
-
-        // Return all results
-        let results = self.results.read().await;
-        Ok(results.clone())
-    }
-
-    /// Execute a single step using local brain (preferred) or cloud fallback
-    async fn execute_step(&self, step: &PlanStep, context: &str) -> Result<StepExecutionResult> {
-        let start = std::time::Instant::now();
-
-        // Try local brain first if available
-        if let Some(local_brain) = &self.local_brain {
-            if local_brain.check_available().await {
-                debug!("Executing step {} with local brain", step.id);
-
-                match self.execute_with_local(local_brain, step, context).await {
-                    Ok(output) => {
-                        let elapsed = start.elapsed().as_millis() as u64;
-                        info!("Step {} completed by local brain in {}ms", step.id, elapsed);
-
-                        return Ok(StepExecutionResult {
-                            step_id: step.id.clone(),
-                            success: true,
-                            output,
-                            execution_time_ms: elapsed,
-                            role: step.role.clone(),
-                            executed_by: ExecutionLocation::LocalBrain,
-                        });
-                    }
-                    Err(e) => {
-                        warn!("Local brain failed for step {}: {}", step.id, e);
-                        // Fall through to cloud execution
-                    }
-                }
-            }
-        }
-
-        // Fallback to cloud execution
-        debug!("Executing step {} with cloud", step.id);
-        let output = self.execute_with_cloud(step, context).await?;
-        let elapsed = start.elapsed().as_millis() as u64;
-
-        info!("Step {} completed by cloud in {}ms", step.id, elapsed);
-
-        Ok(StepExecutionResult {
-            step_id: step.id.clone(),
-            success: true,
-            output,
-            execution_time_ms: elapsed,
-            role: step.role.clone(),
-            executed_by: ExecutionLocation::Cloud,
-        })
-    }
-
-    /// Execute step with local brain
-    async fn execute_with_local(
-        &self,
-        local_brain: &Arc<LocalBrain>,
-        step: &PlanStep,
-        context: &str,
-    ) -> Result<String> {
-        let system = format!(
-            "Execute this step: {}\n\
-            Assigned specialist role: {:?}\n\
-            Expected outcome: {}\n\n\
-            Context from previous steps:\n{}",
-            step.description, step.role, step.expected_outcome, context
+        let preferred_route = if self.local_brain.is_some() {
+            Route::Local
+        } else {
+            Route::Cloud
+        };
+        let graph = DagGraph::from_plan(
+            format!("plan:{}", plan.id),
+            plan,
+            TaskDomain::General,
+            Complexity::Complex,
+            preferred_route,
         );
+        let runner = DagRunner::new();
+        let node_executor = HybridNodeExecutor {
+            router: Arc::clone(&self.router),
+            local_brain: self.local_brain.clone(),
+        };
+        let report = runner.run(graph, plan, &node_executor).await?;
 
-        let messages = vec![sdk::Message {
-            role: "user".to_string(),
-            content: step.description.clone(),
-        }];
-
-        let response = local_brain
-            .complete(&system, &messages, &[])
-            .await
-            .context("Local brain execution failed")?;
-
-        Ok(response.content)
-    }
-
-    /// Execute step with cloud
-    async fn execute_with_cloud(&self, step: &PlanStep, context: &str) -> Result<String> {
-        let system = Message::system(format!(
-            "Execute this step: {}\n\
-            Assigned specialist role: {:?}\n\
-            Expected outcome: {}\n\n\
-            Context from previous steps:\n{}",
-            step.description, step.role, step.expected_outcome, context
-        ));
-
-        let user = Message::user(&step.description);
-
-        let (response, _) = self
-            .router
-            .call(&[system, user])
-            .await
-            .context("Cloud execution failed")?;
-
-        match response {
-            LLMResponse::FinalAnswer(answer) => Ok(answer.content),
-            LLMResponse::ToolCall(call) => {
-                Ok(format!("Tool call: {}({})", call.name, call.arguments))
-            }
+        if report.has_failures() {
+            warn!(plan_id = %plan.id, "DAG execution completed with failed or blocked steps");
         }
+
+        let mut results = self.results.write().await;
+        results.clear();
+        for (step_id, execution) in report.results {
+            results.insert(
+                step_id.clone(),
+                StepExecutionResult {
+                    step_id,
+                    success: true,
+                    output: execution.output,
+                    execution_time_ms: execution.duration_ms,
+                    role: execution.role,
+                    executed_by: match execution.route {
+                        Route::Local => ExecutionLocation::LocalBrain,
+                        Route::Ollama | Route::Cloud => ExecutionLocation::Cloud,
+                    },
+                },
+            );
+        }
+
+        Ok(results.clone())
     }
 
     /// Build dependency graph (DAG) from steps
@@ -314,104 +340,6 @@ impl HybridExecutor {
         false
     }
 
-    /// Execute DAG with concurrency
-    ///
-    /// Steps with no pending dependencies run concurrently
-    async fn execute_dag(
-        &self,
-        dag: &HashMap<String, Vec<String>>,
-        steps: &[PlanStep],
-    ) -> Result<()> {
-        let mut completed = HashSet::new();
-        let mut pending: HashSet<String> = dag.keys().cloned().collect();
-
-        while !pending.is_empty() {
-            // Find steps ready to execute (all dependencies completed)
-            let ready: Vec<String> = pending
-                .iter()
-                .filter(|step_id| {
-                    let Some(deps) = dag.get(step_id.as_str()) else {
-                        return false;
-                    };
-                    deps.iter().all(|dep| completed.contains(dep))
-                })
-                .cloned()
-                .collect();
-
-            if ready.is_empty() {
-                return Err(anyhow::anyhow!("Deadlock: no steps ready to execute"));
-            }
-
-            let executable = select_executable_steps(&ready, steps)?;
-            info!(
-                "Executing {} step(s) this wave: {:?}",
-                executable.len(),
-                executable
-            );
-
-            let mut handles = vec![];
-
-            for step_id in &executable {
-                let step = steps
-                    .iter()
-                    .find(|s| &s.id == step_id)
-                    .ok_or_else(|| anyhow::anyhow!("Step not found: {}", step_id))?
-                    .clone();
-
-                // Build context from completed dependencies
-                let context = self.build_context(&step.dependencies).await;
-
-                let executor = self.clone_for_task();
-                let handle =
-                    tokio::spawn(async move { executor.execute_step(&step, &context).await });
-
-                handles.push((step_id.clone(), handle));
-            }
-
-            // Wait for all concurrent steps to complete
-            for (step_id, handle) in handles {
-                match handle.await {
-                    Ok(Ok(result)) => {
-                        self.results.write().await.insert(step_id.clone(), result);
-                        completed.insert(step_id.clone());
-                        pending.remove(&step_id);
-                    }
-                    Ok(Err(e)) => {
-                        warn!("Step {} failed: {}", step_id, e);
-                        return Err(e);
-                    }
-                    Err(e) => {
-                        warn!("Step {} panicked: {}", step_id, e);
-                        return Err(anyhow::anyhow!("Step {} panicked", step_id));
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Build context string from completed dependency results
-    async fn build_context(&self, dependencies: &[String]) -> String {
-        let results = self.results.read().await;
-
-        dependencies
-            .iter()
-            .filter_map(|dep_id| results.get(dep_id))
-            .map(|result| format!("[{}]: {}", result.step_id, result.output))
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    }
-
-    /// Clone executor for concurrent task execution
-    fn clone_for_task(&self) -> Self {
-        Self {
-            router: self.router.clone(),
-            local_brain: self.local_brain.clone(),
-            results: self.results.clone(),
-        }
-    }
-
     /// Parse plan JSON from LLM response
     pub fn parse_plan(&self, content: &str, goal: &str) -> Result<ConductorPlan> {
         // Extract JSON array
@@ -453,9 +381,9 @@ impl HybridExecutor {
                     StepRole::Verifier => StepType::Verify,
                     StepRole::Executor => StepType::Execute,
                 };
-                let parallel_safe =
-                    raw.parallel_safe
-                        .unwrap_or(matches!(&step_type, StepType::Research | StepType::Verify));
+                let parallel_safe = raw
+                    .parallel_safe
+                    .unwrap_or(matches!(&step_type, StepType::Research | StepType::Verify));
 
                 PlanStep {
                     id: raw.id,
