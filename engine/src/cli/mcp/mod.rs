@@ -1,3 +1,4 @@
+mod scaffold;
 mod servers;
 mod templates;
 
@@ -14,6 +15,34 @@ pub async fn handle(action: McpAction, config: &Config) -> Result<()> {
         McpAction::Show { name } => servers::show_server(config, &name).await,
         McpAction::Install { source } => servers::install_package(config, &source).await,
         McpAction::Upgrade { source } => servers::upgrade_package(config, &source).await,
+        McpAction::Scaffold {
+            dir,
+            name,
+            template,
+            server_name,
+            command,
+            args,
+            description,
+            allow_network,
+            allow_tmp,
+            read_paths,
+            write_paths,
+        } => {
+            let request = ScaffoldRequest {
+                dir,
+                name,
+                template,
+                server_name,
+                command,
+                args,
+                description,
+                allow_network,
+                allow_tmp,
+                read_paths,
+                write_paths,
+            };
+            scaffold::generate_package(config, request)
+        }
         McpAction::Templates => templates::list_templates(config),
         McpAction::Add {
             name,
@@ -67,4 +96,19 @@ pub(super) struct AddServerRequest {
     pub(super) read_paths: Vec<PathBuf>,
     pub(super) write_paths: Vec<PathBuf>,
     pub(super) disabled: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct ScaffoldRequest {
+    pub(super) dir: PathBuf,
+    pub(super) name: String,
+    pub(super) template: String,
+    pub(super) server_name: Option<String>,
+    pub(super) command: Option<String>,
+    pub(super) args: Vec<String>,
+    pub(super) description: Option<String>,
+    pub(super) allow_network: bool,
+    pub(super) allow_tmp: bool,
+    pub(super) read_paths: Vec<PathBuf>,
+    pub(super) write_paths: Vec<PathBuf>,
 }

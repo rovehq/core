@@ -285,6 +285,51 @@ pub enum McpAction {
     Install { source: String },
     /// Upgrade an installed MCP package from a package directory.
     Upgrade { source: String },
+    /// Generate an MCP package skeleton for authors.
+    Scaffold {
+        /// Directory to create for the MCP package.
+        dir: PathBuf,
+
+        /// Human-readable package name.
+        #[arg(long)]
+        name: String,
+
+        /// Template name to seed the package with.
+        #[arg(long, default_value = "custom")]
+        template: String,
+
+        /// Stable MCP server name exposed at runtime.
+        #[arg(long)]
+        server_name: Option<String>,
+
+        /// Executable command for the MCP server.
+        #[arg(long)]
+        command: Option<String>,
+
+        /// Repeated argument passed to the MCP server command.
+        #[arg(long = "arg")]
+        args: Vec<String>,
+
+        /// Optional human description.
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Allow outbound network access for this server.
+        #[arg(long)]
+        allow_network: bool,
+
+        /// Allow temporary file access.
+        #[arg(long)]
+        allow_tmp: bool,
+
+        /// Additional allowed read path.
+        #[arg(long = "read", value_name = "PATH")]
+        read_paths: Vec<PathBuf>,
+
+        /// Additional allowed write path.
+        #[arg(long = "write", value_name = "PATH")]
+        write_paths: Vec<PathBuf>,
+    },
     /// List built-in and installed MCP templates.
     Templates,
     /// Add a configured MCP server.
