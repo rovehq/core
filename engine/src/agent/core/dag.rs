@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use sdk::Route;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::warn;
 use uuid::Uuid;
@@ -23,6 +24,9 @@ const DAG_STEP_MAX_ITERATIONS: usize = 8;
 struct AgentDagExecutor<'a> {
     agent: &'a AgentCore,
     task_id: Uuid,
+    domain_str: String,
+    steering_after_write_commands: Vec<String>,
+    executed_steering_commands: Arc<Mutex<HashSet<String>>>,
 }
 
 #[async_trait]
@@ -47,6 +51,7 @@ impl DagNodeExecutor for AgentDagExecutor<'_> {
             Message::user(step.description.clone()),
         ];
         let mut tool_call_counts: HashMap<u64, u32> = HashMap::new();
+        let mut event_iteration = 1_usize;
 
         for _ in 0..DAG_STEP_MAX_ITERATIONS {
             let (response, provider_name) = self
@@ -58,14 +63,13 @@ impl DagNodeExecutor for AgentDagExecutor<'_> {
 
             match response {
                 LLMResponse::ToolCall(tool_call) => {
-                    record_step_tool_call(&self.task_id, &mut tool_call_counts, &tool_call)?;
-                    let execution = self
-                        .agent
-                        .execute_tool_call(&self.task_id.to_string(), &tool_call)
-                        .await?;
-
-                    messages.push(self.agent.assistant_tool_message(&self.task_id, &tool_call));
-                    messages.push(Message::tool_result(&execution.safe_result, &tool_call.id));
+                    self.execute_dag_tool_call(
+                        &tool_call,
+                        &mut tool_call_counts,
+                        &mut messages,
+                        &mut event_iteration,
+                    )
+                    .await?;
                 }
                 LLMResponse::FinalAnswer(answer) => {
                     if answer.content.len() > MAX_RESULT_SIZE {
@@ -92,6 +96,84 @@ impl DagNodeExecutor for AgentDagExecutor<'_> {
             step.id,
             DAG_STEP_MAX_ITERATIONS
         ))
+    }
+}
+
+impl AgentDagExecutor<'_> {
+    async fn execute_dag_tool_call(
+        &self,
+        tool_call: &ToolCall,
+        tool_call_counts: &mut HashMap<u64, u32>,
+        messages: &mut Vec<Message>,
+        event_iteration: &mut usize,
+    ) -> Result<()> {
+        self.run_single_tool_call(tool_call, tool_call_counts, messages, event_iteration)
+            .await?;
+
+        if tool_call.name == "write_file" {
+            self.run_after_write_commands(tool_call_counts, messages, event_iteration)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn run_single_tool_call(
+        &self,
+        tool_call: &ToolCall,
+        tool_call_counts: &mut HashMap<u64, u32>,
+        messages: &mut Vec<Message>,
+        event_iteration: &mut usize,
+    ) -> Result<()> {
+        record_step_tool_call(&self.task_id, tool_call_counts, tool_call)?;
+        self.agent
+            .insert_tool_call_event(&self.task_id, tool_call, *event_iteration, &self.domain_str)
+            .await?;
+        let execution = self
+            .agent
+            .execute_tool_call(&self.task_id.to_string(), tool_call)
+            .await?;
+
+        messages.push(self.agent.assistant_tool_message(&self.task_id, tool_call));
+        messages.push(Message::tool_result(&execution.safe_result, &tool_call.id));
+        self.agent
+            .insert_observation_event(
+                &self.task_id,
+                &execution.safe_result,
+                *event_iteration,
+                &self.domain_str,
+            )
+            .await?;
+        *event_iteration += 1;
+
+        Ok(())
+    }
+
+    async fn run_after_write_commands(
+        &self,
+        tool_call_counts: &mut HashMap<u64, u32>,
+        messages: &mut Vec<Message>,
+        event_iteration: &mut usize,
+    ) -> Result<()> {
+        for command in &self.steering_after_write_commands {
+            let inserted = {
+                let mut executed = self.executed_steering_commands.lock().unwrap();
+                executed.insert(command.clone())
+            };
+            if !inserted {
+                continue;
+            }
+
+            let tool_call = ToolCall::new(
+                format!("dag-steering-{}-{}", self.task_id, event_iteration),
+                "run_command",
+                serde_json::json!({ "command": command }).to_string(),
+            );
+            self.run_single_tool_call(&tool_call, tool_call_counts, messages, event_iteration)
+                .await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -139,6 +221,9 @@ impl AgentCore {
         let executor = AgentDagExecutor {
             agent: self,
             task_id: *task_id,
+            domain_str: context.domain_str.clone(),
+            steering_after_write_commands: self.steering_after_write_commands.clone(),
+            executed_steering_commands: Arc::new(Mutex::new(HashSet::new())),
         };
         let report = runner
             .run(graph, &plan, &executor)

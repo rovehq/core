@@ -3,9 +3,10 @@ use std::{collections::VecDeque, sync::Mutex};
 
 use async_trait::async_trait;
 use tempfile::TempDir;
+use std::time::Instant;
 
 use super::{AgentCore, TaskResult};
-use crate::builtin_tools::ToolRegistry;
+use crate::builtin_tools::{FilesystemTool, TerminalTool, ToolRegistry};
 use crate::config::LLMConfig;
 use crate::db::tasks::TaskRepository;
 use crate::db::Database;
@@ -14,13 +15,16 @@ use crate::llm::router::LLMRouter;
 use crate::llm::{FinalAnswer, LLMProvider, LLMResponse, Message};
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::RiskAssessor;
+use crate::risk_assessor::RiskTier;
+use crate::db::tasks::TaskStatus;
 
 async fn setup_test_agent() -> (TempDir, AgentCore) {
-    setup_test_agent_with_providers(vec![]).await
+    setup_test_agent_with_providers(vec![], false).await
 }
 
 async fn setup_test_agent_with_providers(
     providers: Vec<Box<dyn LLMProvider>>,
+    include_core_tools: bool,
 ) -> (TempDir, AgentCore) {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
@@ -44,12 +48,22 @@ async fn setup_test_agent_with_providers(
     let rate_limiter = Arc::new(RateLimiter::new(pool.clone()));
     let task_repo = Arc::new(TaskRepository::new(pool));
 
+    let mut tools = ToolRegistry::empty();
+    if include_core_tools {
+        tools.register_builtin_filesystem(FilesystemTool::new(temp_dir.path().to_path_buf()).unwrap())
+            .await;
+        tools.register_builtin_terminal(TerminalTool::new(
+            temp_dir.path().to_string_lossy().to_string(),
+        ))
+        .await;
+    }
+
     let agent = AgentCore::new(
         router,
         risk_assessor,
         rate_limiter,
         task_repo,
-        Arc::new(ToolRegistry::empty()),
+        Arc::new(tools),
         None,
         Arc::new(crate::config::Config::default()),
         Arc::new(WorkspaceLocks::new()),
@@ -144,7 +158,7 @@ async fn test_complex_task_uses_dag_execution_path() {
     let provider: Box<dyn LLMProvider> =
         Box::new(MockSequenceProvider::new("mock-cloud", responses));
 
-    let (temp_dir, mut agent) = setup_test_agent_with_providers(vec![provider]).await;
+    let (temp_dir, mut agent) = setup_test_agent_with_providers(vec![provider], false).await;
     let task = Task::build_from_cli("plan a complex rust refactor");
     let result = agent.process_task(task).await.expect("complex task should succeed");
 
@@ -180,11 +194,71 @@ async fn test_medium_code_task_uses_dag_execution_path() {
     let provider: Box<dyn LLMProvider> =
         Box::new(MockSequenceProvider::new("mock-cloud", responses));
 
-    let (_temp_dir, mut agent) = setup_test_agent_with_providers(vec![provider]).await;
+    let (_temp_dir, mut agent) = setup_test_agent_with_providers(vec![provider], false).await;
     let task = Task::build_from_cli("build the project and then run tests");
     let result = agent.process_task(task).await.expect("medium task should succeed");
 
     assert_eq!(result.answer, "tests passed");
     assert_eq!(result.provider_used, "dag[cloud]");
     assert_eq!(result.iterations, 2);
+}
+
+#[tokio::test]
+async fn test_dag_write_steps_run_steering_after_write_commands() {
+    let plan = r#"[
+        {"id":"step_1","description":"Update the note file","role":"Executor","parallel_safe":false,"dependencies":[],"expected_outcome":"File updated"}
+    ]"#;
+    let responses = vec![
+        LLMResponse::FinalAnswer(FinalAnswer::new(plan)),
+        LLMResponse::ToolCall(crate::llm::ToolCall::new(
+            "tool-1".to_string(),
+            "write_file",
+            serde_json::json!({"path":"notes.txt","content":"hello"}).to_string(),
+        )),
+        LLMResponse::FinalAnswer(FinalAnswer::new("file updated and checked")),
+    ];
+    let provider: Box<dyn LLMProvider> =
+        Box::new(MockSequenceProvider::new("mock-cloud", responses));
+
+    let (temp_dir, mut agent) = setup_test_agent_with_providers(vec![provider], true).await;
+    let task = Task::build_from_cli("update the note file and then verify the directory");
+    let context = agent
+        .initialize_task_context(&task, RiskTier::Tier0)
+        .await
+        .expect("task context");
+    agent.steering_after_write_commands = vec!["ls".to_string()];
+    agent
+        .task_repo
+        .create_task(&task.id, &task.input)
+        .await
+        .expect("create task");
+    agent
+        .task_repo
+        .update_task_status(&task.id, TaskStatus::Running)
+        .await
+        .expect("mark running");
+
+    let result = agent
+        .execute_dag_task(&task.id, &task, &context, Instant::now())
+        .await
+        .expect("DAG write task should succeed");
+    assert_eq!(result.answer, "file updated and checked");
+
+    let db_path = temp_dir.path().join("test.db");
+    let db = Database::new(&db_path).await.unwrap();
+    let events = db
+        .tasks()
+        .get_agent_events(&result.task_id)
+        .await
+        .unwrap();
+
+    assert!(events.iter().any(|event| {
+        event.event_type == "tool_call" && event.payload.contains("\"tool_name\":\"write_file\"")
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == "tool_call" && event.payload.contains("\"tool_name\":\"run_command\"")
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == "observation" && event.payload.contains("notes.txt")
+    }));
 }
