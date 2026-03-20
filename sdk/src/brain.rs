@@ -58,6 +58,8 @@ pub enum ToolTag {
 /// Result of dispatch brain classification
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DispatchResult {
+    pub domain_label: String,
+    pub domain_confidence: f32,
     pub domain: TaskDomain,
     pub complexity: Complexity,
     pub injection_score: f32,
@@ -69,6 +71,8 @@ pub struct DispatchResult {
 impl Default for DispatchResult {
     fn default() -> Self {
         Self {
+            domain_label: "general".to_string(),
+            domain_confidence: 0.0,
             domain: TaskDomain::General,
             complexity: Complexity::Simple,
             injection_score: 0.0,

@@ -90,6 +90,8 @@ impl Gateway {
         info!(
             task_id = %task_id,
             domain = ?dispatch.domain,
+            domain_label = %dispatch.domain_label,
+            domain_confidence = dispatch.domain_confidence,
             complexity = ?dispatch.complexity,
             sensitive = dispatch.sensitive,
             "Task classified by dispatch brain"

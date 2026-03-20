@@ -28,7 +28,7 @@ impl AgentCore {
         self.steering_executed_commands.clear();
         let mut system_prompt = self.tools.system_prompt_for_query(&task.input);
         let dispatch_result = self.dispatch_brain.classify(&task.input);
-        let domain_name = dispatch_result.domain.to_string().to_lowercase();
+        let domain_name = dispatch_result.domain_label.to_lowercase();
         self.current_task_sensitive = dispatch_result.sensitive;
 
         self.apply_steering(
@@ -43,6 +43,8 @@ impl AgentCore {
         debug!(
             task_id = %task.id,
             domain = ?dispatch_result.domain,
+            domain_label = %dispatch_result.domain_label,
+            domain_confidence = dispatch_result.domain_confidence,
             complexity = ?dispatch_result.complexity,
             sensitive = dispatch_result.sensitive,
             injection_score = dispatch_result.injection_score,
