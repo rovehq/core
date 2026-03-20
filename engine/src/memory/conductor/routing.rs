@@ -58,13 +58,7 @@ impl DagRoutingPolicy {
         route_policy: &RoutePolicy,
     ) -> Route {
         match route_policy {
-            RoutePolicy::LocalOnly => {
-                return if self.local_brain_available {
-                    Route::Local
-                } else {
-                    Route::Local
-                };
-            }
+            RoutePolicy::LocalOnly => return Route::Local,
             RoutePolicy::CloudOnly => return Route::Cloud,
             RoutePolicy::LocalPreferred => {
                 return if self.local_brain_available {

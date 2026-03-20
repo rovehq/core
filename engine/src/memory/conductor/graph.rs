@@ -204,7 +204,9 @@ impl DagGraph {
 mod tests {
     use sdk::{Complexity, Route, TaskDomain};
 
-    use crate::conductor::types::{ConductorPlan, ExecutionMode, PlanStep, RoutePolicy, StepRole, StepType};
+    use crate::conductor::types::{
+        ConductorPlan, ExecutionMode, PlanStep, RoutePolicy, StepRole, StepType,
+    };
 
     use super::{DagGraph, DagNodeState};
 

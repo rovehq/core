@@ -116,9 +116,8 @@ mod tests {
 
     #[test]
     fn verifier_prompt_mentions_read_only() {
-        let prompt =
-            StepExecutionPolicy::for_step(&make_step(StepRole::Verifier), Route::Ollama)
-                .system_prompt(&make_step(StepRole::Verifier), "prior output");
+        let prompt = StepExecutionPolicy::for_step(&make_step(StepRole::Verifier), Route::Ollama)
+            .system_prompt(&make_step(StepRole::Verifier), "prior output");
         assert!(prompt.contains("verifier specialist"));
         assert!(prompt.contains("Writes are not allowed"));
         assert!(prompt.contains("concrete evidence"));

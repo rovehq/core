@@ -14,7 +14,7 @@ use super::package::{
     manifest_from_signed_json, read_required_file, resolve_package_root, MANIFEST_FILE,
 };
 use super::stage::{install_directory, perform_install, verify_and_store};
-use super::validate::{resolve_payload_source, validate_plugin_shape};
+use super::validate::{print_permission_review, resolve_payload_source, validate_plugin_shape};
 
 pub async fn handle_install(config: &Config, source: &str) -> Result<()> {
     let installed = install_checked(config, source, None).await?;
@@ -103,6 +103,7 @@ async fn install_with_mode(
         .or_else(|| default_runtime_file(&package_root));
     let runtime_raw = load_runtime_config(&package_root, runtime_rel.as_deref())?;
     validate_plugin_shape(&manifest, runtime_raw.as_deref())?;
+    print_permission_review(&manifest);
 
     let install_id = package
         .id

@@ -86,7 +86,9 @@ impl DagNodeExecutor for AgentDagExecutor {
             SubagentResult::Failed(output) => Err(anyhow!(
                 "subagent failed for step {}: {}",
                 step.id,
-                output.error.unwrap_or_else(|| "unknown failure".to_string())
+                output
+                    .error
+                    .unwrap_or_else(|| "unknown failure".to_string())
             )),
         }
     }
@@ -146,8 +148,11 @@ impl AgentCore {
         );
         DagRoutingPolicy::new(self.router.local_brain().is_some()).assign_routes(&mut graph, &plan);
 
-        let runner =
-            DagRunner::with_persistence(self.task_repo.clone(), *task_id, context.domain_str.clone());
+        let runner = DagRunner::with_persistence(
+            self.task_repo.clone(),
+            *task_id,
+            context.domain_str.clone(),
+        );
         let executor = AgentDagExecutor {
             router: self.router.clone(),
             task_repo: self.task_repo.clone(),
@@ -174,7 +179,13 @@ impl AgentCore {
         let provider_used = summarize_routes(&report);
         let answer_payload = serde_json::json!({ "answer": scrub_text(&answer) }).to_string();
         self.task_repo
-            .insert_agent_event(task_id, "answer", &answer_payload, 50_000, Some(&context.domain_str))
+            .insert_agent_event(
+                task_id,
+                "answer",
+                &answer_payload,
+                50_000,
+                Some(&context.domain_str),
+            )
             .await
             .context("Failed to persist DAG final answer")?;
 

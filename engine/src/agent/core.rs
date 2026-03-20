@@ -3,8 +3,8 @@
 //! Coordinates task persistence, background memory extraction, and the
 //! iterative ReAct loop implemented in the child modules below.
 
-mod events;
 mod dag;
+mod events;
 mod r#loop;
 mod prompt;
 mod result;

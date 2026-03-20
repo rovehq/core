@@ -101,7 +101,8 @@ impl DagRunner {
 
             let wave_ids = self.select_wave(&ready, plan)?;
             let wave = graph.open_wave(&wave_ids, wave_ids.len() > 1);
-            self.persist_wave_started(&wave, &mut next_event_step).await?;
+            self.persist_wave_started(&wave, &mut next_event_step)
+                .await?;
 
             let mut specs = Vec::with_capacity(wave_ids.len());
             for step_id in &wave_ids {
@@ -242,14 +243,13 @@ impl DagRunner {
             return Ok(serial);
         }
 
-        Ok(ready_steps.into_iter().map(|step| step.id.clone()).collect())
+        Ok(ready_steps
+            .into_iter()
+            .map(|step| step.id.clone())
+            .collect())
     }
 
-    async fn persist_wave_started(
-        &self,
-        wave: &DagWave,
-        next_event_step: &mut i64,
-    ) -> Result<()> {
+    async fn persist_wave_started(&self, wave: &DagWave, next_event_step: &mut i64) -> Result<()> {
         let Some(persistence) = &self.persistence else {
             return Ok(());
         };
@@ -480,7 +480,11 @@ fn dependency_context(graph: &DagGraph, step: &PlanStep) -> String {
     step.dependencies
         .iter()
         .filter_map(|dependency| graph.node(dependency))
-        .filter_map(|node| node.output.as_ref().map(|output| (node.step_id.as_str(), output)))
+        .filter_map(|node| {
+            node.output
+                .as_ref()
+                .map(|output| (node.step_id.as_str(), output))
+        })
         .map(|(step_id, output)| format!("[{}]: {}", step_id, output))
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -545,8 +549,8 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::Database;
     use crate::conductor::types::RoutePolicy;
+    use crate::storage::Database;
     use sdk::{Complexity, Route, TaskDomain};
     use std::collections::HashSet;
     use tempfile::TempDir;
@@ -650,8 +654,14 @@ mod tests {
         assert!(report.graph.waves[0].parallel);
         assert_eq!(report.graph.waves[1].node_ids, vec!["step_3".to_string()]);
         assert_eq!(
-            report.graph.node("step_3").and_then(|node| node.output.clone()),
-            Some("cross-check findings :: [step_1]: read docs :: \n\n[step_2]: read code :: ".to_string())
+            report
+                .graph
+                .node("step_3")
+                .and_then(|node| node.output.clone()),
+            Some(
+                "cross-check findings :: [step_1]: read docs :: \n\n[step_2]: read code :: "
+                    .to_string()
+            )
         );
     }
 
@@ -692,12 +702,12 @@ mod tests {
         assert_eq!(steps.len(), 6);
 
         let events = repo.get_agent_events(&task_id.to_string()).await.unwrap();
-        assert!(events.iter().any(|event| event.event_type == "dag_wave_started"));
-        assert!(
-            events
-                .iter()
-                .any(|event| event.event_type == "dag_step_succeeded")
-        );
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "dag_wave_started"));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "dag_step_succeeded"));
     }
 
     #[tokio::test]

@@ -225,12 +225,12 @@ impl LLMRouter {
         messages: &[Message],
         sensitivity_override: Option<bool>,
     ) -> super::Result<(super::LLMResponse, String)> {
-        match self.call_local_only(messages).await {
-            Ok(result) => return Ok(result),
-            Err(_) => {}
+        if let Ok(result) = self.call_local_only(messages).await {
+            return Ok(result);
         }
 
-        self.call_with_sensitivity(messages, sensitivity_override).await
+        self.call_with_sensitivity(messages, sensitivity_override)
+            .await
     }
 
     /// Analyze task characteristics from message history
@@ -568,7 +568,9 @@ impl LLMRouter {
         }
 
         if failures.is_empty() {
-            Err(LLMError::ProviderUnavailable(unavailable_message.to_string()))
+            Err(LLMError::ProviderUnavailable(
+                unavailable_message.to_string(),
+            ))
         } else {
             Err(LLMError::ProviderUnavailable(format!(
                 "{}: {}",
@@ -593,8 +595,11 @@ impl LLMRouter {
         }
 
         let timeout_secs = if provider.is_local() { 120 } else { 30 };
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), provider.generate(messages))
-            .await
+        match tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            provider.generate(messages),
+        )
+        .await
         {
             Ok(Ok(response)) => Ok((response, provider.name().to_string())),
             Ok(Err(error)) => Err(error),

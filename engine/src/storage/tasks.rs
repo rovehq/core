@@ -422,7 +422,10 @@ impl TaskRepository {
             .collect())
     }
 
-    pub async fn get_agent_events_by_parent(&self, parent_task_id: &str) -> Result<Vec<AgentEvent>> {
+    pub async fn get_agent_events_by_parent(
+        &self,
+        parent_task_id: &str,
+    ) -> Result<Vec<AgentEvent>> {
         let rows = sqlx::query(
             "SELECT id, task_id, parent_task_id, event_type, payload, step_num, domain, created_at FROM agent_events WHERE parent_task_id = ? ORDER BY created_at ASC, step_num ASC"
         )

@@ -68,7 +68,9 @@ impl AgentCore {
         }
 
         if self.should_use_dag_execution(&context) {
-            return self.execute_dag_task(task_id, &task, &context, start_time).await;
+            return self
+                .execute_dag_task(task_id, &task, &context, start_time)
+                .await;
         }
 
         let max_iterations = if self.config.agent.max_iterations == 0 {

@@ -141,9 +141,10 @@ fn console_log_level(cli: &Cli) -> LevelFilter {
     }
 
     match &cli.command {
-        Some(Command::Task { view, .. }) if matches!(view, rove_engine::cli::TaskView::Logs) => {
-            LevelFilter::INFO
-        }
+        Some(Command::Task {
+            view: rove_engine::cli::TaskView::Logs,
+            ..
+        }) => LevelFilter::INFO,
         Some(Command::Task { .. }) => LevelFilter::ERROR,
         _ => LevelFilter::INFO,
     }
@@ -156,7 +157,10 @@ fn should_honor_console_env_filter(cli: &Cli) -> bool {
 
     matches!(
         &cli.command,
-        Some(Command::Task { view, .. }) if matches!(view, rove_engine::cli::TaskView::Logs)
+        Some(Command::Task {
+            view: rove_engine::cli::TaskView::Logs,
+            ..
+        })
     )
 }
 
@@ -273,6 +277,27 @@ fn infer_steering_domain(cwd: &std::path::Path) -> &'static str {
 async fn handle_plugin(action: PluginAction) -> Result<()> {
     let config = rove_engine::config::Config::load_or_create()?;
     match action {
+        PluginAction::New { name, plugin_type } => {
+            rove_engine::cli::plugins::handle_new(&name, plugin_type).await?;
+        }
+        PluginAction::Test {
+            source,
+            tool,
+            input,
+            files,
+            args,
+            no_build,
+        } => {
+            rove_engine::cli::plugins::handle_test(
+                source.as_deref(),
+                tool.as_deref(),
+                input.as_deref(),
+                &files,
+                &args,
+                no_build,
+            )
+            .await?;
+        }
         PluginAction::List => {
             rove_engine::cli::plugins::handle_list(&config, OutputFormat::Text).await?;
         }

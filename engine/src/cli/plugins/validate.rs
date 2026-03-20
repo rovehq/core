@@ -19,6 +19,31 @@ pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> 
         );
     }
 
+    for path in &manifest.permissions.filesystem {
+        if path.0.trim().is_empty() {
+            bail!(
+                "Plugin '{}' declares an empty filesystem permission",
+                manifest.name
+            );
+        }
+    }
+
+    for domain in &manifest.permissions.network {
+        if domain.0.trim().is_empty() {
+            bail!(
+                "Plugin '{}' declares an empty network permission",
+                manifest.name
+            );
+        }
+    }
+
+    if matches!(manifest.plugin_type, PluginType::Mcp) && !manifest.permissions.tools.is_empty() {
+        bail!(
+            "MCP plugin '{}' cannot request builtin tool access in manifest permissions",
+            manifest.name
+        );
+    }
+
     let runtime_raw = runtime_raw.context(format!(
         "Plugin '{}' is missing {}",
         manifest.name, RUNTIME_FILE
@@ -38,6 +63,101 @@ pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> 
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PermissionReview {
+    pub summary_lines: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub fn review_manifest_permissions(manifest: &Manifest) -> PermissionReview {
+    let filesystem = if manifest.permissions.filesystem.is_empty() {
+        "none".to_string()
+    } else {
+        manifest
+            .permissions
+            .filesystem
+            .iter()
+            .map(|pattern| pattern.0.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let network = if manifest.permissions.network.is_empty() {
+        "none".to_string()
+    } else {
+        manifest
+            .permissions
+            .network
+            .iter()
+            .map(|pattern| pattern.0.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let builtin_tools = if manifest.permissions.tools.is_empty() {
+        "none".to_string()
+    } else {
+        manifest.permissions.tools.join(", ")
+    };
+
+    let mut warnings = Vec::new();
+    for path in &manifest.permissions.filesystem {
+        if is_broad_filesystem_pattern(&path.0) {
+            warnings.push(format!(
+                "filesystem permission '{}' is broader than recommended",
+                path.0
+            ));
+        }
+    }
+    for domain in &manifest.permissions.network {
+        if is_broad_network_pattern(&domain.0) {
+            warnings.push(format!(
+                "network permission '{}' is broader than recommended",
+                domain.0
+            ));
+        }
+    }
+    if matches!(
+        manifest.plugin_type,
+        PluginType::Brain | PluginType::Workspace
+    ) && !matches!(
+        manifest.trust_tier,
+        TrustTier::Official | TrustTier::Reviewed
+    ) {
+        warnings.push(format!(
+            "{} plugins should use Official or Reviewed trust tiers",
+            manifest.plugin_type.as_str()
+        ));
+    }
+
+    PermissionReview {
+        summary_lines: vec![
+            format!("type: {}", manifest.plugin_type.as_str()),
+            format!("trust tier: {:?}", manifest.trust_tier),
+            format!("filesystem: {}", filesystem),
+            format!("network: {}", network),
+            format!(
+                "memory: read={} write={}",
+                manifest.permissions.memory_read, manifest.permissions.memory_write
+            ),
+            format!("builtin tools: {}", builtin_tools),
+        ],
+        warnings,
+    }
+}
+
+pub fn print_permission_review(manifest: &Manifest) {
+    let review = review_manifest_permissions(manifest);
+    println!("permissions:");
+    for line in review.summary_lines {
+        println!("- {}", line);
+    }
+    if !review.warnings.is_empty() {
+        println!("warnings:");
+        for warning in review.warnings {
+            println!("- {}", warning);
+        }
+    }
 }
 
 pub fn resolve_payload_source(
@@ -115,6 +235,17 @@ fn autodetect_artifact(root: &Path, extension: &str) -> Result<PathBuf> {
     }
 }
 
+fn is_broad_filesystem_pattern(pattern: &str) -> bool {
+    matches!(
+        pattern,
+        "*" | "/" | "." | "./" | "workspace" | "workspace/**"
+    ) || pattern.ends_with("/**")
+}
+
+fn is_broad_network_pattern(pattern: &str) -> bool {
+    pattern == "*" || pattern.starts_with("*.") || pattern.contains("://") || pattern.contains('/')
+}
+
 #[cfg(target_os = "macos")]
 fn native_extension() -> &'static str {
     "dylib"
@@ -128,4 +259,88 @@ fn native_extension() -> &'static str {
 #[cfg(target_os = "windows")]
 fn native_extension() -> &'static str {
     "dll"
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::runtime::Manifest;
+
+    use super::{review_manifest_permissions, validate_plugin_shape};
+
+    #[test]
+    fn review_manifest_permissions_flags_broad_network_access() {
+        let manifest = Manifest::from_json(
+            r#"{
+                "name": "Broad Network",
+                "version": "0.1.0",
+                "sdk_version": "0.1.0",
+                "plugin_type": "Skill",
+                "permissions": {
+                    "filesystem": ["/"],
+                    "network": ["*"],
+                    "memory_read": false,
+                    "memory_write": false,
+                    "tools": []
+                },
+                "trust_tier": "Reviewed",
+                "min_model": null,
+                "description": "Broad network plugin",
+                "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
+            }"#,
+        )
+        .expect("manifest");
+
+        let review = review_manifest_permissions(&manifest);
+        assert!(review
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("network permission '*'")));
+        assert!(review
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("filesystem permission '/'")));
+    }
+
+    #[test]
+    fn validate_plugin_shape_rejects_mcp_builtin_tool_access() {
+        let manifest = Manifest::from_json(
+            r#"{
+                "name": "Bad MCP",
+                "version": "0.1.0",
+                "sdk_version": "0.1.0",
+                "plugin_type": "Mcp",
+                "permissions": {
+                    "filesystem": [],
+                    "network": ["api.example.com"],
+                    "memory_read": false,
+                    "memory_write": false,
+                    "tools": ["run_command"]
+                },
+                "trust_tier": "Reviewed",
+                "min_model": null,
+                "description": "Bad MCP plugin",
+                "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
+            }"#,
+        )
+        .expect("manifest");
+
+        let error = validate_plugin_shape(
+            &manifest,
+            Some(
+                r#"{
+                    "name": "bad-mcp",
+                    "command": "bad-mcp",
+                    "args": ["stdio"],
+                    "profile": {"allow_network": true, "read_paths": [], "write_paths": [], "allow_tmp": true},
+                    "cached_tools": [],
+                    "enabled": true
+                }"#,
+            ),
+        )
+        .expect_err("mcp tool access should fail");
+
+        assert!(error
+            .to_string()
+            .contains("cannot request builtin tool access"));
+    }
 }

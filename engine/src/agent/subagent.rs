@@ -10,13 +10,19 @@ use uuid::Uuid;
 use crate::builtin_tools::ToolRegistry;
 use crate::conductor::{MemorySystem, RoutePolicy};
 use crate::gateway::WorkspaceLocks;
-use crate::llm::{LLMResponse, Message, ToolCall};
 use crate::llm::router::LLMRouter;
+use crate::llm::{LLMResponse, Message, ToolCall};
 use crate::security::secrets::scrub_text;
 use crate::storage::TaskRepository;
 use sdk::errors::EngineError;
 
 const MIN_MEMORY_BUDGET: usize = 256;
+
+struct ToolLoopState<'a> {
+    tool_call_counts: &'a mut HashMap<u64, u32>,
+    messages: &'a mut Vec<Message>,
+    progress: &'a Arc<Mutex<SubagentProgress>>,
+}
 
 #[derive(Debug, Clone)]
 pub struct SubagentOutput {
@@ -124,12 +130,13 @@ impl SubagentRunner {
         match tokio::time::timeout(Duration::from_secs(timeout_secs), &mut join).await {
             Ok(Ok(result)) => result,
             Ok(Err(join_error)) => {
-                fallback.failure_from_snapshot(
-                    subtask_id,
-                    &progress,
-                    format!("subagent crashed: {}", scrub_text(&join_error.to_string())),
-                )
-                .await
+                fallback
+                    .failure_from_snapshot(
+                        subtask_id,
+                        &progress,
+                        format!("subagent crashed: {}", scrub_text(&join_error.to_string())),
+                    )
+                    .await
             }
             Err(_) => {
                 join.abort();
@@ -143,25 +150,37 @@ impl SubagentRunner {
         subtask_id: Uuid,
         progress: Arc<Mutex<SubagentProgress>>,
     ) -> SubagentResult {
-        if let Err(error) = self.task_repo.create_task(&subtask_id, &self.spec.task).await {
-            return self.failure_output(
-                subtask_id,
-                &progress,
-                format!("failed to create subagent task: {}", scrub_text(&error.to_string())),
-            )
-            .await;
+        if let Err(error) = self
+            .task_repo
+            .create_task(&subtask_id, &self.spec.task)
+            .await
+        {
+            return self
+                .failure_output(
+                    subtask_id,
+                    &progress,
+                    format!(
+                        "failed to create subagent task: {}",
+                        scrub_text(&error.to_string())
+                    ),
+                )
+                .await;
         }
         if let Err(error) = self
             .task_repo
             .update_task_status(&subtask_id, crate::storage::TaskStatus::Running)
             .await
         {
-            return self.failure_output(
-                subtask_id,
-                &progress,
-                format!("failed to start subagent task: {}", scrub_text(&error.to_string())),
-            )
-            .await;
+            return self
+                .failure_output(
+                    subtask_id,
+                    &progress,
+                    format!(
+                        "failed to start subagent task: {}",
+                        scrub_text(&error.to_string())
+                    ),
+                )
+                .await;
         }
 
         if let Err(error) = self
@@ -179,12 +198,16 @@ impl SubagentRunner {
             )
             .await
         {
-            return self.failure_output(
-                subtask_id,
-                &progress,
-                format!("failed to persist subagent start: {}", scrub_text(&error.to_string())),
-            )
-            .await;
+            return self
+                .failure_output(
+                    subtask_id,
+                    &progress,
+                    format!(
+                        "failed to persist subagent start: {}",
+                        scrub_text(&error.to_string())
+                    ),
+                )
+                .await;
         }
 
         let allowed_tools = self.allowed_tools();
@@ -196,18 +219,17 @@ impl SubagentRunner {
 
         for step_index in 1..=self.spec.max_steps {
             if let Err(error) = progress_step(&progress, None, None).await {
-                return self.failure_output(subtask_id, &progress, error.to_string()).await;
+                return self
+                    .failure_output(subtask_id, &progress, error.to_string())
+                    .await;
             }
 
             let (response, provider_name) = match self.call_model(&messages).await {
                 Ok(result) => result,
                 Err(error) => {
-                    return self.failure_output(
-                        subtask_id,
-                        &progress,
-                        scrub_text(&error.to_string()),
-                    )
-                    .await;
+                    return self
+                        .failure_output(subtask_id, &progress, scrub_text(&error.to_string()))
+                        .await;
                 }
             };
             record_provider(&progress, &provider_name).await;
@@ -220,18 +242,17 @@ impl SubagentRunner {
                             &tool_call,
                             &allowed_tools,
                             step_index as i64,
-                            &mut tool_call_counts,
-                            &mut messages,
-                            &progress,
+                            ToolLoopState {
+                                tool_call_counts: &mut tool_call_counts,
+                                messages: &mut messages,
+                                progress: &progress,
+                            },
                         )
                         .await
                     {
-                        return self.failure_output(
-                            subtask_id,
-                            &progress,
-                            scrub_text(&error.to_string()),
-                        )
-                        .await;
+                        return self
+                            .failure_output(subtask_id, &progress, scrub_text(&error.to_string()))
+                            .await;
                     }
                 }
                 LLMResponse::FinalAnswer(answer) => {
@@ -245,28 +266,18 @@ impl SubagentRunner {
                         )
                         .await
                     {
-                        return self.failure_output(
-                            subtask_id,
-                            &progress,
-                            scrub_text(&error.to_string()),
-                        )
-                        .await;
+                        return self
+                            .failure_output(subtask_id, &progress, scrub_text(&error.to_string()))
+                            .await;
                     }
                     if let Err(error) = self
                         .task_repo
-                        .complete_task(
-                            &subtask_id,
-                            provider_name.as_str(),
-                            0,
-                        )
+                        .complete_task(&subtask_id, provider_name.as_str(), 0)
                         .await
                     {
-                        return self.failure_output(
-                            subtask_id,
-                            &progress,
-                            scrub_text(&error.to_string()),
-                        )
-                        .await;
+                        return self
+                            .failure_output(subtask_id, &progress, scrub_text(&error.to_string()))
+                            .await;
                     }
                     let output = output_from_progress(
                         &progress,
@@ -295,16 +306,14 @@ impl SubagentRunner {
         tool_call: &ToolCall,
         allowed_tools: &HashSet<String>,
         step_num: i64,
-        tool_call_counts: &mut HashMap<u64, u32>,
-        messages: &mut Vec<Message>,
-        progress: &Arc<Mutex<SubagentProgress>>,
+        state: ToolLoopState<'_>,
     ) -> Result<()> {
         if !allowed_tools.contains(&tool_call.name) {
             return Err(EngineError::ToolNotPermitted(tool_call.name.clone()).into());
         }
 
-        record_tool_call(tool_call_counts, tool_call)?;
-        record_progress_tool(progress, &tool_call.name).await;
+        record_tool_call(state.tool_call_counts, tool_call)?;
+        record_progress_tool(state.progress, &tool_call.name).await;
         self.insert_event(
             subtask_id,
             "tool_call",
@@ -323,14 +332,16 @@ impl SubagentRunner {
             .execute_tool_call(subtask_id, &tool_call.name, tool_args.clone())
             .await?;
 
-        messages.push(Message::assistant(
+        state.messages.push(Message::assistant(
             serde_json::json!({
                 "function": &tool_call.name,
                 "arguments": tool_args,
             })
             .to_string(),
         ));
-        messages.push(Message::tool_result(&tool_result, &tool_call.id));
+        state
+            .messages
+            .push(Message::tool_result(&tool_result, &tool_call.id));
         self.insert_event(
             subtask_id,
             "observation",
@@ -338,16 +349,16 @@ impl SubagentRunner {
             step_num,
         )
         .await?;
-        record_progress_output(progress, &tool_result).await;
+        record_progress_output(state.progress, &tool_result).await;
 
         if tool_call.name == "write_file" {
             self.run_after_write_commands(
                 subtask_id,
                 allowed_tools,
                 step_num,
-                tool_call_counts,
-                messages,
-                progress,
+                state.tool_call_counts,
+                state.messages,
+                state.progress,
             )
             .await?;
         }
@@ -465,16 +476,31 @@ impl SubagentRunner {
                 let lock = self.workspace_locks.get_lock(workspace);
                 let _guard = lock.lock().await;
                 self.tools
-                    .call(tool_name, args.clone(), &subtask_id.to_string(), &self.source)
+                    .call(
+                        tool_name,
+                        args.clone(),
+                        &subtask_id.to_string(),
+                        &self.source,
+                    )
                     .await
             } else {
                 self.tools
-                    .call(tool_name, args.clone(), &subtask_id.to_string(), &self.source)
+                    .call(
+                        tool_name,
+                        args.clone(),
+                        &subtask_id.to_string(),
+                        &self.source,
+                    )
                     .await
             }
         } else {
             self.tools
-                .call(tool_name, args.clone(), &subtask_id.to_string(), &self.source)
+                .call(
+                    tool_name,
+                    args.clone(),
+                    &subtask_id.to_string(),
+                    &self.source,
+                )
                 .await
         };
 
@@ -482,7 +508,8 @@ impl SubagentRunner {
             Ok(value) => stringify_tool_result(value),
             Err(error) => return Err(anyhow!(error)),
         };
-        self.record_tool_audit(subtask_id, tool_name, &args, &result).await;
+        self.record_tool_audit(subtask_id, tool_name, &args, &result)
+            .await;
         Ok(result)
     }
 
@@ -547,7 +574,10 @@ impl SubagentRunner {
         let target_tokens = self.spec.memory_budget.saturating_div(2).max(128);
         let mut used_tokens = 0usize;
         let mut lines = Vec::new();
-        let hits = match memory_system.query(&self.spec.task, &self.domain, None).await {
+        let hits = match memory_system
+            .query(&self.spec.task, &self.domain, None)
+            .await
+        {
             Ok(hits) => hits,
             Err(_) => return String::new(),
         };
@@ -610,7 +640,14 @@ impl SubagentRunner {
             .await;
         let _ = self.task_repo.fail_task(&subtask_id).await;
         SubagentResult::TimedOut(
-            output_from_progress(progress, subtask_id, self.spec.role.clone(), String::new(), Some(message)).await,
+            output_from_progress(
+                progress,
+                subtask_id,
+                self.spec.role.clone(),
+                String::new(),
+                Some(message),
+            )
+            .await,
         )
     }
 
@@ -630,7 +667,14 @@ impl SubagentRunner {
             .await;
         let _ = self.task_repo.fail_task(&subtask_id).await;
         SubagentResult::Failed(
-            output_from_progress(progress, subtask_id, self.spec.role.clone(), String::new(), Some(error)).await,
+            output_from_progress(
+                progress,
+                subtask_id,
+                self.spec.role.clone(),
+                String::new(),
+                Some(error),
+            )
+            .await,
         )
     }
 
@@ -640,7 +684,8 @@ impl SubagentRunner {
         progress: &Arc<Mutex<SubagentProgress>>,
         error: String,
     ) -> SubagentResult {
-        self.failure_from_snapshot(subtask_id, progress, error).await
+        self.failure_from_snapshot(subtask_id, progress, error)
+            .await
     }
 }
 
@@ -651,7 +696,8 @@ fn build_tool_prompt(schemas: Vec<crate::builtin_tools::registry::ToolSchema>) -
 
     let mut lines = vec![
         "Allowed tools:".to_string(),
-        "To call a tool, respond with JSON only: {\"function\":\"tool_name\",\"arguments\":{...}}".to_string(),
+        "To call a tool, respond with JSON only: {\"function\":\"tool_name\",\"arguments\":{...}}"
+            .to_string(),
     ];
     for schema in schemas {
         lines.push(format!(
@@ -680,10 +726,7 @@ fn role_rules(role: &SubagentRole) -> &'static str {
     }
 }
 
-fn record_tool_call(
-    counts: &mut HashMap<u64, u32>,
-    tool_call: &ToolCall,
-) -> Result<()> {
+fn record_tool_call(counts: &mut HashMap<u64, u32>, tool_call: &ToolCall) -> Result<()> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -772,9 +815,9 @@ mod tests {
     use crate::builtin_tools::{FilesystemTool, ToolRegistry};
     use crate::config::LLMConfig;
     use crate::gateway::WorkspaceLocks;
+    use crate::llm::Message;
     use crate::llm::{FinalAnswer, LLMError, LLMProvider};
     use crate::storage::Database;
-    use crate::llm::Message;
     use async_trait::async_trait;
     use std::collections::VecDeque;
     use std::sync::Mutex as StdMutex;
@@ -875,7 +918,9 @@ mod tests {
 
         let mut registry = ToolRegistry::empty();
         registry
-            .register_builtin_filesystem(FilesystemTool::new(temp_dir.path().to_path_buf()).unwrap())
+            .register_builtin_filesystem(
+                FilesystemTool::new(temp_dir.path().to_path_buf()).unwrap(),
+            )
             .await;
         let runner = SubagentRunner::new(
             spec,
@@ -1032,8 +1077,14 @@ mod tests {
 
         let result = runner.run().await;
         let task_id = result.output().task_id.clone();
-        let events = repo.get_agent_events_by_parent(&parent_task_id.to_string()).await.unwrap();
-        assert!(events.iter().all(|event| event.parent_task_id.as_deref() == Some(parent_task_id.to_string().as_str())));
+        let events = repo
+            .get_agent_events_by_parent(&parent_task_id.to_string())
+            .await
+            .unwrap();
+        assert!(events
+            .iter()
+            .all(|event| event.parent_task_id.as_deref()
+                == Some(parent_task_id.to_string().as_str())));
         assert!(events.iter().any(|event| event.task_id == task_id));
     }
 
@@ -1055,10 +1106,7 @@ mod tests {
         let result = runner.run().await;
         match result {
             SubagentResult::Failed(output) => {
-                assert!(output
-                    .error
-                    .unwrap()
-                    .contains("requires a local model"));
+                assert!(output.error.unwrap().contains("requires a local model"));
             }
             other => panic!("expected local-only failure, got {:?}", other),
         }

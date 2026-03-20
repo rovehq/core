@@ -13,8 +13,8 @@
 
 use crate::conductor::graph::DagGraph;
 use crate::conductor::policy::StepExecutionPolicy;
-use crate::conductor::runner::{DagNodeExecution, DagNodeExecutor, DagRunner};
 use crate::conductor::routing::DagRoutingPolicy;
+use crate::conductor::runner::{DagNodeExecution, DagNodeExecutor, DagRunner};
 use crate::conductor::types::{ConductorPlan, PlanStep, RoutePolicy, StepRole, StepType};
 use crate::llm::router::LLMRouter;
 use crate::llm::{LLMResponse, Message};
@@ -170,9 +170,10 @@ impl HybridNodeExecutor {
 
         match response {
             LLMResponse::FinalAnswer(answer) => Ok((answer.content, route)),
-            LLMResponse::ToolCall(call) => {
-                Ok((format!("Tool call: {}({})", call.name, call.arguments), route))
-            }
+            LLMResponse::ToolCall(call) => Ok((
+                format!("Tool call: {}({})", call.name, call.arguments),
+                route,
+            )),
         }
     }
 }

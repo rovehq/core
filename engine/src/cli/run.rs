@@ -20,7 +20,7 @@ use crate::steering::loader::SteeringEngine;
 use crate::storage::{Database, PendingTaskStatus, TaskRepository};
 
 use super::output::{OutputFormat, TaskView};
-use super::task_view::{self, DispatchSummary};
+use super::task_view::{self, DispatchSummary, TaskSuccess};
 
 pub async fn handle_run(
     task: String,
@@ -97,8 +97,10 @@ async fn handle_local_run(
 
     let result = {
         let mut task_future = std::pin::pin!(agent.process_task(agent_task));
-        let mut stream_state = StreamState::default();
-        stream_state.last_progress_at = Some(Instant::now());
+        let mut stream_state = StreamState {
+            last_progress_at: Some(Instant::now()),
+            ..StreamState::default()
+        };
 
         loop {
             tokio::select! {
@@ -122,14 +124,16 @@ async fn handle_local_run(
                 ))
             });
             task_view::print_success(
-                &task_result.task_id,
-                &task_result.answer,
-                &task_result.provider_used,
-                task_result.duration_ms,
-                task_result.iterations,
+                TaskSuccess {
+                    task_id: &task_result.task_id,
+                    answer: &task_result.answer,
+                    provider_used: &task_result.provider_used,
+                    duration_ms: task_result.duration_ms,
+                    iterations: task_result.iterations,
+                    dispatch: completion_dispatch.as_ref(),
+                },
                 format,
                 view,
-                completion_dispatch.as_ref(),
             )?;
             agent.drain_background_jobs().await;
             Ok(())
@@ -185,14 +189,17 @@ async fn handle_daemon_run(
                     .unwrap_or_else(|| "Task completed".to_string());
                 let (provider, duration_ms) = load_task_details(&task_repo, &task_id).await?;
                 task_view::print_success(
-                    &task_id,
-                    &answer,
-                    provider.as_deref().unwrap_or("unknown"),
-                    duration_ms.unwrap_or_else(|| started.elapsed().as_millis() as i64),
-                    0,
+                    TaskSuccess {
+                        task_id: &task_id,
+                        answer: &answer,
+                        provider_used: provider.as_deref().unwrap_or("unknown"),
+                        duration_ms: duration_ms
+                            .unwrap_or_else(|| started.elapsed().as_millis() as i64),
+                        iterations: 0,
+                        dispatch: dispatch.as_ref(),
+                    },
                     format,
                     view,
-                    dispatch.as_ref(),
                 )?;
                 return Ok(());
             }

@@ -2,13 +2,14 @@ use std::sync::Arc;
 use std::{collections::VecDeque, sync::Mutex};
 
 use async_trait::async_trait;
-use tempfile::TempDir;
 use std::time::Instant;
+use tempfile::TempDir;
 
 use super::{AgentCore, TaskResult};
 use crate::builtin_tools::{FilesystemTool, TerminalTool, ToolRegistry};
 use crate::config::LLMConfig;
 use crate::db::tasks::TaskRepository;
+use crate::db::tasks::TaskStatus;
 use crate::db::Database;
 use crate::gateway::{Task, WorkspaceLocks};
 use crate::llm::router::LLMRouter;
@@ -16,7 +17,6 @@ use crate::llm::{FinalAnswer, LLMProvider, LLMResponse, Message};
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::RiskAssessor;
 use crate::risk_assessor::RiskTier;
-use crate::db::tasks::TaskStatus;
 
 async fn setup_test_agent() -> (TempDir, AgentCore) {
     setup_test_agent_with_providers(vec![], false).await
@@ -50,12 +50,16 @@ async fn setup_test_agent_with_providers(
 
     let mut tools = ToolRegistry::empty();
     if include_core_tools {
-        tools.register_builtin_filesystem(FilesystemTool::new(temp_dir.path().to_path_buf()).unwrap())
+        tools
+            .register_builtin_filesystem(
+                FilesystemTool::new(temp_dir.path().to_path_buf()).unwrap(),
+            )
             .await;
-        tools.register_builtin_terminal(TerminalTool::new(
-            temp_dir.path().to_string_lossy().to_string(),
-        ))
-        .await;
+        tools
+            .register_builtin_terminal(TerminalTool::new(
+                temp_dir.path().to_string_lossy().to_string(),
+            ))
+            .await;
     }
 
     let agent = AgentCore::new(
@@ -102,11 +106,9 @@ impl LLMProvider for MockSequenceProvider {
     }
 
     async fn generate(&self, _messages: &[Message]) -> crate::llm::Result<LLMResponse> {
-        self.responses
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or_else(|| crate::llm::LLMError::ProviderUnavailable("No mock response".to_string()))
+        self.responses.lock().unwrap().pop_front().ok_or_else(|| {
+            crate::llm::LLMError::ProviderUnavailable("No mock response".to_string())
+        })
     }
 }
 
@@ -160,7 +162,10 @@ async fn test_complex_task_uses_dag_execution_path() {
 
     let (temp_dir, mut agent) = setup_test_agent_with_providers(vec![provider], false).await;
     let task = Task::build_from_cli("plan a complex rust refactor");
-    let result = agent.process_task(task).await.expect("complex task should succeed");
+    let result = agent
+        .process_task(task)
+        .await
+        .expect("complex task should succeed");
 
     assert_eq!(result.answer, "verified summary");
     assert_eq!(result.provider_used, "dag[cloud]");
@@ -175,8 +180,12 @@ async fn test_complex_task_uses_dag_execution_path() {
         .await
         .unwrap();
 
-    assert!(events.iter().any(|event| event.event_type == "dag_wave_started"));
-    assert!(events.iter().any(|event| event.event_type == "dag_step_succeeded"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "dag_wave_started"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "dag_step_succeeded"));
     assert!(events.iter().any(|event| event.event_type == "answer"));
 }
 
@@ -196,7 +205,10 @@ async fn test_medium_code_task_uses_dag_execution_path() {
 
     let (_temp_dir, mut agent) = setup_test_agent_with_providers(vec![provider], false).await;
     let task = Task::build_from_cli("build the project and then run tests");
-    let result = agent.process_task(task).await.expect("medium task should succeed");
+    let result = agent
+        .process_task(task)
+        .await
+        .expect("medium task should succeed");
 
     assert_eq!(result.answer, "tests passed");
     assert_eq!(result.provider_used, "dag[cloud]");
@@ -226,7 +238,7 @@ async fn test_dag_write_steps_run_steering_after_write_commands() {
         .initialize_task_context(&task, RiskTier::Tier0)
         .await
         .expect("task context");
-    agent.steering_after_write_commands = vec!["ls".to_string()];
+    agent.steering_after_write_commands = vec!["rg --files".to_string()];
     agent
         .task_repo
         .create_task(&task.id, &task.input)
@@ -248,7 +260,7 @@ async fn test_dag_write_steps_run_steering_after_write_commands() {
     let db = Database::new(&db_path).await.unwrap();
     let events = db
         .tasks()
-        .get_agent_events(&result.task_id)
+        .get_agent_events_by_parent(&result.task_id)
         .await
         .unwrap();
 
@@ -258,7 +270,7 @@ async fn test_dag_write_steps_run_steering_after_write_commands() {
     assert!(events.iter().any(|event| {
         event.event_type == "tool_call" && event.payload.contains("\"tool_name\":\"run_command\"")
     }));
-    assert!(events.iter().any(|event| {
-        event.event_type == "observation" && event.payload.contains("notes.txt")
-    }));
+    assert!(events
+        .iter()
+        .any(|event| { event.event_type == "observation" && event.payload.contains("notes.txt") }));
 }

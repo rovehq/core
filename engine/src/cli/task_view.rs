@@ -45,6 +45,16 @@ impl DispatchSummary {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TaskSuccess<'a> {
+    pub task_id: &'a str,
+    pub answer: &'a str,
+    pub provider_used: &'a str,
+    pub duration_ms: i64,
+    pub iterations: usize,
+    pub dispatch: Option<&'a DispatchSummary>,
+}
+
 pub fn print_start(
     task: &str,
     task_id: &str,
@@ -101,27 +111,10 @@ pub fn print_status_change(
     Ok(())
 }
 
-pub fn print_success(
-    task_id: &str,
-    answer: &str,
-    provider_used: &str,
-    duration_ms: i64,
-    iterations: usize,
-    format: OutputFormat,
-    view: TaskView,
-    dispatch: Option<&DispatchSummary>,
-) -> Result<()> {
+pub fn print_success(success: TaskSuccess<'_>, format: OutputFormat, view: TaskView) -> Result<()> {
     match format {
         OutputFormat::Text => {
-            for line in render_success(
-                task_id,
-                answer,
-                provider_used,
-                duration_ms,
-                iterations,
-                view,
-                dispatch,
-            ) {
+            for line in render_success(success, view) {
                 println!("{line}");
             }
         }
@@ -130,12 +123,12 @@ pub fn print_success(
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "status": "completed",
-                    "task_id": task_id,
-                    "answer": answer,
-                    "provider": provider_used,
-                    "duration_ms": duration_ms,
-                    "iterations": iterations,
-                    "dispatch": dispatch_payload(dispatch),
+                    "task_id": success.task_id,
+                    "answer": success.answer,
+                    "provider": success.provider_used,
+                    "duration_ms": success.duration_ms,
+                    "iterations": success.iterations,
+                    "dispatch": dispatch_payload(success.dispatch),
                     "view": view.as_str(),
                 }))?
             );
@@ -237,45 +230,40 @@ fn render_status_change(status: PendingTaskStatus, view: TaskView) -> Option<Str
     }
 }
 
-fn render_success(
-    task_id: &str,
-    answer: &str,
-    provider_used: &str,
-    duration_ms: i64,
-    iterations: usize,
-    view: TaskView,
-    dispatch: Option<&DispatchSummary>,
-) -> Vec<String> {
+fn render_success(success: TaskSuccess<'_>, view: TaskView) -> Vec<String> {
     match view {
-        TaskView::Gist => vec![answer.to_string()],
+        TaskView::Gist => vec![success.answer.to_string()],
         TaskView::Logs => {
             let mut lines = vec![format!(
-                "[result] task_id={task_id} provider={provider_used} duration_ms={duration_ms} iterations={iterations}"
+                "[result] task_id={} provider={} duration_ms={} iterations={}",
+                success.task_id, success.provider_used, success.duration_ms, success.iterations
             )];
-            if let Some(dispatch) = dispatch {
+            if let Some(dispatch) = success.dispatch {
                 lines.push(format!(
                     "[dispatch] domain={} complexity={} sensitive={}",
                     dispatch.domain_label, dispatch.complexity, dispatch.sensitive
                 ));
             }
             lines.push("[answer]".to_string());
-            lines.push(answer.to_string());
+            lines.push(success.answer.to_string());
             lines
         }
         TaskView::Clean | TaskView::Live => {
             let mut lines = vec![
                 "Answer".to_string(),
-                answer.to_string(),
+                success.answer.to_string(),
                 String::new(),
                 format!(
-                    "Summary: {provider_used} · {duration_ms}ms · {}",
-                    iteration_label(iterations)
+                    "Summary: {} · {}ms · {}",
+                    success.provider_used,
+                    success.duration_ms,
+                    iteration_label(success.iterations)
                 ),
             ];
-            if let Some(dispatch) = dispatch {
+            if let Some(dispatch) = success.dispatch {
                 lines.push(format!("Classified: {}", dispatch.inline_summary()));
             }
-            lines.push(format!("Task ID: {task_id}"));
+            lines.push(format!("Task ID: {}", success.task_id));
             lines
         }
     }

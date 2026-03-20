@@ -5,9 +5,7 @@ use ndarray::Array2;
 use ort::session::Session;
 use ort::value::Tensor;
 use serde::Deserialize;
-use tokenizers::{
-    PaddingParams, PaddingStrategy, Tokenizer, TruncationParams, TruncationStrategy,
-};
+use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams, TruncationStrategy};
 use tracing::info;
 
 use super::{Classification, Complexity};
@@ -130,8 +128,8 @@ impl DispatchModel {
                 .map(i64::from)
                 .collect()
         };
-        let type_ids =
-            Array2::from_shape_vec((1, self.max_length), type_ids).map_err(|error| error.to_string())?;
+        let type_ids = Array2::from_shape_vec((1, self.max_length), type_ids)
+            .map_err(|error| error.to_string())?;
 
         let outputs = self
             .session
@@ -176,8 +174,8 @@ pub(crate) fn discover_default_artifacts() -> Option<DispatchArtifacts> {
         candidates.push(home.join(".rove/brains/dispatch"));
     }
 
-    let workspace_relative = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../brains/task-classifier/artifacts");
+    let workspace_relative =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../brains/task-classifier/artifacts");
     candidates.push(workspace_relative);
 
     candidates

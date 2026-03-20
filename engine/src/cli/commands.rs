@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use super::output::TaskView;
 
@@ -155,6 +155,40 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum PluginAction {
+    /// Create a new plugin authoring scaffold.
+    New {
+        /// Directory name for the new plugin package.
+        name: String,
+
+        /// Plugin surface to scaffold.
+        #[arg(long = "type", value_enum, default_value_t = PluginScaffoldType::Skill)]
+        plugin_type: PluginScaffoldType,
+    },
+    /// Build and run a local plugin package against a mock runtime.
+    Test {
+        /// Plugin package directory. Defaults to the current directory.
+        source: Option<String>,
+
+        /// Specific exported tool to call.
+        #[arg(long)]
+        tool: Option<String>,
+
+        /// Primary task input for the plugin.
+        #[arg(long)]
+        input: Option<String>,
+
+        /// File paths to include in the plugin input.
+        #[arg(long = "file", value_name = "FILE")]
+        files: Vec<PathBuf>,
+
+        /// Additional plugin input fields in key=value form.
+        #[arg(long = "arg", value_name = "KEY=VALUE")]
+        args: Vec<String>,
+
+        /// Skip cargo test/build before executing the plugin.
+        #[arg(long)]
+        no_build: bool,
+    },
     /// Install a plugin.
     Install { source: String },
     /// Upgrade or replace an installed plugin from a package directory.
@@ -169,6 +203,12 @@ pub enum PluginAction {
     Disable { name: String },
     /// Remove a plugin.
     Remove { name: String },
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum PluginScaffoldType {
+    Skill,
+    Channel,
 }
 
 #[derive(Subcommand, Debug)]
