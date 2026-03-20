@@ -1,3 +1,4 @@
+pub mod installed_plugins;
 pub mod memory;
 pub mod pending;
 pub mod plugins;
@@ -5,6 +6,7 @@ pub mod pool;
 pub mod schedule;
 pub mod tasks;
 
+pub use installed_plugins::{InstalledPlugin, InstalledPluginRepository};
 pub use memory::{EpisodicMemory, MemoryEntry};
 pub use pending as pending_tasks;
 pub use pending::{PendingTask, PendingTaskRepository, PendingTaskStatus};
