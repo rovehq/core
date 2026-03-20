@@ -12,6 +12,7 @@ use crate::runtime::mcp::{McpSandbox, McpServerConfig, McpSpawner, McpToolDescri
 use crate::runtime::PluginType;
 use crate::storage::{Database, InstalledPlugin};
 
+use super::scaffold::export_package;
 use super::templates::load_templates;
 use super::AddServerRequest;
 
@@ -210,6 +211,21 @@ pub(super) async fn upgrade_package(config: &Config, source: &str) -> Result<()>
         "Upgraded MCP package '{}' [{}] to version {}",
         installed.name, installed.id, installed.version
     );
+    Ok(())
+}
+
+pub(super) async fn export_server(
+    config: &Config,
+    selector: &str,
+    dir: PathBuf,
+    package_name: Option<&str>,
+) -> Result<()> {
+    let server = resolve_server(config, selector).await?;
+    let package_name = package_name
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| server.default_package_name());
+    export_package(&dir, &package_name, &server.export_runtime())?;
+    println!("Exported from MCP server '{}'.", server.config.name);
     Ok(())
 }
 
@@ -512,6 +528,24 @@ impl ManagedMcpServer {
                 ..
             } => plugin_id == selector || plugin_name == selector,
         }
+    }
+
+    fn default_package_name(&self) -> String {
+        match &self.source {
+            McpServerSource::Package { plugin_name, .. } => plugin_name.clone(),
+            McpServerSource::Config => self
+                .config
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("{} MCP", self.config.name)),
+        }
+    }
+
+    fn export_runtime(&self) -> McpServerConfig {
+        let mut runtime = self.config.clone();
+        runtime.cached_tools.clear();
+        runtime.enabled = true;
+        runtime
     }
 }
 

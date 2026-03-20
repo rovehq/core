@@ -137,6 +137,29 @@ This creates:
 - `runtime.json`
 - `README.md` with next steps
 
+## Export Flow
+
+Turn an existing configured server into a package skeleton:
+
+```bash
+rove mcp export github ./github-mcp
+```
+
+Optional custom manifest name:
+
+```bash
+rove mcp export github ./github-mcp --package-name "GitHub MCP"
+```
+
+This is useful when:
+
+- you already proved a server config locally with `rove mcp add ...`
+- you want to turn that working config into a shareable package
+- you want to seed an official or community catalog entry from a real setup
+
+The export command clears `cached_tools` and forces `enabled = true` in the
+generated `runtime.json` so the package is clean before signing.
+
 ## Install Flow
 
 1. Edit `runtime.json` until the command, args, and sandbox are correct.

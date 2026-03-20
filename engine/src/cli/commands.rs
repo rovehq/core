@@ -285,6 +285,18 @@ pub enum McpAction {
     Install { source: String },
     /// Upgrade an installed MCP package from a package directory.
     Upgrade { source: String },
+    /// Export a configured MCP server as a package skeleton.
+    Export {
+        /// Existing server selector: server name, plugin id, or plugin name.
+        name: String,
+
+        /// Directory to create for the exported package.
+        dir: PathBuf,
+
+        /// Optional human-readable package name for manifest.json.
+        #[arg(long)]
+        package_name: Option<String>,
+    },
     /// Generate an MCP package skeleton for authors.
     Scaffold {
         /// Directory to create for the MCP package.

@@ -63,8 +63,60 @@ pub(super) fn generate_package(config: &Config, request: ScaffoldRequest) -> Res
         enabled: true,
     };
 
+    write_package_files(
+        &request.dir,
+        &request.name,
+        &package_id,
+        template.key.as_str(),
+        &description,
+        &runtime,
+        "Created MCP package scaffold",
+    )
+}
+
+pub(super) fn export_package(
+    dir: &Path,
+    package_name: &str,
+    runtime: &McpServerConfig,
+) -> Result<()> {
+    let mut runtime = runtime.clone();
+    let package_id = default_id(package_name);
+    let template = runtime
+        .template
+        .clone()
+        .unwrap_or_else(|| "custom".to_string());
+    let description = runtime
+        .description
+        .clone()
+        .unwrap_or_else(|| format!("{} MCP package", package_name));
+    runtime.cached_tools.clear();
+    runtime.enabled = true;
+
+    write_package_files(
+        dir,
+        package_name,
+        &package_id,
+        &template,
+        &description,
+        &runtime,
+        "Exported MCP package scaffold",
+    )
+}
+
+fn write_package_files(
+    dir: &Path,
+    package_name: &str,
+    package_id: &str,
+    template: &str,
+    description: &str,
+    runtime: &McpServerConfig,
+    action_label: &str,
+) -> Result<()> {
+    ensure_scaffold_directory(dir)?;
+    let profile = runtime.profile.clone();
+
     let manifest = json!({
-        "name": request.name,
+        "name": package_name,
         "version": "0.1.0",
         "sdk_version": SDK_VERSION,
         "plugin_type": "Mcp",
@@ -90,59 +142,41 @@ pub(super) fn generate_package(config: &Config, request: ScaffoldRequest) -> Res
     });
 
     fs::write(
-        request.dir.join("manifest.json"),
+        dir.join("manifest.json"),
         serde_json::to_string_pretty(&manifest)?,
     )
-    .with_context(|| {
-        format!(
-            "Failed to write '{}'",
-            request.dir.join("manifest.json").display()
-        )
-    })?;
+    .with_context(|| format!("Failed to write '{}'", dir.join("manifest.json").display()))?;
     fs::write(
-        request.dir.join("plugin-package.json"),
+        dir.join("plugin-package.json"),
         serde_json::to_string_pretty(&package)?,
     )
     .with_context(|| {
         format!(
             "Failed to write '{}'",
-            request.dir.join("plugin-package.json").display()
+            dir.join("plugin-package.json").display()
         )
     })?;
     fs::write(
-        request.dir.join("runtime.json"),
+        dir.join("runtime.json"),
         serde_json::to_string_pretty(&runtime)?,
     )
-    .with_context(|| {
-        format!(
-            "Failed to write '{}'",
-            request.dir.join("runtime.json").display()
-        )
-    })?;
+    .with_context(|| format!("Failed to write '{}'", dir.join("runtime.json").display()))?;
     fs::write(
-        request.dir.join("README.md"),
-        scaffold_readme(
-            &request.dir,
-            template.key.as_str(),
-            &server_name,
-            &description,
-            &profile,
-        ),
+        dir.join("README.md"),
+        scaffold_readme(dir, template, &runtime.name, description, &profile),
     )
-    .with_context(|| {
-        format!(
-            "Failed to write '{}'",
-            request.dir.join("README.md").display()
-        )
-    })?;
+    .with_context(|| format!("Failed to write '{}'", dir.join("README.md").display()))?;
 
-    println!("Created MCP package scaffold in {}", request.dir.display());
+    println!("{} in {}", action_label, dir.display());
     println!("Generated files:");
-    println!("- {}", request.dir.join("manifest.json").display());
-    println!("- {}", request.dir.join("plugin-package.json").display());
-    println!("- {}", request.dir.join("runtime.json").display());
-    println!("- {}", request.dir.join("README.md").display());
-    println!("Next: edit runtime.json, compute hash/signature values, sign manifest.json, then run `rove mcp install {}`.", request.dir.display());
+    println!("- {}", dir.join("manifest.json").display());
+    println!("- {}", dir.join("plugin-package.json").display());
+    println!("- {}", dir.join("runtime.json").display());
+    println!("- {}", dir.join("README.md").display());
+    println!(
+        "Next: edit runtime.json, compute hash/signature values, sign manifest.json, then run `rove mcp install {}`.",
+        dir.display()
+    );
 
     Ok(())
 }
@@ -288,7 +322,9 @@ mod tests {
 
     use crate::config::Config;
 
-    use super::{default_id, generate_package};
+    use crate::runtime::{McpServerConfig, SandboxProfile};
+
+    use super::{default_id, export_package, generate_package};
     use crate::cli::mcp::ScaffoldRequest;
 
     #[test]
@@ -329,5 +365,31 @@ mod tests {
         let runtime = fs::read_to_string(output_dir.join("runtime.json")).expect("runtime file");
         assert!(runtime.contains("\"name\": \"github\""));
         assert!(runtime.contains("\"command\": \"github-mcp\""));
+    }
+
+    #[test]
+    fn export_package_clears_cached_tools_and_forces_enabled() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let output_dir = temp_dir.path().join("exported");
+        let runtime = McpServerConfig {
+            name: "github".to_string(),
+            template: Some("github".to_string()),
+            description: Some("GitHub MCP".to_string()),
+            command: "github-mcp".to_string(),
+            args: vec!["stdio".to_string()],
+            profile: SandboxProfile::default().with_network(),
+            cached_tools: vec![crate::runtime::McpToolDescriptor {
+                name: "issues_list".to_string(),
+                description: "List issues".to_string(),
+                input_schema: serde_json::json!({"type":"object"}),
+            }],
+            enabled: false,
+        };
+
+        export_package(&output_dir, "GitHub MCP", &runtime).expect("export package");
+
+        let runtime_raw = fs::read_to_string(output_dir.join("runtime.json")).expect("runtime");
+        assert!(runtime_raw.contains("\"enabled\": true"));
+        assert!(runtime_raw.contains("\"cached_tools\": []"));
     }
 }

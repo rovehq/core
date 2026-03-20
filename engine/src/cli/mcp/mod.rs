@@ -15,6 +15,11 @@ pub async fn handle(action: McpAction, config: &Config) -> Result<()> {
         McpAction::Show { name } => servers::show_server(config, &name).await,
         McpAction::Install { source } => servers::install_package(config, &source).await,
         McpAction::Upgrade { source } => servers::upgrade_package(config, &source).await,
+        McpAction::Export {
+            name,
+            dir,
+            package_name,
+        } => servers::export_server(config, &name, dir, package_name.as_deref()).await,
         McpAction::Scaffold {
             dir,
             name,
