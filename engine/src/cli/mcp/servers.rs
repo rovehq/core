@@ -6,8 +6,10 @@ use anyhow::{bail, Context, Result};
 use tracing::warn;
 
 use crate::cli::database_path::database_path;
+use crate::cli::plugins::{install_checked, upgrade_checked};
 use crate::config::Config;
 use crate::runtime::mcp::{McpSandbox, McpServerConfig, McpSpawner, McpToolDescriptor};
+use crate::runtime::PluginType;
 use crate::storage::{Database, InstalledPlugin};
 
 use super::templates::load_templates;
@@ -189,6 +191,25 @@ pub(super) async fn add_server(config: &Config, request: AddServerRequest) -> Re
     }
     println!("Run `rove mcp test {}` to verify startup.", request.name);
 
+    Ok(())
+}
+
+pub(super) async fn install_package(config: &Config, source: &str) -> Result<()> {
+    let installed = install_checked(config, source, Some(PluginType::Mcp)).await?;
+    println!(
+        "Installed MCP package '{}' [{}] version={}",
+        installed.name, installed.id, installed.version
+    );
+    println!("Show with: rove mcp show {}", installed.name);
+    Ok(())
+}
+
+pub(super) async fn upgrade_package(config: &Config, source: &str) -> Result<()> {
+    let installed = upgrade_checked(config, source, Some(PluginType::Mcp)).await?;
+    println!(
+        "Upgraded MCP package '{}' [{}] to version {}",
+        installed.name, installed.id, installed.version
+    );
     Ok(())
 }
 

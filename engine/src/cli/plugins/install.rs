@@ -4,8 +4,9 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::config::Config;
+use crate::runtime::PluginType;
 use crate::security::crypto::CryptoModule;
-use crate::storage::Database;
+use crate::storage::{Database, InstalledPlugin};
 
 use super::inventory::open_database;
 use super::package::{
@@ -16,9 +17,7 @@ use super::stage::{install_directory, perform_install, verify_and_store};
 use super::validate::{resolve_payload_source, validate_plugin_shape};
 
 pub async fn handle_install(config: &Config, source: &str) -> Result<()> {
-    let database = open_database(config).await?;
-    let crypto = CryptoModule::new().context("Failed to initialize plugin verifier")?;
-    let installed = install_from_directory(config, &database, &crypto, Path::new(source)).await?;
+    let installed = install_checked(config, source, None).await?;
 
     println!(
         "Installed plugin '{}' [{}] type={} version={}",
@@ -33,9 +32,7 @@ pub async fn handle_install(config: &Config, source: &str) -> Result<()> {
 }
 
 pub async fn handle_upgrade(config: &Config, source: &str) -> Result<()> {
-    let database = open_database(config).await?;
-    let crypto = CryptoModule::new().context("Failed to initialize plugin verifier")?;
-    let installed = upgrade_from_directory(config, &database, &crypto, Path::new(source)).await?;
+    let installed = upgrade_checked(config, source, None).await?;
 
     println!(
         "Upgraded plugin '{}' [{}] to version {}",
@@ -43,6 +40,28 @@ pub async fn handle_upgrade(config: &Config, source: &str) -> Result<()> {
     );
 
     Ok(())
+}
+
+pub(crate) async fn install_checked(
+    config: &Config,
+    source: &str,
+    expected_type: Option<PluginType>,
+) -> Result<InstalledPlugin> {
+    let database = open_database(config).await?;
+    let crypto = CryptoModule::new().context("Failed to initialize plugin verifier")?;
+    validate_expected_type(Path::new(source), &crypto, expected_type.as_ref())?;
+    install_from_directory(config, &database, &crypto, Path::new(source)).await
+}
+
+pub(crate) async fn upgrade_checked(
+    config: &Config,
+    source: &str,
+    expected_type: Option<PluginType>,
+) -> Result<InstalledPlugin> {
+    let database = open_database(config).await?;
+    let crypto = CryptoModule::new().context("Failed to initialize plugin verifier")?;
+    validate_expected_type(Path::new(source), &crypto, expected_type.as_ref())?;
+    upgrade_from_directory(config, &database, &crypto, Path::new(source)).await
 }
 
 pub(super) async fn install_from_directory(
@@ -165,6 +184,34 @@ async fn ensure_not_installed(
     Ok(())
 }
 
+fn validate_expected_type(
+    source: &Path,
+    crypto: &CryptoModule,
+    expected_type: Option<&PluginType>,
+) -> Result<()> {
+    let Some(expected_type) = expected_type else {
+        return Ok(());
+    };
+
+    let package_root = resolve_package_root(source)?;
+    let manifest_raw = read_required_file(&package_root.join(MANIFEST_FILE))?;
+    crypto
+        .verify_manifest_file(manifest_raw.as_bytes())
+        .context("Manifest signature verification failed")?;
+    let manifest = manifest_from_signed_json(&manifest_raw)?;
+
+    if &manifest.plugin_type != expected_type {
+        bail!(
+            "Plugin '{}' is type '{}' but this command expects '{}'",
+            manifest.name,
+            manifest.plugin_type.as_str(),
+            expected_type.as_str()
+        );
+    }
+
+    Ok(())
+}
+
 async fn remove_existing_plugin_artifacts(
     config: &Config,
     database: &Database,
@@ -214,10 +261,11 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::config::Config;
+    use crate::runtime::PluginType;
     use crate::security::crypto::CryptoModule;
     use crate::storage::Database;
 
-    use super::{install_from_directory, upgrade_from_directory};
+    use super::{install_from_directory, upgrade_from_directory, validate_expected_type};
     use crate::cli::plugins::package::{
         default_plugin_id, MANIFEST_FILE, PACKAGE_FILE, RUNTIME_FILE,
     };
@@ -444,5 +492,38 @@ mod tests {
             .expect("stored upgraded plugin");
 
         assert_eq!(stored.binary_hash, second_hash);
+    }
+
+    #[test]
+    fn validate_expected_type_rejects_mismatched_package() {
+        let signing_key = SigningKey::from_bytes(&[13u8; 32]);
+        let package_dir = TempDir::new().expect("package dir");
+
+        write_signed_manifest(
+            package_dir.path(),
+            &signing_key,
+            "Echo Skill",
+            "Skill",
+            "Reviewed",
+            "0.1.0",
+        );
+        fs::write(
+            package_dir.path().join(PACKAGE_FILE),
+            r#"{
+                "artifact": "echo.wasm",
+                "runtime_config": "runtime.json",
+                "payload_hash": "abc123",
+                "payload_signature": "deadbeef"
+            }"#,
+        )
+        .expect("write package");
+        fs::write(package_dir.path().join(RUNTIME_FILE), r#"{"tools":[]}"#).expect("write runtime");
+        fs::write(package_dir.path().join("echo.wasm"), b"fake wasm bytes").expect("artifact");
+
+        let crypto = CryptoModule::with_key(signing_key.verifying_key());
+        let error = validate_expected_type(package_dir.path(), &crypto, Some(&PluginType::Mcp))
+            .expect_err("type mismatch should fail");
+
+        assert!(error.to_string().contains("this command expects 'Mcp'"));
     }
 }

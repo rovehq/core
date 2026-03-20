@@ -281,6 +281,10 @@ pub enum McpAction {
     List,
     /// Show one configured MCP server.
     Show { name: String },
+    /// Install an MCP package.
+    Install { source: String },
+    /// Upgrade an installed MCP package from a package directory.
+    Upgrade { source: String },
     /// List built-in and installed MCP templates.
     Templates,
     /// Add a configured MCP server.

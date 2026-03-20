@@ -12,6 +12,8 @@ pub async fn handle(action: McpAction, config: &Config) -> Result<()> {
     match action {
         McpAction::List => servers::list_servers(config).await,
         McpAction::Show { name } => servers::show_server(config, &name).await,
+        McpAction::Install { source } => servers::install_package(config, &source).await,
+        McpAction::Upgrade { source } => servers::upgrade_package(config, &source).await,
         McpAction::Templates => templates::list_templates(config),
         McpAction::Add {
             name,
