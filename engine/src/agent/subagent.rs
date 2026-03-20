@@ -1036,4 +1036,31 @@ mod tests {
         assert!(events.iter().all(|event| event.parent_task_id.as_deref() == Some(parent_task_id.to_string().as_str())));
         assert!(events.iter().any(|event| event.task_id == task_id));
     }
+
+    #[tokio::test]
+    async fn local_only_route_fails_without_local_model() {
+        let spec = SubagentSpec {
+            role: SubagentRole::Verifier,
+            task: "verify locally".to_string(),
+            tools_allowed: Vec::new(),
+            memory_budget: 800,
+            model_override: None,
+            max_steps: 2,
+            timeout_secs: 5,
+        };
+
+        let (_temp_dir, mut runner, _repo) = test_runner(Vec::new(), spec).await;
+        runner.route_policy = RoutePolicy::LocalOnly;
+
+        let result = runner.run().await;
+        match result {
+            SubagentResult::Failed(output) => {
+                assert!(output
+                    .error
+                    .unwrap()
+                    .contains("requires a local model"));
+            }
+            other => panic!("expected local-only failure, got {:?}", other),
+        }
+    }
 }
