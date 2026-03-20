@@ -13,6 +13,7 @@ pub mod project;
 pub mod prompt;
 pub mod query;
 pub mod runner;
+pub mod routing;
 pub mod scorer;
 pub mod session;
 pub mod system;
@@ -45,6 +46,7 @@ pub use hybrid::{ExecutionLocation, HybridExecutor, StepExecutionResult};
 pub use planner::Planner;
 pub use policy::StepExecutionPolicy;
 pub use runner::{DagNodeExecution, DagNodeExecutor, DagRunReport, DagRunner};
+pub use routing::DagRoutingPolicy;
 pub use session::SessionMemory;
 pub use system::MemorySystem;
 pub use types::{

@@ -14,6 +14,7 @@
 use crate::conductor::graph::DagGraph;
 use crate::conductor::policy::StepExecutionPolicy;
 use crate::conductor::runner::{DagNodeExecution, DagNodeExecutor, DagRunner};
+use crate::conductor::routing::DagRoutingPolicy;
 use crate::conductor::types::{ConductorPlan, PlanStep, StepRole, StepType};
 use crate::llm::router::LLMRouter;
 use crate::llm::{LLMResponse, Message};
@@ -107,8 +108,8 @@ impl DagNodeExecutor for HybridNodeExecutor {
         }
 
         debug!("Executing step {} with {:?}", step.id, executed_route);
-        let output = self
-            .execute_with_router(step, dependency_context)
+        let (output, actual_route) = self
+            .execute_with_router(step, dependency_context, &policy)
             .await
             .context("Router execution failed")?;
         let elapsed = start.elapsed().as_millis() as u64;
@@ -116,7 +117,7 @@ impl DagNodeExecutor for HybridNodeExecutor {
         Ok(DagNodeExecution {
             step_id: step.id.clone(),
             output,
-            route: executed_route,
+            route: actual_route,
             duration_ms: elapsed,
             role: step.role.clone(),
         })
@@ -146,21 +147,32 @@ impl HybridNodeExecutor {
         Ok(response.content)
     }
 
-    async fn execute_with_router(&self, step: &PlanStep, context: &str) -> Result<String> {
-        let policy = StepExecutionPolicy::for_step(step, Route::Cloud);
+    async fn execute_with_router(
+        &self,
+        step: &PlanStep,
+        context: &str,
+        policy: &StepExecutionPolicy,
+    ) -> Result<(String, Route)> {
         let system = Message::system(policy.system_prompt(step, context));
 
         let user = Message::user(&step.description);
 
-        let (response, _) = self
+        let (response, provider) = self
             .router
             .call(&[system, user])
             .await
             .context("Cloud execution failed")?;
+        let route = match provider.as_str() {
+            "local-brain" => Route::Local,
+            "ollama" => Route::Ollama,
+            _ => Route::Cloud,
+        };
 
         match response {
-            LLMResponse::FinalAnswer(answer) => Ok(answer.content),
-            LLMResponse::ToolCall(call) => Ok(format!("Tool call: {}({})", call.name, call.arguments)),
+            LLMResponse::FinalAnswer(answer) => Ok((answer.content, route)),
+            LLMResponse::ToolCall(call) => {
+                Ok((format!("Tool call: {}({})", call.name, call.arguments), route))
+            }
         }
     }
 }
@@ -236,13 +248,14 @@ impl HybridExecutor {
         } else {
             Route::Cloud
         };
-        let graph = DagGraph::from_plan(
+        let mut graph = DagGraph::from_plan(
             format!("plan:{}", plan.id),
             plan,
             TaskDomain::General,
             Complexity::Complex,
             preferred_route,
         );
+        DagRoutingPolicy::new(self.local_brain.is_some()).assign_routes(&mut graph, plan);
         let runner = DagRunner::new();
         let node_executor = HybridNodeExecutor {
             router: Arc::clone(&self.router),
