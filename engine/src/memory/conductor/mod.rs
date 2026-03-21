@@ -46,7 +46,7 @@ pub use hybrid::{ExecutionLocation, HybridExecutor, StepExecutionResult};
 pub use planner::Planner;
 pub use policy::StepExecutionPolicy;
 pub use routing::DagRoutingPolicy;
-pub use runner::{DagNodeExecution, DagNodeExecutor, DagRunReport, DagRunner};
+pub use runner::{DagNodeExecution, DagNodeExecutor, DagRunReport, DagRunner, DagSchedulingPolicy};
 pub use session::SessionMemory;
 pub use system::MemorySystem;
 pub use types::{

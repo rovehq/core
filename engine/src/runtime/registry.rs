@@ -293,6 +293,18 @@ impl ToolRegistry {
         schemas
     }
 
+    pub async fn all_schemas(&self) -> Vec<ToolSchema> {
+        let mut schemas = self
+            .tools
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        schemas.sort_by(|left, right| left.name.cmp(&right.name));
+        schemas
+    }
+
     pub async fn call(
         &self,
         name: &str,

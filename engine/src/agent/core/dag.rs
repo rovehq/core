@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use sdk::{Complexity, Route, SubagentRole, SubagentSpec, TaskDomain, TaskSource};
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
 use crate::agent::{SubagentResult, SubagentRunner};
+use crate::builtin_tools::registry::{ToolSchema, ToolSource};
 use crate::conductor::{
-    DagNodeExecution, DagNodeExecutor, DagRoutingPolicy, DagRunReport, DagRunner, HybridExecutor,
-    PlanStep, StepRole,
+    DagNodeExecution, DagNodeExecutor, DagRoutingPolicy, DagRunReport, DagRunner,
+    DagSchedulingPolicy, HybridExecutor, PlanStep, StepRole,
 };
 use crate::gateway::Task;
 use crate::llm::{Message, MessageRole};
@@ -40,7 +40,7 @@ impl DagNodeExecutor for AgentDagExecutor {
         dependency_context: &str,
         route: Route,
     ) -> Result<DagNodeExecution> {
-        let spec = self.subagent_spec_for_step(step);
+        let spec = self.subagent_spec_for_step(step).await;
         let runner = SubagentRunner::new(
             spec,
             self.parent_task_id,
@@ -95,12 +95,12 @@ impl DagNodeExecutor for AgentDagExecutor {
 }
 
 impl AgentDagExecutor {
-    fn subagent_spec_for_step(&self, step: &PlanStep) -> SubagentSpec {
+    async fn subagent_spec_for_step(&self, step: &PlanStep) -> SubagentSpec {
         SubagentSpec {
             role: step_role_to_subagent_role(&step.role),
             task: step.description.clone(),
-            tools_allowed: tools_allowed_for_step(step),
-            memory_budget: memory_budget_for_step(step),
+            tools_allowed: tools_allowed_for_step(step, self.domain, &self.tools).await,
+            memory_budget: memory_budget_for_step(step, self.complexity),
             model_override: None,
             max_steps: 8,
             timeout_secs: 120,
@@ -152,7 +152,8 @@ impl AgentCore {
             self.task_repo.clone(),
             *task_id,
             context.domain_str.clone(),
-        );
+        )
+        .with_scheduling_policy(scheduling_policy_for(context));
         let executor = AgentDagExecutor {
             router: self.router.clone(),
             task_repo: self.task_repo.clone(),
@@ -311,28 +312,180 @@ fn step_role_to_subagent_role(role: &StepRole) -> SubagentRole {
     }
 }
 
-fn memory_budget_for_step(step: &PlanStep) -> usize {
-    match step.role {
+fn memory_budget_for_step(step: &PlanStep, complexity: Complexity) -> usize {
+    let base = match step.role {
         StepRole::Researcher => 1200,
         StepRole::Executor => 900,
         StepRole::Verifier => 800,
+    };
+    match complexity {
+        Complexity::Simple => base,
+        Complexity::Medium => base + 100,
+        Complexity::Complex => base + 250,
     }
 }
 
-fn tools_allowed_for_step(step: &PlanStep) -> Vec<String> {
-    let mut tools = HashSet::new();
-    tools.insert("read_file".to_string());
-    tools.insert("list_dir".to_string());
-    tools.insert("file_exists".to_string());
-    tools.insert("capture_screen".to_string());
+fn scheduling_policy_for(context: &TaskContext) -> DagSchedulingPolicy {
+    match (context.domain, context.complexity) {
+        (TaskDomain::Browser | TaskDomain::Data, Complexity::Complex) => DagSchedulingPolicy {
+            max_parallel_total: 4,
+            max_parallel_researchers: 3,
+            max_parallel_verifiers: 2,
+            max_parallel_executors: 1,
+        },
+        (_, Complexity::Complex) => DagSchedulingPolicy {
+            max_parallel_total: 3,
+            max_parallel_researchers: 2,
+            max_parallel_verifiers: 2,
+            max_parallel_executors: 1,
+        },
+        _ => DagSchedulingPolicy {
+            max_parallel_total: 2,
+            max_parallel_researchers: 1,
+            max_parallel_verifiers: 1,
+            max_parallel_executors: 1,
+        },
+    }
+}
 
-    if matches!(step.role, StepRole::Executor) {
-        tools.insert("write_file".to_string());
-        tools.insert("delete_file".to_string());
-        tools.insert("run_command".to_string());
+async fn tools_allowed_for_step(
+    step: &PlanStep,
+    domain: TaskDomain,
+    tools: &crate::builtin_tools::ToolRegistry,
+) -> Vec<String> {
+    select_role_tool_catalog(&step.role, domain, tools.all_schemas().await)
+}
+
+fn select_role_tool_catalog(
+    role: &StepRole,
+    domain: TaskDomain,
+    schemas: Vec<ToolSchema>,
+) -> Vec<String> {
+    let allowed_domain_tags = allowed_domain_tags(role, domain);
+    let mut names = schemas
+        .into_iter()
+        .filter(|schema| {
+            schema.domains.is_empty()
+                || schema
+                    .domains
+                    .iter()
+                    .any(|tag| allowed_domain_tags.iter().any(|allowed| tag == allowed))
+        })
+        .filter(|schema| role_allows_schema(role, schema))
+        .map(|schema| schema.name)
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn allowed_domain_tags(role: &StepRole, domain: TaskDomain) -> Vec<&'static str> {
+    let mut tags = vec![task_domain_tag(domain), "all", "filesystem"];
+    match role {
+        StepRole::Researcher => tags.extend(["read", "browser", "data", "vision"]),
+        StepRole::Verifier => tags.extend(["read", "vision"]),
+        StepRole::Executor => tags.extend(["read", "write", "shell", "git", "code", "vision"]),
+    }
+    tags
+}
+
+fn task_domain_tag(domain: TaskDomain) -> &'static str {
+    match domain {
+        TaskDomain::Code => "code",
+        TaskDomain::Git => "git",
+        TaskDomain::Shell => "shell",
+        TaskDomain::Browser => "browser",
+        TaskDomain::Data => "data",
+        TaskDomain::General => "general",
+    }
+}
+
+fn role_allows_schema(role: &StepRole, schema: &ToolSchema) -> bool {
+    match role {
+        StepRole::Researcher => !is_destructive_schema(schema) && !is_shell_schema(schema),
+        StepRole::Verifier => !is_destructive_schema(schema) && !is_shell_schema(schema),
+        StepRole::Executor => true,
+    }
+}
+
+fn is_shell_schema(schema: &ToolSchema) -> bool {
+    schema.name == "run_command"
+        || schema
+            .domains
+            .iter()
+            .any(|domain| matches!(domain.as_str(), "shell" | "git"))
+}
+
+fn is_destructive_schema(schema: &ToolSchema) -> bool {
+    if matches!(schema.source, ToolSource::Builtin)
+        && matches!(
+            schema.name.as_str(),
+            "write_file" | "delete_file" | "run_command"
+        )
+    {
+        return true;
     }
 
-    let mut tools = tools.into_iter().collect::<Vec<_>>();
-    tools.sort();
-    tools
+    let haystack = format!(
+        "{} {}",
+        schema.name.to_ascii_lowercase(),
+        schema.description.to_ascii_lowercase()
+    );
+    const MUTATING_TOKENS: [&str; 12] = [
+        "write", "delete", "remove", "create", "update", "commit", "merge", "publish", "apply",
+        "send", "post", "mutate",
+    ];
+
+    MUTATING_TOKENS.iter().any(|token| haystack.contains(token))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn schema(name: &str, description: &str, domains: &[&str]) -> ToolSchema {
+        ToolSchema {
+            name: name.to_string(),
+            description: description.to_string(),
+            parameters: json!({}),
+            source: ToolSource::Builtin,
+            domains: domains.iter().map(|value| value.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn researcher_catalog_filters_mutating_tools() {
+        let tools = select_role_tool_catalog(
+            &StepRole::Researcher,
+            TaskDomain::Code,
+            vec![
+                schema("read_file", "Read file", &["all"]),
+                schema("write_file", "Write file", &["all"]),
+                ToolSchema {
+                    name: "mcp_github_search_issues".to_string(),
+                    description: "Search GitHub issues".to_string(),
+                    parameters: json!({}),
+                    source: ToolSource::Mcp {
+                        server_name: "github".to_string(),
+                    },
+                    domains: vec!["code".to_string()],
+                },
+                ToolSchema {
+                    name: "mcp_github_create_issue".to_string(),
+                    description: "Create a GitHub issue".to_string(),
+                    parameters: json!({}),
+                    source: ToolSource::Mcp {
+                        server_name: "github".to_string(),
+                    },
+                    domains: vec!["code".to_string()],
+                },
+            ],
+        );
+
+        assert!(tools.contains(&"read_file".to_string()));
+        assert!(tools.contains(&"mcp_github_search_issues".to_string()));
+        assert!(!tools.contains(&"write_file".to_string()));
+        assert!(!tools.contains(&"mcp_github_create_issue".to_string()));
+    }
 }

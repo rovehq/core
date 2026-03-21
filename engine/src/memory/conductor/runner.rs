@@ -28,6 +28,25 @@ pub struct DagRunReport {
     pub results: HashMap<String, DagNodeExecution>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct DagSchedulingPolicy {
+    pub max_parallel_total: usize,
+    pub max_parallel_researchers: usize,
+    pub max_parallel_verifiers: usize,
+    pub max_parallel_executors: usize,
+}
+
+impl Default for DagSchedulingPolicy {
+    fn default() -> Self {
+        Self {
+            max_parallel_total: 3,
+            max_parallel_researchers: 2,
+            max_parallel_verifiers: 2,
+            max_parallel_executors: 1,
+        }
+    }
+}
+
 impl DagRunReport {
     pub fn has_failures(&self) -> bool {
         self.graph.has_failures()
@@ -54,11 +73,15 @@ struct DagPersistence {
 #[derive(Default)]
 pub struct DagRunner {
     persistence: Option<DagPersistence>,
+    scheduling: DagSchedulingPolicy,
 }
 
 impl DagRunner {
     pub fn new() -> Self {
-        Self { persistence: None }
+        Self {
+            persistence: None,
+            scheduling: DagSchedulingPolicy::default(),
+        }
     }
 
     pub fn with_persistence(
@@ -72,7 +95,13 @@ impl DagRunner {
                 task_repo,
                 domain: domain.into(),
             }),
+            scheduling: DagSchedulingPolicy::default(),
         }
+    }
+
+    pub fn with_scheduling_policy(mut self, scheduling: DagSchedulingPolicy) -> Self {
+        self.scheduling = scheduling;
+        self
     }
 
     pub async fn run<E>(
@@ -243,10 +272,43 @@ impl DagRunner {
             return Ok(serial);
         }
 
-        Ok(ready_steps
-            .into_iter()
-            .map(|step| step.id.clone())
-            .collect())
+        let mut selected = Vec::new();
+        let mut researchers = 0usize;
+        let mut verifiers = 0usize;
+        let mut executors = 0usize;
+
+        for step in ready_steps {
+            if selected.len() >= self.scheduling.max_parallel_total.max(1) {
+                break;
+            }
+
+            let allowed = match step.role {
+                StepRole::Researcher => researchers < self.scheduling.max_parallel_researchers,
+                StepRole::Verifier => verifiers < self.scheduling.max_parallel_verifiers,
+                StepRole::Executor => executors < self.scheduling.max_parallel_executors,
+            };
+
+            if !allowed {
+                continue;
+            }
+
+            match step.role {
+                StepRole::Researcher => researchers += 1,
+                StepRole::Verifier => verifiers += 1,
+                StepRole::Executor => executors += 1,
+            }
+            selected.push(step.id.clone());
+        }
+
+        if selected.is_empty() {
+            let fallback = ready
+                .first()
+                .cloned()
+                .context("ready node list unexpectedly empty")?;
+            return Ok(vec![fallback]);
+        }
+
+        Ok(selected)
     }
 
     async fn persist_wave_started(&self, wave: &DagWave, next_event_step: &mut i64) -> Result<()> {
@@ -743,5 +805,85 @@ mod tests {
             report.graph.node("step_3").map(|node| node.state.clone()),
             Some(DagNodeState::Blocked)
         );
+    }
+
+    #[tokio::test]
+    async fn runner_respects_parallel_role_limits() {
+        let plan = ConductorPlan {
+            id: "plan-2".to_string(),
+            original_goal: "respect scheduling".to_string(),
+            mode: Default::default(),
+            stages: Vec::new(),
+            steps: vec![
+                PlanStep {
+                    id: "step_1".to_string(),
+                    order: 0,
+                    step_type: StepType::Research,
+                    role: StepRole::Researcher,
+                    parallel_safe: true,
+                    route_policy: RoutePolicy::LocalPreferred,
+                    dependencies: Vec::new(),
+                    description: "research one".to_string(),
+                    expected_outcome: "done".to_string(),
+                },
+                PlanStep {
+                    id: "step_2".to_string(),
+                    order: 1,
+                    step_type: StepType::Research,
+                    role: StepRole::Researcher,
+                    parallel_safe: true,
+                    route_policy: RoutePolicy::LocalPreferred,
+                    dependencies: Vec::new(),
+                    description: "research two".to_string(),
+                    expected_outcome: "done".to_string(),
+                },
+                PlanStep {
+                    id: "step_3".to_string(),
+                    order: 2,
+                    step_type: StepType::Verify,
+                    role: StepRole::Verifier,
+                    parallel_safe: true,
+                    route_policy: RoutePolicy::LocalPreferred,
+                    dependencies: Vec::new(),
+                    description: "verify".to_string(),
+                    expected_outcome: "done".to_string(),
+                },
+            ],
+            created_at: 100,
+        };
+
+        let graph = DagGraph::from_plan(
+            "task-2",
+            &plan,
+            TaskDomain::Code,
+            Complexity::Complex,
+            false,
+            Route::Local,
+        );
+        let runner = DagRunner::new().with_scheduling_policy(DagSchedulingPolicy {
+            max_parallel_total: 2,
+            max_parallel_researchers: 1,
+            max_parallel_verifiers: 1,
+            max_parallel_executors: 1,
+        });
+        let report = runner
+            .run(
+                graph,
+                &plan,
+                &MockDagExecutor {
+                    failing: HashSet::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.graph.waves[0].node_ids.len(), 2);
+        assert!(report.graph.waves[0]
+            .node_ids
+            .contains(&"step_1".to_string()));
+        assert!(report.graph.waves[0]
+            .node_ids
+            .contains(&"step_3".to_string()));
+        assert_eq!(report.graph.waves[1].node_ids, vec!["step_2".to_string()]);
     }
 }

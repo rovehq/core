@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::builtin_tools::ToolRegistry;
-use crate::conductor::{MemorySystem, RoutePolicy};
+use crate::conductor::{HitType, MemoryHit, MemorySystem, RoutePolicy};
 use crate::gateway::WorkspaceLocks;
 use crate::llm::router::LLMRouter;
 use crate::llm::{LLMResponse, Message, ToolCall};
@@ -17,6 +17,12 @@ use crate::storage::TaskRepository;
 use sdk::errors::EngineError;
 
 const MIN_MEMORY_BUDGET: usize = 256;
+
+struct RoleMemoryProfile {
+    heading: &'static str,
+    query_hint: &'static str,
+    max_items: usize,
+}
 
 struct ToolLoopState<'a> {
     tool_call_counts: &'a mut HashMap<u64, u32>,
@@ -549,8 +555,13 @@ impl SubagentRunner {
     async fn build_system_prompt(&self, allowed_tools: &HashSet<String>) -> String {
         let tool_block = build_tool_prompt(self.tools.schemas_named(allowed_tools).await);
         let memory_block = self.shared_memory_context().await;
+        let dependency_block = if self.dependency_context.trim().is_empty() {
+            "(none)".to_string()
+        } else {
+            scrub_text(&self.dependency_context)
+        };
         format!(
-            "You are a constrained Rove subagent.\nRole: {}\nDomain: {:?}\nComplexity: {:?}\nExpected outcome: {}\n\n{}\n{}\n\nDependency context:\n{}\n\nRules:\n- Only use the allowed tools listed above.\n- Stay within your role boundary.\n- Keep the answer concise and specific to the assigned sub-task.\n- If you cannot complete the task with allowed tools, explain the blocker plainly.",
+            "You are a constrained Rove subagent.\nRole: {}\nDomain: {:?}\nComplexity: {:?}\nExpected outcome: {}\n\n{}\n{}\n\n{}\n\nDependency context:\n{}\n\nRules:\n- Only use the allowed tools listed above.\n- Stay within your role boundary.\n- Keep the answer concise and specific to the assigned sub-task.\n- If you cannot complete the task with allowed tools, explain the blocker plainly.",
             self.spec.role.as_str(),
             self.domain,
             self.complexity,
@@ -561,8 +572,8 @@ impl SubagentRunner {
                 "(none)".to_string()
             } else {
                 memory_block
-            }
-                + &format!("\n\n{}", self.dependency_context)
+            },
+            dependency_block,
         )
     }
 
@@ -571,19 +582,24 @@ impl SubagentRunner {
             return String::new();
         };
 
-        let target_tokens = self.spec.memory_budget.saturating_div(2).max(128);
+        let profile = role_memory_profile(&self.spec.role);
+        let target_tokens = target_tokens_for_role(&self.spec);
         let mut used_tokens = 0usize;
         let mut lines = Vec::new();
-        let hits = match memory_system
-            .query(&self.spec.task, &self.domain, None)
-            .await
-        {
+        let query = memory_query_for_role(self, &profile);
+        let hits = match memory_system.query(&query, &self.domain, None).await {
             Ok(hits) => hits,
             Err(_) => return String::new(),
         };
+        let hits = prioritize_memory_hits(&self.spec.role, hits);
 
-        for hit in hits {
-            let line = format!("- [{}] {}", hit.source, scrub_text(&hit.content));
+        for hit in hits.into_iter().take(profile.max_items) {
+            let line = format!(
+                "- [{} / {}] {}",
+                hit_type_label(&hit.hit_type),
+                hit.source,
+                scrub_text(&hit.content)
+            );
             let estimate = estimate_tokens(&line);
             if used_tokens + estimate > target_tokens {
                 break;
@@ -595,7 +611,7 @@ impl SubagentRunner {
         if lines.is_empty() {
             String::new()
         } else {
-            format!("Shared memory:\n{}", lines.join("\n"))
+            format!("{}:\n{}", profile.heading, lines.join("\n"))
         }
     }
 
@@ -723,6 +739,104 @@ fn role_rules(role: &SubagentRole) -> &'static str {
             "Summariser: stay read-only and produce a structured, concise synthesis."
         }
         SubagentRole::Custom(_) => "Custom role: respect the allowed tool scope strictly.",
+    }
+}
+
+fn role_memory_profile(role: &SubagentRole) -> RoleMemoryProfile {
+    match role {
+        SubagentRole::Researcher => RoleMemoryProfile {
+            heading: "Shared memory for research",
+            query_hint: "background facts prior findings references related decisions",
+            max_items: 8,
+        },
+        SubagentRole::Executor => RoleMemoryProfile {
+            heading: "Shared memory for execution",
+            query_hint: "implementation notes prior fixes commands blockers workspace details",
+            max_items: 6,
+        },
+        SubagentRole::Verifier => RoleMemoryProfile {
+            heading: "Shared memory for verification",
+            query_hint: "expected outcomes failures tests checks regressions prior results",
+            max_items: 5,
+        },
+        SubagentRole::Summariser => RoleMemoryProfile {
+            heading: "Shared memory for summarisation",
+            query_hint: "key outcomes important facts concise synthesis",
+            max_items: 4,
+        },
+        SubagentRole::Custom(_) => RoleMemoryProfile {
+            heading: "Shared memory",
+            query_hint: "relevant context",
+            max_items: 5,
+        },
+    }
+}
+
+fn target_tokens_for_role(spec: &SubagentSpec) -> usize {
+    let budget = spec.memory_budget.max(MIN_MEMORY_BUDGET);
+    match spec.role {
+        SubagentRole::Researcher => budget * 3 / 4,
+        SubagentRole::Executor => budget * 2 / 3,
+        SubagentRole::Verifier => budget / 2,
+        SubagentRole::Summariser => budget / 3,
+        SubagentRole::Custom(_) => budget / 2,
+    }
+    .max(128)
+}
+
+fn memory_query_for_role(runner: &SubagentRunner, profile: &RoleMemoryProfile) -> String {
+    format!(
+        "{}\n{}\n{}\n{}",
+        runner.spec.task, runner.expected_outcome, runner.dependency_context, profile.query_hint
+    )
+}
+
+fn prioritize_memory_hits(role: &SubagentRole, mut hits: Vec<MemoryHit>) -> Vec<MemoryHit> {
+    hits.sort_by(|left, right| {
+        let left_priority = memory_priority(role, &left.hit_type);
+        let right_priority = memory_priority(role, &right.hit_type);
+        right_priority
+            .cmp(&left_priority)
+            .then_with(|| right.final_score.total_cmp(&left.final_score))
+    });
+    hits
+}
+
+fn memory_priority(role: &SubagentRole, hit_type: &HitType) -> u8 {
+    match role {
+        SubagentRole::Researcher => match hit_type {
+            HitType::Insight | HitType::KnowledgeGraph => 4,
+            HitType::Episodic => 3,
+            HitType::TaskTrace => 2,
+        },
+        SubagentRole::Executor => match hit_type {
+            HitType::TaskTrace => 4,
+            HitType::Episodic => 3,
+            HitType::Insight => 2,
+            HitType::KnowledgeGraph => 1,
+        },
+        SubagentRole::Verifier => match hit_type {
+            HitType::TaskTrace => 4,
+            HitType::Insight => 3,
+            HitType::Episodic => 3,
+            HitType::KnowledgeGraph => 1,
+        },
+        SubagentRole::Summariser => match hit_type {
+            HitType::Insight => 4,
+            HitType::Episodic => 3,
+            HitType::KnowledgeGraph => 2,
+            HitType::TaskTrace => 2,
+        },
+        SubagentRole::Custom(_) => 2,
+    }
+}
+
+fn hit_type_label(hit_type: &HitType) -> &'static str {
+    match hit_type {
+        HitType::Episodic => "episodic",
+        HitType::Insight => "insight",
+        HitType::KnowledgeGraph => "knowledge_graph",
+        HitType::TaskTrace => "task_trace",
     }
 }
 
@@ -1110,5 +1224,36 @@ mod tests {
             }
             other => panic!("expected local-only failure, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn researcher_memory_prioritizes_insights() {
+        let ordered = prioritize_memory_hits(
+            &SubagentRole::Researcher,
+            vec![
+                MemoryHit {
+                    id: "1".to_string(),
+                    source: "trace".to_string(),
+                    content: "trace".to_string(),
+                    rank: 1.0,
+                    hit_type: HitType::TaskTrace,
+                    importance: 0.5,
+                    created_at: 0,
+                    final_score: 0.9,
+                },
+                MemoryHit {
+                    id: "2".to_string(),
+                    source: "insight".to_string(),
+                    content: "insight".to_string(),
+                    rank: 1.0,
+                    hit_type: HitType::Insight,
+                    importance: 0.5,
+                    created_at: 0,
+                    final_score: 0.2,
+                },
+            ],
+        );
+
+        assert_eq!(ordered[0].source, "insight");
     }
 }
