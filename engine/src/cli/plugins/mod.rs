@@ -9,6 +9,7 @@ mod test;
 mod validate;
 
 pub use distribute::{handle_pack, handle_publish};
+pub(crate) use distribute::publish_source_to_registry;
 pub use install::{handle_install, handle_upgrade};
 pub(crate) use install::{install_checked, upgrade_checked};
 pub use inventory::{

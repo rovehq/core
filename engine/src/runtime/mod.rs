@@ -103,21 +103,12 @@ impl RuntimeManager {
             mcp.clone(),
         );
 
-        let mut builtin_selection = builtin::BuiltinSelection::from_config(config);
-        for plugin in &installed_plugins {
-            if !plugin.enabled || plugin.plugin_type != PluginType::Workspace.as_str() {
-                continue;
-            }
-            match plugin.id.as_str() {
-                "filesystem" => builtin_selection.filesystem = false,
-                "terminal" => builtin_selection.terminal = false,
-                "vision" => builtin_selection.vision = false,
-                _ => {}
-            }
-        }
-
-        builtin::register_selected(&mut registry, config.core.workspace.clone(), builtin_selection)
-            .await?;
+        builtin::register_selected(
+            &mut registry,
+            config.core.workspace.clone(),
+            builtin::BuiltinSelection::kernel_defaults(),
+        )
+        .await?;
 
         register_installed_plugin_schemas(&mut registry, native.as_ref(), &installed_plugins).await;
 
@@ -512,7 +503,6 @@ mod tests {
         let mut config = Config::default();
         config.core.workspace = workspace.path().to_path_buf();
         config.mcp.servers.clear();
-        config.plugins.terminal = true;
 
         let runtime = RuntimeManager::build(&database, &config)
             .await
@@ -530,6 +520,34 @@ mod tests {
             schema.source,
             crate::runtime::registry::ToolSource::Native { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn runtime_build_does_not_register_legacy_system_builtins_without_installs() {
+        let workspace = TempDir::new().expect("workspace");
+        let data = TempDir::new().expect("data");
+        let database = Database::new(&data.path().join("runtime-no-builtins.db"))
+            .await
+            .expect("database");
+
+        let mut config = Config::default();
+        config.core.workspace = workspace.path().to_path_buf();
+        config.mcp.servers.clear();
+        config.plugins.fs_editor = true;
+        config.plugins.terminal = true;
+        config.plugins.screenshot = true;
+
+        let runtime = RuntimeManager::build(&database, &config)
+            .await
+            .expect("runtime manager");
+        let schemas = runtime.registry.schemas_for("all").await;
+
+        assert!(runtime.registry.fs.is_none());
+        assert!(runtime.registry.terminal.is_none());
+        assert!(runtime.registry.vision.is_none());
+        assert!(!schemas.iter().any(|schema| schema.name == "read_file"));
+        assert!(!schemas.iter().any(|schema| schema.name == "run_command"));
+        assert!(!schemas.iter().any(|schema| schema.name == "capture_screen"));
     }
 
     #[tokio::test]

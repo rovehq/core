@@ -4,7 +4,6 @@ pub use terminal::TerminalTool;
 
 use std::path::PathBuf;
 
-use crate::config::Config;
 use sdk::errors::EngineError;
 
 use super::registry::ToolRegistry;
@@ -25,11 +24,11 @@ impl BuiltinSelection {
         }
     }
 
-    pub fn from_config(config: &Config) -> Self {
+    pub fn kernel_defaults() -> Self {
         Self {
-            filesystem: config.plugins.fs_editor,
-            terminal: config.plugins.terminal,
-            vision: config.plugins.screenshot,
+            filesystem: false,
+            terminal: false,
+            vision: false,
         }
     }
 }

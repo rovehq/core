@@ -211,7 +211,7 @@ async fn print_official_systems(config: &Config) -> Result<()> {
 
     println!("Official system extensions:");
     for system in OFFICIAL_SYSTEMS {
-        let state = system_state(config, &installed, system.id);
+        let state = system_state(&installed, system.id);
         println!("- {} [{}] {}", system.id, state, system.description);
     }
 
@@ -248,7 +248,7 @@ async fn inspect_official_system(config: &Config, name: &str) -> Result<()> {
     println!("name: {}", system.id);
     println!("kind: system");
     println!("source: official");
-    println!("state: {}", system_state(config, &installed, system.id));
+    println!("state: {}", system_state(&installed, system.id));
     println!("description: {}", system.description);
 
     if let Some(plugin) = installed
@@ -274,7 +274,6 @@ async fn enable_official_system(config: &Config, name: &str) -> Result<()> {
             .set_enabled(&plugin.id, true)
             .await
             .context("Failed to enable installed system")?;
-        disable_legacy_system_flag(config, name)?;
         println!("Enabled system '{}'.", name);
         return Ok(());
     }
@@ -290,14 +289,12 @@ async fn disable_official_system(config: &Config, name: &str) -> Result<()> {
             .set_enabled(&plugin.id, false)
             .await
             .context("Failed to disable installed system")?;
-        disable_legacy_system_flag(config, name)?;
         println!("Disabled system '{}'.", name);
         return Ok(());
     }
 
-    set_legacy_system_flag(config, name, false)?;
     println!(
-        "Disabled legacy built-in compatibility for '{}'. Install it with `rove system install {}` to use the official extension path.",
+        "System '{}' is not installed. Install it with `rove system install {}`.",
         name, name
     );
     Ok(())
@@ -317,35 +314,35 @@ async fn remove_official_system(config: &Config, name: &str) -> Result<()> {
                 format!("Failed to remove installed system directory '{}'", install_dir.display())
             })?;
         }
-        disable_legacy_system_flag(config, name)?;
         println!("Removed system '{}'.", name);
         return Ok(());
     }
 
-    set_legacy_system_flag(config, name, false)?;
-    println!("Disabled legacy built-in system '{}'.", name);
+    println!("System '{}' is not installed.", name);
     Ok(())
 }
 
 async fn install_official_system(config: &Config, name: &str, upgrade: bool) -> Result<()> {
     let system = official_system(name).context("Unknown official system")?;
-    let package_dir = stage_official_system_package(system)?;
+    let registry_dir = ensure_official_system_published(config, system).await?;
+    let registry = registry_dir.to_string_lossy().to_string();
+    let version = env!("CARGO_PKG_VERSION");
 
     let installed = if upgrade {
         crate::cli::plugins::upgrade_checked(
             config,
-            package_dir.path().to_string_lossy().as_ref(),
-            None,
-            None,
+            system.id,
+            Some(registry.as_str()),
+            Some(version),
             Some(PluginType::Workspace),
         )
         .await?
     } else {
         match crate::cli::plugins::install_checked(
             config,
-            package_dir.path().to_string_lossy().as_ref(),
-            None,
-            None,
+            system.id,
+            Some(registry.as_str()),
+            Some(version),
             Some(PluginType::Workspace),
         )
         .await
@@ -354,9 +351,9 @@ async fn install_official_system(config: &Config, name: &str, upgrade: bool) -> 
             Err(error) if error.to_string().contains("already installed") => {
                 crate::cli::plugins::upgrade_checked(
                     config,
-                    package_dir.path().to_string_lossy().as_ref(),
-                    None,
-                    None,
+                    system.id,
+                    Some(registry.as_str()),
+                    Some(version),
                     Some(PluginType::Workspace),
                 )
                 .await?
@@ -365,7 +362,6 @@ async fn install_official_system(config: &Config, name: &str, upgrade: bool) -> 
         }
     };
 
-    disable_legacy_system_flag(config, name)?;
     println!(
         "{} official system '{}' [{}] version={}",
         if upgrade { "Upgraded" } else { "Installed" },
@@ -374,6 +370,23 @@ async fn install_official_system(config: &Config, name: &str, upgrade: bool) -> 
         installed.version
     );
     Ok(())
+}
+
+async fn ensure_official_system_published(
+    config: &Config,
+    system: &OfficialSystem,
+) -> Result<PathBuf> {
+    let registry_dir = official_registry_dir(config);
+    let version_dir = registry_dir.join(system.id).join(env!("CARGO_PKG_VERSION"));
+    if version_dir.exists() {
+        return Ok(registry_dir);
+    }
+
+    let package_dir = stage_official_system_package(system)?;
+    crate::cli::plugins::publish_source_to_registry(package_dir.path(), &registry_dir, true)
+        .await
+        .with_context(|| format!("Failed to publish official system '{}'", system.id))?;
+    Ok(registry_dir)
 }
 
 fn stage_official_system_package(system: &OfficialSystem) -> Result<TempDir> {
@@ -504,7 +517,7 @@ async fn resolve_installed_official_system(
         .context("Failed to fetch installed system by name")
 }
 
-fn system_state(config: &Config, installed: &[InstalledPlugin], id: &str) -> &'static str {
+fn system_state(installed: &[InstalledPlugin], id: &str) -> &'static str {
     if let Some(plugin) = installed.iter().find(|plugin| plugin.id == id) {
         return if plugin.enabled {
             "installed"
@@ -513,40 +526,15 @@ fn system_state(config: &Config, installed: &[InstalledPlugin], id: &str) -> &'s
         };
     }
 
-    if legacy_system_flag(config, id) {
-        "legacy-enabled"
-    } else {
-        "available"
-    }
+    "available"
 }
 
 fn installed_system_dir(config: &Config, id: &str) -> PathBuf {
     config.core.data_dir.join("plugins").join(id)
 }
 
-fn disable_legacy_system_flag(config: &Config, name: &str) -> Result<()> {
-    set_legacy_system_flag(config, name, false)
-}
-
-fn set_legacy_system_flag(config: &Config, name: &str, enabled: bool) -> Result<()> {
-    let mut config = config.clone();
-    match name {
-        "filesystem" => config.plugins.fs_editor = enabled,
-        "terminal" => config.plugins.terminal = enabled,
-        "vision" => config.plugins.screenshot = enabled,
-        _ => bail!("Unknown official system '{}'", name),
-    }
-    config.save()?;
-    Ok(())
-}
-
-fn legacy_system_flag(config: &Config, name: &str) -> bool {
-    match name {
-        "filesystem" => config.plugins.fs_editor,
-        "terminal" => config.plugins.terminal,
-        "vision" => config.plugins.screenshot,
-        _ => false,
-    }
+fn official_registry_dir(config: &Config) -> PathBuf {
+    config.core.data_dir.join("registries").join("official")
 }
 
 fn plugin_public_kind(plugin: &InstalledPlugin) -> &'static str {
@@ -629,7 +617,7 @@ fn system_tools(id: &str) -> Vec<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{official_system, system_state};
+    use super::{official_system, official_registry_dir, system_state};
     use crate::config::Config;
     use crate::storage::InstalledPlugin;
 
@@ -659,16 +647,21 @@ mod tests {
 
     #[test]
     fn system_state_prefers_installed_record_over_legacy_flag() {
-        let mut config = Config::default();
-        config.plugins.terminal = true;
-
         let installed = vec![installed_plugin("terminal", false)];
         assert_eq!(
-            system_state(&config, &installed, "terminal"),
+            system_state(&installed, "terminal"),
             "installed-disabled"
         );
 
         let enabled = vec![installed_plugin("terminal", true)];
-        assert_eq!(system_state(&config, &enabled, "terminal"), "installed");
+        assert_eq!(system_state(&enabled, "terminal"), "installed");
+        assert_eq!(system_state(&[], "terminal"), "available");
+    }
+
+    #[test]
+    fn official_registry_dir_is_under_data_dir() {
+        let config = Config::default();
+        let registry_dir = official_registry_dir(&config);
+        assert!(registry_dir.ends_with("registries/official"));
     }
 }

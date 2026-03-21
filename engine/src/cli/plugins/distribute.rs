@@ -38,6 +38,12 @@ pub(super) struct BundleOutput {
     manifest: Manifest,
 }
 
+pub(crate) struct PublishedBundleOutput {
+    pub destination: PathBuf,
+    pub plugin_id: String,
+    pub version: String,
+}
+
 pub async fn handle_pack(source: Option<&str>, out: Option<&Path>, no_build: bool) -> Result<()> {
     let bundle = prepare_distribution_bundle(source, out, no_build).await?;
 
@@ -60,65 +66,30 @@ pub async fn handle_publish(
     no_build: bool,
 ) -> Result<()> {
     let bundle = prepare_distribution_bundle(source, None, no_build).await?;
-    let destination = registry_dir
-        .join(&bundle.plugin_id)
-        .join(&bundle.manifest.version);
-
-    if destination.exists() {
-        bail!(
-            "Registry destination '{}' already exists",
-            destination.display()
-        );
-    }
-
-    fs::create_dir_all(
-        destination
-            .parent()
-            .context("Registry destination has no parent")?,
-    )
-    .with_context(|| format!("Failed to create '{}'", registry_dir.display()))?;
-    copy_tree(&bundle.bundle_dir, &destination)?;
-    let published_at = unix_now()?;
-    let bundle_rel = PathBuf::from(&bundle.plugin_id).join(&bundle.manifest.version);
-    let runtime_path = destination
-        .join(RUNTIME_FILE)
-        .exists()
-        .then(|| bundle_rel.join(RUNTIME_FILE).display().to_string());
-    let artifact_path =
-        release_artifact_name(&destination).map(|name| bundle_rel.join(name).display().to_string());
-    let readme_path = destination
-        .join("README.md")
-        .exists()
-        .then(|| bundle_rel.join("README.md").display().to_string());
-    update_registry_metadata(
-        registry_dir,
-        &bundle.plugin_id,
-        &bundle.manifest,
-        PublishedBundle {
-            version: bundle.manifest.version.clone(),
-            published_at,
-            bundle_path: bundle_rel.display().to_string(),
-            manifest_path: bundle_rel.join(MANIFEST_FILE).display().to_string(),
-            package_path: bundle_rel.join(PACKAGE_FILE).display().to_string(),
-            runtime_path,
-            artifact_path,
-            readme_path,
-            release_path: bundle_rel.join("release.json").display().to_string(),
-        },
-    )?;
+    let published = publish_prepared_bundle(bundle, registry_dir)?;
 
     println!("Published plugin bundle:");
-    println!("id: {}", bundle.plugin_id);
-    println!("version: {}", bundle.manifest.version);
-    println!("registry path: {}", destination.display());
+    println!("id: {}", published.plugin_id);
+    println!("version: {}", published.version);
+    println!("registry path: {}", published.destination.display());
     println!(
         "Install with: rove plugin install {} --registry {} --version {}",
-        bundle.plugin_id,
+        published.plugin_id,
         registry_dir.display(),
-        bundle.manifest.version
+        published.version
     );
 
     Ok(())
+}
+
+pub(crate) async fn publish_source_to_registry(
+    source: &Path,
+    registry_dir: &Path,
+    no_build: bool,
+) -> Result<PublishedBundleOutput> {
+    let source_owned = source.to_string_lossy().to_string();
+    let bundle = prepare_distribution_bundle(Some(source_owned.as_str()), None, no_build).await?;
+    publish_prepared_bundle(bundle, registry_dir)
 }
 
 pub(super) async fn prepare_distribution_bundle(
@@ -290,6 +261,64 @@ pub(super) async fn prepare_distribution_bundle(
     })
 }
 
+fn publish_prepared_bundle(
+    bundle: BundleOutput,
+    registry_dir: &Path,
+) -> Result<PublishedBundleOutput> {
+    let destination = registry_dir
+        .join(&bundle.plugin_id)
+        .join(&bundle.manifest.version);
+
+    if destination.exists() {
+        bail!(
+            "Registry destination '{}' already exists",
+            destination.display()
+        );
+    }
+
+    fs::create_dir_all(
+        destination
+            .parent()
+            .context("Registry destination has no parent")?,
+    )
+    .with_context(|| format!("Failed to create '{}'", registry_dir.display()))?;
+    copy_tree(&bundle.bundle_dir, &destination)?;
+    let published_at = unix_now()?;
+    let bundle_rel = PathBuf::from(&bundle.plugin_id).join(&bundle.manifest.version);
+    let runtime_path = destination
+        .join(RUNTIME_FILE)
+        .exists()
+        .then(|| bundle_rel.join(RUNTIME_FILE).display().to_string());
+    let artifact_path =
+        release_artifact_name(&destination).map(|name| bundle_rel.join(name).display().to_string());
+    let readme_path = destination
+        .join("README.md")
+        .exists()
+        .then(|| bundle_rel.join("README.md").display().to_string());
+    update_registry_metadata(
+        registry_dir,
+        &bundle.plugin_id,
+        &bundle.manifest,
+        PublishedBundle {
+            version: bundle.manifest.version.clone(),
+            published_at,
+            bundle_path: bundle_rel.display().to_string(),
+            manifest_path: bundle_rel.join(MANIFEST_FILE).display().to_string(),
+            package_path: bundle_rel.join(PACKAGE_FILE).display().to_string(),
+            runtime_path,
+            artifact_path,
+            readme_path,
+            release_path: bundle_rel.join("release.json").display().to_string(),
+        },
+    )?;
+
+    Ok(PublishedBundleOutput {
+        destination,
+        plugin_id: bundle.plugin_id,
+        version: bundle.manifest.version,
+    })
+}
+
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)
         .with_context(|| format!("Failed to create '{}'", destination.display()))?;
@@ -341,7 +370,7 @@ mod tests {
     use serde_json::Value;
     use tempfile::TempDir;
 
-    use super::{copy_tree, prepare_distribution_bundle};
+    use super::{copy_tree, prepare_distribution_bundle, publish_source_to_registry};
 
     fn write_sample_package(root: &Path) {
         fs::create_dir_all(root).expect("package root");
@@ -491,6 +520,27 @@ mod tests {
         assert!(bundle.bundle_dir.join("plugin-package.json").exists());
         assert!(bundle.bundle_dir.join("runtime.json").exists());
         assert!(!bundle.bundle_dir.join("github-mcp").exists());
+    }
+
+    #[tokio::test]
+    async fn publish_source_to_registry_writes_catalog_metadata() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let package_dir = temp_dir.path().join("sample");
+        let registry_dir = temp_dir.path().join("registry");
+        write_sample_package(&package_dir);
+
+        let published = publish_source_to_registry(&package_dir, &registry_dir, true)
+            .await
+            .expect("publish source");
+
+        assert!(published.destination.exists());
+        assert!(registry_dir.join("registry.json").exists());
+        assert!(
+            registry_dir
+                .join("sample-skill")
+                .join("index.json")
+                .exists()
+        );
     }
 
     #[test]
