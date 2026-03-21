@@ -18,10 +18,15 @@ use super::webui::WebUIConfig;
 /// Main configuration structure loaded from `~/.rove/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
+    #[serde(default)]
     pub core: CoreConfig,
+    #[serde(default)]
     pub llm: LLMConfig,
+    #[serde(default)]
     pub tools: ToolsConfig,
+    #[serde(default)]
     pub plugins: PluginsConfig,
+    #[serde(default)]
     pub security: SecurityConfig,
     #[serde(default)]
     pub agent: AgentConfig,

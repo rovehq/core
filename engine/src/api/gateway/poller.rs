@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::cli::bootstrap::build_task_agent;
-use sdk::TaskSource;
+use sdk::{RunContextId, RunIsolation, RunMode, TaskSource};
 
 use super::{Gateway, Task};
 
@@ -110,6 +110,9 @@ impl Gateway {
                 input: task_row.input.clone(),
                 source: task_source,
                 risk_tier_override: None,
+                run_context_id: RunContextId(task_row.id.clone()),
+                run_mode: RunMode::Serial,
+                run_isolation: RunIsolation::None,
                 session_id: task_row
                     .session_id
                     .and_then(|value| Uuid::parse_str(&value).ok()),

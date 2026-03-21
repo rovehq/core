@@ -138,6 +138,7 @@ fn title_case(part: &str) -> String {
 fn plugin_type_name(plugin_type: PluginScaffoldType) -> &'static str {
     match plugin_type {
         PluginScaffoldType::Skill => "Skill",
+        PluginScaffoldType::System => "Workspace",
         PluginScaffoldType::Channel => "Channel",
     }
 }

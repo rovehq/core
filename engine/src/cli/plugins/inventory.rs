@@ -31,6 +31,34 @@ pub async fn handle_inspect(config: &Config, selector: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn handle_list_filtered(
+    config: &Config,
+    format: OutputFormat,
+    kind: &str,
+) -> Result<()> {
+    let database = open_database(config).await?;
+    let plugins = filter_installed_plugins(&list_installed_plugins(&database).await?, kind);
+
+    match format {
+        OutputFormat::Text => print_filtered_list(&plugins, kind),
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({ kind: plugins }))?
+            );
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn handle_inspect_filtered(config: &Config, selector: &str, kind: &str) -> Result<()> {
+    let database = open_database(config).await?;
+    let plugin = resolve_filtered_plugin(&database, selector, kind).await?;
+    print_plugin_details(&plugin);
+    Ok(())
+}
+
 pub async fn handle_set_enabled(config: &Config, selector: &str, enabled: bool) -> Result<()> {
     let database = open_database(config).await?;
     let plugin = set_installed_plugin_enabled(&database, selector, enabled).await?;
@@ -39,10 +67,40 @@ pub async fn handle_set_enabled(config: &Config, selector: &str, enabled: bool) 
     Ok(())
 }
 
+pub async fn handle_set_enabled_filtered(
+    config: &Config,
+    selector: &str,
+    enabled: bool,
+    kind: &str,
+) -> Result<()> {
+    let database = open_database(config).await?;
+    let plugin = resolve_filtered_plugin(&database, selector, kind).await?;
+    database
+        .installed_plugins()
+        .set_enabled(&plugin.id, enabled)
+        .await
+        .context("Failed to update installed plugin state")?;
+    let state = if enabled { "enabled" } else { "disabled" };
+    println!("{} '{}' {}.", kind, plugin.name, state);
+    Ok(())
+}
+
 pub async fn handle_remove(config: &Config, selector: &str) -> Result<()> {
     let database = open_database(config).await?;
     let plugin = remove_installed_plugin(&database, selector).await?;
     println!("Removed plugin '{}'.", plugin.name);
+    Ok(())
+}
+
+pub async fn handle_remove_filtered(config: &Config, selector: &str, kind: &str) -> Result<()> {
+    let database = open_database(config).await?;
+    let plugin = resolve_filtered_plugin(&database, selector, kind).await?;
+    database
+        .installed_plugins()
+        .delete_plugin(&plugin.id)
+        .await
+        .context("Failed to remove installed plugin")?;
+    println!("Removed {} '{}'.", kind, plugin.name);
     Ok(())
 }
 
@@ -58,6 +116,24 @@ pub(super) async fn list_installed_plugins(database: &Database) -> Result<Vec<In
         .list_plugins()
         .await
         .context("Failed to list installed plugins")
+}
+
+pub(super) async fn resolve_filtered_plugin(
+    database: &Database,
+    selector: &str,
+    kind: &str,
+) -> Result<InstalledPlugin> {
+    let plugin = resolve_installed_plugin(database, selector).await?;
+    if plugin_public_kind(&plugin) == kind {
+        return Ok(plugin);
+    }
+
+    bail!(
+        "'{}' is installed as a {} but this command expects a {}",
+        plugin.name,
+        plugin_public_kind(&plugin),
+        kind
+    )
 }
 
 pub(super) async fn resolve_installed_plugin(
@@ -127,6 +203,45 @@ fn print_plugin_list(plugins: &[InstalledPlugin]) {
             "- {} [{}] type={} version={} tier={}",
             plugin.name, state, plugin.plugin_type, plugin.version, plugin.trust_tier
         );
+    }
+}
+
+fn print_filtered_list(plugins: &[InstalledPlugin], kind: &str) {
+    if plugins.is_empty() {
+        println!("No installed {}s.", kind);
+        return;
+    }
+
+    println!("Installed {}s:", kind);
+    for plugin in plugins {
+        let state = if plugin.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        println!(
+            "- {} [{}] version={} tier={}",
+            plugin.name, state, plugin.version, plugin.trust_tier
+        );
+    }
+}
+
+fn filter_installed_plugins(plugins: &[InstalledPlugin], kind: &str) -> Vec<InstalledPlugin> {
+    plugins
+        .iter()
+        .filter(|plugin| plugin_public_kind(plugin) == kind)
+        .cloned()
+        .collect()
+}
+
+fn plugin_public_kind(plugin: &InstalledPlugin) -> &'static str {
+    match plugin.plugin_type.as_str() {
+        "Skill" => "skill",
+        "Workspace" => "system",
+        "Channel" => "channel",
+        "Mcp" => "connector",
+        "Brain" => "brain",
+        _ => "extension",
     }
 }
 

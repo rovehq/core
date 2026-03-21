@@ -52,6 +52,7 @@ pub async fn start_daemon(
     port: u16,
     db: Arc<Database>,
     gateway: Arc<Gateway>,
+    webui_enabled: bool,
 ) -> Result<()> {
     let port = if port == 0 {
         std::env::var("ROVE_PORT")
@@ -86,6 +87,16 @@ pub async fn start_daemon(
         .route("/api/run", post(api::execute_task))
         .route("/api/v1/execute", post(api::execute_task))
         .route("/api/v1/steering/active", get(api::active_skills))
+        .route("/api/v1/policies", get(api::list_policies))
+        .route("/api/v1/policies/active", get(api::active_policies))
+        .route("/api/v1/policies/explain", post(api::explain_policy))
+        .route("/api/v1/services", get(api::list_services))
+        .route("/api/v1/services/:name", get(api::service_status))
+        .route("/api/v1/services/:name/enable", post(api::enable_service))
+        .route("/api/v1/services/:name/disable", post(api::disable_service))
+        .route("/api/v1/channels", get(api::list_channels))
+        .route("/api/v1/remote/status", get(api::remote_status))
+        .route("/api/v1/remote/nodes", get(api::remote_nodes))
         .route("/v1/chat/completions", post(mcp::mcp_chat_completions))
         .route("/ws/task", get(ws::task_ws_handler))
         // Legacy telemetry endpoint, also protected
@@ -97,29 +108,33 @@ pub async fn start_daemon(
 
     // Health check is always public (for process monitoring)
     // Serve WebUI static files from Next.js build
-    let webui_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| {
-            p.parent()
-                .map(|p| p.join("../../webui/dist").canonicalize().ok())
-        })
-        .flatten()
-        .or_else(|| {
-            std::path::PathBuf::from("core/webui/dist")
-                .canonicalize()
-                .ok()
-        })
-        .unwrap_or_else(|| std::path::PathBuf::from("core/webui"));
+    let public = if webui_enabled {
+        let webui_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| {
+                p.parent()
+                    .map(|p| p.join("../../webui/dist").canonicalize().ok())
+            })
+            .flatten()
+            .or_else(|| {
+                std::path::PathBuf::from("core/webui/dist")
+                    .canonicalize()
+                    .ok()
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from("core/webui"));
 
-    info!("Serving WebUI from: {:?}", webui_dir);
+        info!("Serving WebUI from: {:?}", webui_dir);
 
-    let public = Router::new()
-        .route("/api/v1/health", get(api::health_check))
-        // Serve WebUI static files
-        .nest_service(
-            "/",
-            ServeDir::new(&webui_dir).append_index_html_on_directories(true),
-        );
+        Router::new()
+            .route("/api/v1/health", get(api::health_check))
+            .nest_service(
+                "/",
+                ServeDir::new(&webui_dir).append_index_html_on_directories(true),
+            )
+    } else {
+        info!("WebUI service disabled; serving control-plane API only");
+        Router::new().route("/api/v1/health", get(api::health_check))
+    };
 
     let app = Router::new()
         .merge(protected)

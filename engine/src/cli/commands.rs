@@ -52,6 +52,14 @@ pub enum Command {
         #[arg(long)]
         stream: bool,
 
+        /// Run this task in its own top-level run context.
+        #[arg(long)]
+        parallel: bool,
+
+        /// Explicit workspace isolation mode for parallel write-heavy tasks.
+        #[arg(long, value_enum)]
+        isolate: Option<TaskIsolationArg>,
+
         /// Presentation mode for task execution.
         #[arg(long, value_enum, default_value_t = TaskView::Clean)]
         view: TaskView,
@@ -77,12 +85,14 @@ pub enum Command {
     Unlock,
 
     /// Plugin management.
+    #[command(hide = true)]
     Plugin {
         #[command(subcommand)]
         action: PluginAction,
     },
 
     /// Steering management.
+    #[command(hide = true)]
     Steer {
         #[command(subcommand)]
         action: SteeringAction,
@@ -117,9 +127,75 @@ pub enum Command {
     },
 
     /// MCP server management.
+    #[command(hide = true)]
     Mcp {
         #[command(subcommand)]
         action: McpAction,
+    },
+
+    /// Policy management.
+    #[command(alias = "steering")]
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+
+        /// Optional policy directory override.
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+    },
+
+    /// Skill extension management.
+    Skill {
+        #[command(subcommand)]
+        action: ExtensionAction,
+    },
+
+    /// System extension management.
+    System {
+        #[command(subcommand)]
+        action: ExtensionAction,
+    },
+
+    /// Connector management.
+    Connector {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+
+    /// Channel extension management.
+    Channel {
+        #[command(subcommand)]
+        action: ExtensionAction,
+    },
+
+    /// Optional service management.
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+
+    /// Remote node and mesh management.
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
+
+    /// Friendly install shortcut for common optional capabilities.
+    Add {
+        #[arg(value_enum)]
+        target: AddTarget,
+    },
+
+    /// Friendly enable shortcut for common services.
+    Activate {
+        #[arg(value_enum)]
+        target: ActivateTarget,
+    },
+
+    /// Friendly disable shortcut for common services.
+    Deactivate {
+        #[arg(value_enum)]
+        target: ActivateTarget,
     },
 
     /// Local brain management.
@@ -253,9 +329,106 @@ pub enum PluginAction {
     Remove { name: String },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum ExtensionAction {
+    /// Create a new extension authoring scaffold.
+    New {
+        /// Directory name for the new extension package.
+        name: String,
+    },
+    /// Build and run a local extension package against a mock runtime.
+    Test {
+        /// Extension package directory. Defaults to the current directory.
+        source: Option<String>,
+
+        /// Specific exported tool to call.
+        #[arg(long)]
+        tool: Option<String>,
+
+        /// Primary task input for the extension.
+        #[arg(long)]
+        input: Option<String>,
+
+        /// File paths to include in the extension input.
+        #[arg(long = "file", value_name = "FILE")]
+        files: Vec<PathBuf>,
+
+        /// Additional extension input fields in key=value form.
+        #[arg(long = "arg", value_name = "KEY=VALUE")]
+        args: Vec<String>,
+
+        /// Skip cargo test/build before executing the extension.
+        #[arg(long)]
+        no_build: bool,
+    },
+    /// Create a normalized distribution bundle directory.
+    Pack {
+        /// Extension package directory. Defaults to the current directory.
+        source: Option<String>,
+
+        /// Optional output directory for the generated bundle.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+
+        /// Skip cargo test/build before packing.
+        #[arg(long)]
+        no_build: bool,
+    },
+    /// Publish a bundled extension into a registry directory structure.
+    Publish {
+        /// Extension package directory. Defaults to the current directory.
+        source: Option<String>,
+
+        /// Registry directory that will receive id/version bundles.
+        #[arg(long = "registry-dir", value_name = "DIR")]
+        registry_dir: PathBuf,
+
+        /// Skip cargo test/build before publishing.
+        #[arg(long)]
+        no_build: bool,
+    },
+    /// Install an extension from a local package directory or a registry.
+    Install {
+        /// Package directory, or extension id when --registry is set.
+        source: String,
+
+        /// Static registry directory or base URL.
+        #[arg(long, value_name = "REGISTRY")]
+        registry: Option<String>,
+
+        /// Specific version to install from the registry.
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// Upgrade or replace an installed extension from a package directory or registry.
+    Upgrade {
+        /// Package directory, or extension id when --registry is set.
+        source: String,
+
+        /// Static registry directory or base URL.
+        #[arg(long, value_name = "REGISTRY")]
+        registry: Option<String>,
+
+        /// Specific version to upgrade to from the registry.
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// List installed extensions of this kind.
+    List,
+    /// Show one installed extension.
+    Inspect { name: String },
+    /// Enable an installed extension.
+    Enable { name: String },
+    /// Disable an installed extension.
+    Disable { name: String },
+    /// Remove an extension.
+    Remove { name: String },
+}
+
 #[derive(Clone, Debug, ValueEnum)]
 pub enum PluginScaffoldType {
     Skill,
+    System,
     Channel,
 }
 
@@ -272,6 +445,44 @@ pub enum SteeringAction {
     Off { name: String },
     /// Restore built-in steering defaults if missing.
     Default,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PolicyAction {
+    /// List all loaded policy files.
+    List,
+    /// Show the current active policy stack.
+    #[command(alias = "active")]
+    Status,
+    /// Show one policy file by exact name.
+    Show { name: String },
+    /// Enable a policy by exact name.
+    Enable { name: String },
+    /// Disable a policy by exact name.
+    Disable { name: String },
+    /// Restore built-in policy defaults if missing.
+    Default,
+    /// Explain which policies match a task.
+    Explain {
+        /// Task text to evaluate against active policies.
+        task: Vec<String>,
+    },
+    /// Test policy activation and merged directives for a task.
+    Test {
+        /// Task text to evaluate against active policies.
+        task: Vec<String>,
+    },
+    /// Add a new user or workspace policy file.
+    Add {
+        /// Policy name or file stem.
+        name: String,
+
+        /// Scope for the new policy.
+        #[arg(long, value_enum, default_value_t = PolicyScopeArg::Workspace)]
+        scope: PolicyScopeArg,
+    },
+    /// Remove a policy file.
+    Remove { name: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -345,6 +556,76 @@ pub enum BrainAction {
     Stop,
     /// Verify llama-server is responding.
     Verify,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServiceAction {
+    /// List supported services and their states.
+    List,
+    /// Show one service.
+    Show { name: ServiceTarget },
+    /// Enable a service.
+    Enable { name: ServiceTarget },
+    /// Disable a service.
+    Disable { name: ServiceTarget },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RemoteAction {
+    /// Show remote service status for this node.
+    Status,
+    /// List trusted or paired nodes.
+    Nodes,
+    /// Rename this node.
+    Rename { name: String },
+    /// Pair with a remote node descriptor or invite.
+    Pair { target: String },
+    /// Remove a paired node.
+    Unpair { name: String },
+    /// Mark a paired node as trusted.
+    Trust { name: String },
+    /// Send a task to a specific remote node.
+    Send {
+        /// Remote node name.
+        node: String,
+
+        /// Task prompt to forward.
+        prompt: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum PolicyScopeArg {
+    User,
+    Workspace,
+    Project,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ServiceTarget {
+    Logging,
+    Webui,
+    Remote,
+    #[value(name = "connector-engine")]
+    ConnectorEngine,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum TaskIsolationArg {
+    Worktree,
+    Snapshot,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum AddTarget {
+    Mcp,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ActivateTarget {
+    Logging,
+    Webui,
+    Remote,
 }
 
 #[derive(Subcommand, Debug)]

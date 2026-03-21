@@ -6,6 +6,7 @@
 pub mod agent_handle;
 pub mod bus_handle;
 pub mod config_handle;
+pub mod control;
 /// Core tool trait and context
 pub mod core_tool;
 pub mod crypto_handle;
@@ -37,6 +38,10 @@ pub use brain::{
 };
 pub use bus_handle::{BusHandle, BusHandleImpl};
 pub use config_handle::{ConfigHandle, ConfigHandleImpl};
+pub use control::{
+    BrainFamily, ExtensionKind, NodeExecutionRole, NodeIdentity, NodeProfile, PolicyScope,
+    RemoteEnvelope, RunContextId, RunIsolation, RunMode, ServiceKind,
+};
 pub use core_tool::{CoreContext, CoreTool};
 pub use crypto_handle::{CryptoHandle, CryptoHandleImpl};
 pub use db_handle::{DbHandle, DbHandleImpl};

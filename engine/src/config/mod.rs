@@ -77,6 +77,7 @@ pub use webui::*;
 use sdk::errors::EngineError;
 use std::fs;
 use std::path::{Path, PathBuf};
+use toml::{map::Map, Value};
 
 impl Config {
     /// Load configuration from the default location (~/.rove/config.toml)
@@ -112,7 +113,12 @@ impl Config {
         let contents = fs::read_to_string(path)
             .map_err(|e| EngineError::Config(format!("Failed to read config file: {}", e)))?;
 
-        let mut config: Config = toml::from_str(&contents)
+        let mut raw: Value = toml::from_str(&contents)
+            .map_err(|e| EngineError::Config(format!("Failed to parse config: {}", e)))?;
+        normalize_public_aliases(&mut raw)?;
+
+        let mut config: Config = raw
+            .try_into()
             .map_err(|e| EngineError::Config(format!("Failed to parse config: {}", e)))?;
 
         // Clamp and validate configuration
@@ -132,7 +138,7 @@ impl Config {
         let mut config = Self::default();
         config.clamp_and_validate()?;
 
-        let toml_string = toml::to_string_pretty(&config)
+        let toml_string = config_to_toml(&config)
             .map_err(|e| EngineError::Config(format!("Failed to serialize config: {}", e)))?;
 
         fs::write(path, &toml_string)
@@ -167,7 +173,7 @@ impl Config {
         let mut config = self.clone();
         config.clamp_and_validate()?;
 
-        let toml_string = toml::to_string_pretty(&config)
+        let toml_string = config_to_toml(&config)
             .map_err(|e| EngineError::Config(format!("Failed to serialize config: {}", e)))?;
 
         fs::write(path, &toml_string)
@@ -279,6 +285,303 @@ impl Config {
         }
 
         Ok(())
+    }
+}
+
+fn config_to_toml(config: &Config) -> Result<String, toml::ser::Error> {
+    let mut value = Value::try_from(config)?;
+    let table = value
+        .as_table_mut()
+        .expect("Config serialization should produce a TOML table");
+
+    if let Some(core) = table.get("core").cloned() {
+        table.insert("kernel".to_string(), core);
+    }
+
+    if let Some(steering) = table.get("steering").cloned() {
+        table.insert("policy".to_string(), policy_alias_value(steering));
+    }
+
+    table.insert("services".to_string(), Value::Table(public_services_table(config)));
+    table.insert("channels".to_string(), Value::Table(public_channels_table(config)));
+    insert_public_brain_aliases(table, config)?;
+
+    toml::to_string_pretty(&value)
+}
+
+fn normalize_public_aliases(value: &mut Value) -> Result<(), EngineError> {
+    let table = value.as_table_mut().ok_or_else(|| {
+        EngineError::Config("Config root must be a TOML table".to_string())
+    })?;
+
+    if !table.contains_key("core") {
+        if let Some(kernel) = table.get("kernel").cloned() {
+            table.insert("core".to_string(), kernel);
+        }
+    }
+
+    if !table.contains_key("steering") {
+        if let Some(policy) = table.get("policy").cloned() {
+            table.insert("steering".to_string(), steering_from_policy_value(policy));
+        }
+    }
+
+    if let Some(services) = table
+        .get("services")
+        .and_then(Value::as_table)
+        .cloned()
+    {
+        if !table.contains_key("webui") {
+            if let Some(webui) = services.get("webui").cloned() {
+                table.insert("webui".to_string(), webui);
+            }
+        }
+
+        if !table.contains_key("ws_client") {
+            if let Some(remote) = services.get("remote").cloned() {
+                table.insert("ws_client".to_string(), remote);
+            }
+        }
+
+        if let Some(logging) = services.get("logging").and_then(Value::as_table) {
+            let core = ensure_table(table, "core");
+            if !core.contains_key("log_level") {
+                if let Some(level) = logging.get("level").cloned() {
+                    core.insert("log_level".to_string(), level);
+                } else if let Some(enabled) = logging.get("enabled").and_then(Value::as_bool) {
+                    core.insert(
+                        "log_level".to_string(),
+                        Value::String(if enabled { "info" } else { "error" }.to_string()),
+                    );
+                }
+            }
+        }
+    }
+
+    if !table.contains_key("telegram") {
+        if let Some(channels) = table.get("channels").and_then(Value::as_table) {
+            if let Some(telegram) = channels.get("telegram").cloned() {
+                table.insert("telegram".to_string(), telegram);
+            }
+        }
+    }
+
+    if let Some(brains) = table.get("brains").and_then(Value::as_table).cloned() {
+        let has_legacy_shape =
+            brains.contains_key("enabled") || brains.contains_key("fallback") || brains.contains_key("ram_limit_mb");
+        if !has_legacy_shape {
+            if let Some(dispatch) = brains.get("dispatch").cloned() {
+                table.insert("brains".to_string(), dispatch);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_table<'a>(table: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {
+    if !table.contains_key(key) {
+        table.insert(key.to_string(), Value::Table(Map::new()));
+    }
+    table
+        .get_mut(key)
+        .and_then(Value::as_table_mut)
+        .expect("table entry must be a TOML table")
+}
+
+fn policy_alias_value(steering: Value) -> Value {
+    let mut steering = steering;
+    if let Some(table) = steering.as_table_mut() {
+        if let Some(skill_dir) = table.remove("skill_dir") {
+            table.insert("policy_dir".to_string(), skill_dir);
+        }
+        if let Some(default_skills) = table.remove("default_skills") {
+            table.insert("default_policies".to_string(), default_skills);
+        }
+    }
+    steering
+}
+
+fn steering_from_policy_value(policy: Value) -> Value {
+    let mut policy = policy;
+    if let Some(table) = policy.as_table_mut() {
+        if let Some(policy_dir) = table.remove("policy_dir") {
+            table.insert("skill_dir".to_string(), policy_dir);
+        }
+        if let Some(default_policies) = table.remove("default_policies") {
+            table.insert("default_skills".to_string(), default_policies);
+        }
+    }
+    policy
+}
+
+fn public_services_table(config: &Config) -> Map<String, Value> {
+    let mut services = Map::new();
+
+    let mut logging = Map::new();
+    logging.insert(
+        "enabled".to_string(),
+        Value::Boolean(!config.core.log_level.eq_ignore_ascii_case("error")),
+    );
+    logging.insert("level".to_string(), Value::String(config.core.log_level.clone()));
+    services.insert("logging".to_string(), Value::Table(logging));
+
+    services.insert(
+        "webui".to_string(),
+        Value::try_from(&config.webui).expect("webui config should serialize"),
+    );
+    services.insert(
+        "remote".to_string(),
+        Value::try_from(&config.ws_client).expect("remote config should serialize"),
+    );
+
+    let mut connector_engine = Map::new();
+    connector_engine.insert(
+        "enabled".to_string(),
+        Value::Boolean(!config.mcp.servers.is_empty()),
+    );
+    connector_engine.insert(
+        "configured_servers".to_string(),
+        Value::Integer(config.mcp.servers.len() as i64),
+    );
+    services.insert(
+        "connector_engine".to_string(),
+        Value::Table(connector_engine),
+    );
+
+    services
+}
+
+fn public_channels_table(config: &Config) -> Map<String, Value> {
+    let mut channels = Map::new();
+    channels.insert(
+        "telegram".to_string(),
+        Value::try_from(&config.telegram).expect("telegram config should serialize"),
+    );
+    channels
+}
+
+fn insert_public_brain_aliases(
+    table: &mut Map<String, Value>,
+    config: &Config,
+) -> Result<(), toml::ser::Error> {
+    if !table.contains_key("brains") {
+        table.insert("brains".to_string(), Value::Table(Map::new()));
+    }
+    let brains_table = table
+        .get_mut("brains")
+        .and_then(Value::as_table_mut)
+        .expect("brains entry must be a TOML table");
+    brains_table.insert(
+        "dispatch".to_string(),
+        Value::try_from(&config.brains)?,
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::Config;
+
+    #[test]
+    fn load_accepts_public_section_aliases() {
+        let base = std::env::current_dir()
+            .expect("cwd")
+            .join("target/config-tests")
+            .join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&base).expect("base dir");
+        let workspace = base.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let config_path = base.join("config.toml");
+
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"[kernel]
+workspace = "{workspace}"
+auto_sync = true
+data_dir = "{data_dir}"
+
+[llm]
+default_provider = "ollama"
+sensitivity_threshold = 0.7
+complexity_threshold = 0.7
+
+[security]
+max_risk_tier = 2
+
+[services.logging]
+enabled = false
+level = "error"
+
+[services.webui]
+enabled = true
+bind_addr = "127.0.0.1:3788"
+
+[services.remote]
+enabled = true
+url = "ws://127.0.0.1:4010/ws"
+reconnect_delay_secs = 10
+
+[channels.telegram]
+enabled = true
+allowed_ids = [123]
+
+[policy]
+default_policies = ["rust-safe"]
+auto_detect = true
+policy_dir = "{policy_dir}"
+
+[brains.dispatch]
+enabled = true
+ram_limit_mb = 512
+fallback = "ollama"
+auto_unload = true
+"#,
+                workspace = workspace.display(),
+                data_dir = base.join("data").display(),
+                policy_dir = base.join("policy").display(),
+            ),
+        )
+        .expect("write config");
+
+        let config = Config::load_from_path(&config_path).expect("load config");
+        assert_eq!(config.core.log_level, "error");
+        assert!(config.webui.enabled);
+        assert!(config.ws_client.enabled);
+        assert!(config.telegram.enabled);
+        assert_eq!(config.steering.default_skills, vec!["rust-safe".to_string()]);
+        assert!(config.brains.enabled);
+    }
+
+    #[test]
+    fn save_writes_public_alias_sections() {
+        let base = std::env::current_dir()
+            .expect("cwd")
+            .join("target/config-tests")
+            .join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&base).expect("base dir");
+        let config_path = base.join("config.toml");
+        let mut config = Config::default();
+        config.core.workspace = base.join("workspace");
+        std::fs::create_dir_all(&config.core.workspace).expect("workspace");
+        config.webui.enabled = true;
+        config.ws_client.enabled = true;
+        config.telegram.enabled = true;
+        config.steering.default_skills = vec!["rust-safe".to_string()];
+        config.brains.enabled = true;
+
+        config.save_to_path(&config_path).expect("save config");
+        let raw = std::fs::read_to_string(&config_path).expect("read config");
+        assert!(raw.contains("[kernel]"));
+        assert!(raw.contains("[policy]"));
+        assert!(raw.contains("[services.logging]"));
+        assert!(raw.contains("[services.webui]"));
+        assert!(raw.contains("[services.remote]"));
+        assert!(raw.contains("[channels.telegram]"));
+        assert!(raw.contains("[brains.dispatch]"));
     }
 }
 

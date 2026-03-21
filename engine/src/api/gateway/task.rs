@@ -1,5 +1,5 @@
 use chrono::Utc;
-use sdk::TaskSource;
+use sdk::{RunContextId, RunIsolation, RunMode, TaskSource};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -11,6 +11,9 @@ pub struct Task {
     pub input: String,
     pub source: TaskSource,
     pub risk_tier_override: Option<RiskTier>,
+    pub run_context_id: RunContextId,
+    pub run_mode: RunMode,
+    pub run_isolation: RunIsolation,
     pub session_id: Option<Uuid>,
     pub workspace: Option<PathBuf>,
     pub created_at: i64,
@@ -18,13 +21,30 @@ pub struct Task {
 
 impl Task {
     pub fn build_from_cli(input: impl Into<String>) -> Self {
+        Self::build_from_cli_with_context(
+            input,
+            std::env::current_dir().ok(),
+            RunMode::Serial,
+            RunIsolation::None,
+        )
+    }
+
+    pub fn build_from_cli_with_context(
+        input: impl Into<String>,
+        workspace: Option<PathBuf>,
+        run_mode: RunMode,
+        run_isolation: RunIsolation,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             input: input.into(),
             source: TaskSource::Cli,
             risk_tier_override: None,
+            run_context_id: RunContextId(Uuid::new_v4().to_string()),
+            run_mode,
+            run_isolation,
             session_id: None,
-            workspace: std::env::current_dir().ok(),
+            workspace,
             created_at: Utc::now().timestamp(),
         }
     }
@@ -35,6 +55,9 @@ impl Task {
             input: input.into(),
             source: TaskSource::Telegram(String::new()),
             risk_tier_override: None,
+            run_context_id: RunContextId(Uuid::new_v4().to_string()),
+            run_mode: RunMode::Serial,
+            run_isolation: RunIsolation::None,
             session_id,
             workspace: None,
             created_at: Utc::now().timestamp(),
@@ -47,6 +70,9 @@ impl Task {
             input: input.into(),
             source: TaskSource::WebUI,
             risk_tier_override: None,
+            run_context_id: RunContextId(Uuid::new_v4().to_string()),
+            run_mode: RunMode::Serial,
+            run_isolation: RunIsolation::None,
             session_id,
             workspace: None,
             created_at: Utc::now().timestamp(),

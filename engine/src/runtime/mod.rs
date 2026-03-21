@@ -103,7 +103,12 @@ impl RuntimeManager {
             mcp.clone(),
         );
 
-        builtin::register_all(&mut registry, config.core.workspace.clone()).await?;
+        builtin::register_selected(
+            &mut registry,
+            config.core.workspace.clone(),
+            builtin::BuiltinSelection::from_config(config),
+        )
+        .await?;
 
         register_installed_plugin_schemas(&mut registry, native.as_ref(), &installed_plugins).await;
 

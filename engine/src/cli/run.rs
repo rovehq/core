@@ -1,15 +1,19 @@
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use brain::dispatch::DispatchBrain;
+use sdk::{RunIsolation, RunMode};
+use tempfile::TempDir;
 use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::agent::AgentCore;
 use crate::api::gateway::{Gateway, GatewayConfig, Task, WorkspaceLocks};
-use crate::cli::daemon;
+use crate::cli::{daemon, TaskIsolationArg};
 use crate::cli::database_path::database_path;
 use crate::config::Config;
 use crate::llm::router::LLMRouter;
@@ -22,30 +26,55 @@ use crate::storage::{Database, PendingTaskStatus, TaskRepository};
 use super::output::{OutputFormat, TaskView};
 use super::task_view::{self, DispatchSummary, TaskSuccess};
 
-pub async fn handle_run(
-    task: String,
-    auto_approve: bool,
-    stream: bool,
-    view: TaskView,
-    config: &Config,
-    format: OutputFormat,
-) -> Result<()> {
+pub struct RunRequest {
+    pub task: String,
+    pub auto_approve: bool,
+    pub stream: bool,
+    pub parallel: bool,
+    pub isolate: Option<TaskIsolationArg>,
+    pub view: TaskView,
+    pub format: OutputFormat,
+}
+
+pub async fn handle_run(request: RunRequest, config: &Config) -> Result<()> {
     let mut runtime_config = config.clone();
     if let Ok(current_dir) = std::env::current_dir() {
         runtime_config.core.workspace = current_dir;
     }
-    if auto_approve {
+    if request.auto_approve {
         runtime_config.security.confirm_tier1 = false;
         runtime_config.security.require_explicit_tier2 = false;
     }
 
-    let task_view = view.with_stream(stream);
+    let task_view = request.view.with_stream(request.stream);
+    let run_mode = if request.parallel {
+        RunMode::Parallel
+    } else {
+        RunMode::Serial
+    };
+    let run_isolation = match request.isolate {
+        Some(TaskIsolationArg::Worktree) => RunIsolation::Worktree,
+        Some(TaskIsolationArg::Snapshot) => RunIsolation::Snapshot,
+        None => RunIsolation::None,
+    };
 
-    if daemon::is_running().unwrap_or(false) && !auto_approve {
-        return handle_daemon_run(task, &runtime_config, format, task_view).await;
+    if daemon::is_running().unwrap_or(false)
+        && !request.auto_approve
+        && !request.parallel
+        && request.isolate.is_none()
+    {
+        return handle_daemon_run(request.task, &runtime_config, request.format, task_view).await;
     }
 
-    handle_local_run(task, &runtime_config, format, task_view).await
+    handle_local_run(
+        request.task,
+        &runtime_config,
+        request.format,
+        task_view,
+        run_mode,
+        run_isolation,
+    )
+    .await
 }
 
 async fn handle_local_run(
@@ -53,13 +82,19 @@ async fn handle_local_run(
     runtime_config: &Config,
     format: OutputFormat,
     view: TaskView,
+    run_mode: RunMode,
+    run_isolation: RunIsolation,
 ) -> Result<()> {
-    let database = Database::new(&database_path(runtime_config))
+    let prepared_workspace = prepare_run_workspace(runtime_config, &task, run_mode, run_isolation)?;
+    let mut runtime_config = runtime_config.clone();
+    runtime_config.core.workspace = prepared_workspace.workspace.clone();
+
+    let database = Database::new(&database_path(&runtime_config))
         .await
         .context("Failed to open database")?;
     let db_pool = database.pool().clone();
 
-    let (providers, local_brain) = super::bootstrap::build_providers(runtime_config).await?;
+    let (providers, local_brain) = super::bootstrap::build_providers(&runtime_config).await?;
     let router = Arc::new(LLMRouter::with_local_brain(
         providers,
         Arc::new(runtime_config.llm.clone()),
@@ -69,8 +104,8 @@ async fn handle_local_run(
     let risk_assessor = RiskAssessor::new();
     let task_repo = Arc::new(TaskRepository::new(db_pool.clone()));
     let event_repo = task_repo.clone();
-    let tools = super::bootstrap::build_tools(&database, runtime_config).await?;
-    let steering = load_steering(runtime_config).await;
+    let tools = super::bootstrap::build_tools(&database, &runtime_config).await?;
+    let steering = load_steering(&runtime_config).await;
     let workspace_locks = Arc::new(WorkspaceLocks::new());
     let memory_system = Arc::new(MemorySystem::new_with_config(
         db_pool,
@@ -90,7 +125,12 @@ async fn handle_local_run(
     )?;
     agent.set_memory_system(memory_system);
 
-    let agent_task = Task::build_from_cli(task.clone());
+    let agent_task = Task::build_from_cli_with_context(
+        task.clone(),
+        Some(prepared_workspace.workspace.clone()),
+        run_mode,
+        run_isolation,
+    );
     let task_id = agent_task.id;
     let dispatch = preview_dispatch(&task, view);
     task_view::print_start(&task, &task_id.to_string(), format, view, dispatch.as_ref())?;
@@ -112,7 +152,7 @@ async fn handle_local_run(
         }
     };
 
-    match result {
+    let output = match result {
         Ok(task_result) => {
             let completion_dispatch = dispatch.or_else(|| {
                 Some(DispatchSummary::new(
@@ -142,7 +182,168 @@ async fn handle_local_run(
             task_view::print_failure(&error, format, view)?;
             Err(error)
         }
+    };
+
+    prepared_workspace.cleanup()?;
+    output
+}
+
+struct PreparedRunWorkspace {
+    workspace: PathBuf,
+    cleanup: Option<WorkspaceCleanup>,
+    #[allow(dead_code)]
+    temp_dir: Option<TempDir>,
+}
+
+enum WorkspaceCleanup {
+    Worktree { source: PathBuf, target: PathBuf },
+}
+
+impl PreparedRunWorkspace {
+    fn cleanup(&self) -> Result<()> {
+        if let Some(cleanup) = &self.cleanup {
+            match cleanup {
+                WorkspaceCleanup::Worktree { source, target } => {
+                    let output = Command::new("git")
+                        .arg("-C")
+                        .arg(source)
+                        .args(["worktree", "remove", "--force"])
+                        .arg(target)
+                        .output()
+                        .context("Failed to spawn git worktree remove command")?;
+                    if !output.status.success() {
+                        anyhow::bail!(
+                            "git worktree remove failed: {}",
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
     }
+}
+
+fn prepare_run_workspace(
+    config: &Config,
+    task: &str,
+    run_mode: RunMode,
+    run_isolation: RunIsolation,
+) -> Result<PreparedRunWorkspace> {
+    let workspace = config.core.workspace.clone();
+    if !matches!(run_mode, RunMode::Parallel) {
+        return Ok(PreparedRunWorkspace {
+            workspace,
+            cleanup: None,
+            temp_dir: None,
+        });
+    }
+
+    let write_heavy = task_likely_writes_workspace(task);
+    if !write_heavy {
+        return Ok(PreparedRunWorkspace {
+            workspace,
+            cleanup: None,
+            temp_dir: None,
+        });
+    }
+
+    match run_isolation {
+        RunIsolation::None => anyhow::bail!(
+            "Parallel write-heavy tasks require explicit isolation. Re-run with `--isolate=worktree` for git repositories or `--isolate=snapshot` for non-git workspaces."
+        ),
+        RunIsolation::Worktree => prepare_worktree_workspace(&workspace),
+        RunIsolation::Snapshot => prepare_snapshot_workspace(&workspace),
+    }
+}
+
+fn prepare_worktree_workspace(workspace: &Path) -> Result<PreparedRunWorkspace> {
+    if !workspace.join(".git").exists() {
+        anyhow::bail!(
+            "Worktree isolation requires a git repository at '{}'. Use `--isolate=snapshot` instead.",
+            workspace.display()
+        );
+    }
+
+    let temp_dir = tempfile::tempdir().context("Failed to create worktree temp directory")?;
+    let target = temp_dir.path().join("workspace");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["worktree", "add", "--detach"])
+        .arg(&target)
+        .arg("HEAD")
+        .output()
+        .context("Failed to spawn git worktree command")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    Ok(PreparedRunWorkspace {
+        workspace: target,
+        cleanup: Some(WorkspaceCleanup::Worktree {
+            source: workspace.to_path_buf(),
+            target: temp_dir.path().join("workspace"),
+        }),
+        temp_dir: Some(temp_dir),
+    })
+}
+
+fn prepare_snapshot_workspace(workspace: &Path) -> Result<PreparedRunWorkspace> {
+    let temp_dir = tempfile::tempdir().context("Failed to create snapshot temp directory")?;
+    let target = temp_dir.path().join("workspace");
+    copy_workspace_snapshot(workspace, &target)?;
+
+    Ok(PreparedRunWorkspace {
+        workspace: target,
+        cleanup: None,
+        temp_dir: Some(temp_dir),
+    })
+}
+
+fn copy_workspace_snapshot(source: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if name == ".git" || name == "target" || name == "node_modules" {
+            continue;
+        }
+        let destination = target.join(file_name);
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            copy_workspace_snapshot(&path, &destination)?;
+        } else if metadata.is_file() {
+            fs::copy(&path, &destination)?;
+        }
+    }
+    Ok(())
+}
+
+fn task_likely_writes_workspace(task: &str) -> bool {
+    let task = task.to_ascii_lowercase();
+    [
+        "write",
+        "edit",
+        "update",
+        "modify",
+        "create",
+        "delete",
+        "remove",
+        "rename",
+        "refactor",
+        "commit",
+        "apply",
+        "fix",
+        "change",
+    ]
+    .iter()
+    .any(|needle| task.contains(needle))
 }
 
 async fn handle_daemon_run(

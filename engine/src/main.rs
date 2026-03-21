@@ -7,13 +7,11 @@ use tracing_subscriber::{
     filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
 };
 
-use rove_engine::channels::TelegramBot;
 use rove_engine::cli::{
-    Cli, Command, ConfigAction, McpAction, ModelAction, OutputFormat, PluginAction, SecretsAction,
-    SteeringAction,
+    ActivateTarget, AddTarget, Cli, Command, ConfigAction, ExtensionAction, McpAction,
+    ModelAction, OutputFormat, PluginAction, PolicyAction, RemoteAction, SecretsAction,
+    ServiceAction, SteeringAction,
 };
-use rove_engine::config::metadata::SERVICE_NAME;
-use rove_engine::security::secrets::SecretManager;
 use rove_engine::server;
 use rove_engine::steering::loader::SteeringEngine;
 
@@ -23,10 +21,12 @@ async fn main() -> Result<()> {
     if let Some(path) = cli.config.as_ref() {
         std::env::set_var("ROVE_CONFIG_PATH", path);
     }
+    let logging_service_enabled = logging_service_enabled();
     init_logging(
         cli.verbose,
         console_log_level(&cli),
         should_honor_console_env_filter(&cli),
+        logging_service_enabled,
     )?;
 
     match cli.command {
@@ -37,16 +37,22 @@ async fn main() -> Result<()> {
             prompt,
             yes,
             stream,
+            parallel,
+            isolate,
             view,
         }) => {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::run::handle_run(
-                prompt.join(" "),
-                yes,
-                stream,
-                view,
+                rove_engine::cli::run::RunRequest {
+                    task: prompt.join(" "),
+                    auto_approve: yes,
+                    stream,
+                    parallel,
+                    isolate,
+                    view,
+                    format: OutputFormat::Text,
+                },
                 &config,
-                OutputFormat::Text,
             )
             .await?;
         }
@@ -60,8 +66,47 @@ async fn main() -> Result<()> {
         }
         Some(Command::Status) => rove_engine::cli::status::show()?,
         Some(Command::Unlock) => rove_engine::cli::unlock::run().await?,
-        Some(Command::Plugin { action }) => handle_plugin(action).await?,
-        Some(Command::Steer { action, dir }) => handle_steering(action, dir).await?,
+        Some(Command::Plugin { action }) => {
+            eprintln!(
+                "Compatibility alias: `rove plugin` remains available, but prefer `rove skill`, `rove system`, `rove channel`, or `rove connector`."
+            );
+            handle_plugin(action).await?
+        }
+        Some(Command::Steer { action, dir }) => {
+            eprintln!("Compatibility alias: `rove steer` remains available, but prefer `rove policy`.");
+            handle_steering(action, dir).await?
+        }
+        Some(Command::Policy { action, dir }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            handle_policy(action, dir, &config).await?;
+        }
+        Some(Command::Skill { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            handle_extension(action, &config, rove_engine::cli::extensions::ExtensionSurface::Skill)
+                .await?;
+        }
+        Some(Command::System { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            handle_extension(action, &config, rove_engine::cli::extensions::ExtensionSurface::System)
+                .await?;
+        }
+        Some(Command::Connector { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            handle_mcp(action, &config).await?;
+        }
+        Some(Command::Channel { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            handle_extension(action, &config, rove_engine::cli::extensions::ExtensionSurface::Channel)
+                .await?;
+        }
+        Some(Command::Service { action }) => handle_service(action).await?,
+        Some(Command::Remote { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            handle_remote(action, &config)?;
+        }
+        Some(Command::Add { target }) => handle_add(target).await?,
+        Some(Command::Activate { target }) => handle_activate(target, true).await?,
+        Some(Command::Deactivate { target }) => handle_activate(target, false).await?,
         Some(Command::Model { action }) => handle_model(action).await?,
         Some(Command::Schedule { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
@@ -73,6 +118,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::Secrets { action }) => handle_secrets(action).await?,
         Some(Command::Mcp { action }) => {
+            eprintln!(
+                "Compatibility alias: `rove mcp` remains available, but prefer `rove connector`."
+            );
             let config = rove_engine::config::Config::load_or_create()?;
             handle_mcp(action, &config).await?;
         }
@@ -96,7 +144,14 @@ fn init_logging(
     verbose: bool,
     console_level: LevelFilter,
     honor_console_env_filter: bool,
+    logging_service_enabled: bool,
 ) -> Result<()> {
+    if !logging_service_enabled && !verbose && !honor_console_env_filter {
+        return tracing_subscriber::registry()
+            .try_init()
+            .map_err(|error| anyhow::anyhow!("setting default subscriber failed: {}", error));
+    }
+
     let level = if verbose { Level::DEBUG } else { Level::INFO };
     let default_filter = EnvFilter::new(format!("rove_engine={}", level.as_str().to_lowercase()));
     let console_layer = fmt::layer().with_target(false);
@@ -133,6 +188,19 @@ fn init_logging(
         .with(file_layer)
         .try_init()
         .map_err(|error| anyhow::anyhow!("setting default subscriber failed: {}", error))
+}
+
+fn logging_service_enabled() -> bool {
+    let Ok(config_path) = rove_engine::config::Config::config_path() else {
+        return true;
+    };
+    if !config_path.exists() {
+        return true;
+    }
+    match rove_engine::config::Config::load_from_path(&config_path) {
+        Ok(config) => !config.core.log_level.eq_ignore_ascii_case("error"),
+        Err(_) => true,
+    }
 }
 
 fn console_log_level(cli: &Cli) -> LevelFilter {
@@ -186,9 +254,10 @@ async fn run_daemon(port: u16) -> Result<()> {
     // without starting WASM modules or MCP servers until first use.
     let (agent, database, gateway) = rove_engine::cli::bootstrap::init_daemon().await?;
     gateway.clone().start();
-    start_telegram_if_enabled(&config, gateway.clone(), database.clone());
+    rove_engine::channels::manager::ChannelManager::new(config.clone())
+        .start_enabled(gateway.clone(), database.clone());
     tracing::info!("{}", rove_engine::info::engine_banner());
-    server::start_daemon(agent, port, database, gateway).await?;
+    server::start_daemon(agent, port, database, gateway, config.webui.enabled).await?;
     Ok(())
 }
 
@@ -359,6 +428,14 @@ async fn handle_plugin(action: PluginAction) -> Result<()> {
     Ok(())
 }
 
+async fn handle_extension(
+    action: ExtensionAction,
+    config: &rove_engine::config::Config,
+    surface: rove_engine::cli::extensions::ExtensionSurface,
+) -> Result<()> {
+    rove_engine::cli::extensions::handle(config, surface, action).await
+}
+
 async fn handle_model(action: ModelAction) -> Result<()> {
     match action {
         ModelAction::Setup => rove_engine::cli::model::handle_setup().await?,
@@ -388,44 +465,89 @@ async fn handle_mcp(action: McpAction, config: &rove_engine::config::Config) -> 
     rove_engine::cli::mcp::handle(action, config).await
 }
 
-fn start_telegram_if_enabled(
+async fn handle_policy(
+    action: PolicyAction,
+    dir: Option<std::path::PathBuf>,
     config: &rove_engine::config::Config,
-    gateway: std::sync::Arc<rove_engine::gateway::Gateway>,
-    database: std::sync::Arc<rove_engine::db::Database>,
-) {
-    if !config.telegram.enabled {
-        return;
+) -> Result<()> {
+    rove_engine::cli::policy::handle(action, dir, config).await
+}
+
+async fn handle_service(action: ServiceAction) -> Result<()> {
+    let mut config = rove_engine::config::Config::load_or_create()?;
+    match action {
+        ServiceAction::List => rove_engine::cli::service::list(&config),
+        ServiceAction::Show { name } => {
+            rove_engine::cli::service::handle(
+                rove_engine::cli::service::ServiceAction::Show,
+                name,
+                &mut config,
+            )?;
+        }
+        ServiceAction::Enable { name } => {
+            rove_engine::cli::service::handle(
+                rove_engine::cli::service::ServiceAction::Enable,
+                name,
+                &mut config,
+            )?;
+        }
+        ServiceAction::Disable { name } => {
+            rove_engine::cli::service::handle(
+                rove_engine::cli::service::ServiceAction::Disable,
+                name,
+                &mut config,
+            )?;
+        }
     }
+    Ok(())
+}
 
-    let config = config.clone();
-    tokio::spawn(async move {
-        let secret_manager = SecretManager::new(SERVICE_NAME);
-        if !secret_manager.has_secret("telegram_token").await {
-            tracing::warn!(
-                "Telegram is enabled but no telegram_token is configured. Run `rove secrets set telegram`."
-            );
-            return;
-        }
+fn handle_remote(action: RemoteAction, config: &rove_engine::config::Config) -> Result<()> {
+    let action = match action {
+        RemoteAction::Status => rove_engine::cli::remote::RemoteAction::Status,
+        RemoteAction::Nodes => rove_engine::cli::remote::RemoteAction::Nodes,
+        RemoteAction::Rename { name } => rove_engine::cli::remote::RemoteAction::Rename(name),
+        RemoteAction::Pair { target } => rove_engine::cli::remote::RemoteAction::Pair(target),
+        RemoteAction::Unpair { name } => rove_engine::cli::remote::RemoteAction::Unpair(name),
+        RemoteAction::Trust { name } => rove_engine::cli::remote::RemoteAction::Trust(name),
+        RemoteAction::Send { node, prompt } => rove_engine::cli::remote::RemoteAction::Send {
+            node,
+            prompt: prompt.join(" "),
+        },
+    };
+    rove_engine::cli::remote::handle(action, config)
+}
 
-        let token = match secret_manager.get_secret("telegram_token").await {
-            Ok(token) => token,
-            Err(error) => {
-                tracing::warn!("Failed to load telegram token: {}", error);
-                return;
-            }
-        };
+async fn handle_add(target: AddTarget) -> Result<()> {
+    let mut config = rove_engine::config::Config::load_or_create()?;
+    match target {
+        AddTarget::Mcp => {
+            rove_engine::cli::service::handle(
+                rove_engine::cli::service::ServiceAction::Enable,
+                rove_engine::cli::ServiceTarget::ConnectorEngine,
+                &mut config,
+            )?;
+            println!("Connector support is available. Add a connector next with `rove connector add ...` or `rove connector install ...`.");
+        }
+    }
+    Ok(())
+}
 
-        let mut bot = TelegramBot::new(token, config.telegram.allowed_ids.clone())
-            .with_gateway(gateway, database);
-        if let Some(chat_id) = config.telegram.confirmation_chat_id {
-            bot = bot.with_confirmation_chat(chat_id);
-        }
-        if let Some(base_url) = config.telegram.api_base_url {
-            bot = bot.with_api_base_url(base_url);
-        }
-
-        if let Err(error) = bot.start_polling().await {
-            tracing::error!("Telegram polling stopped: {}", error);
-        }
-    });
+async fn handle_activate(target: ActivateTarget, enabled: bool) -> Result<()> {
+    let mut config = rove_engine::config::Config::load_or_create()?;
+    let service = match target {
+        ActivateTarget::Logging => rove_engine::cli::ServiceTarget::Logging,
+        ActivateTarget::Webui => rove_engine::cli::ServiceTarget::Webui,
+        ActivateTarget::Remote => rove_engine::cli::ServiceTarget::Remote,
+    };
+    rove_engine::cli::service::handle(
+        if enabled {
+            rove_engine::cli::service::ServiceAction::Enable
+        } else {
+            rove_engine::cli::service::ServiceAction::Disable
+        },
+        service,
+        &mut config,
+    )?;
+    Ok(())
 }
