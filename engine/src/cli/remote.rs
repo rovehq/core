@@ -224,6 +224,7 @@ async fn send(
                 required_capabilities: capabilities.to_vec(),
                 allow_executor_only,
                 prefer_executor_only,
+                execution_plan: None,
             },
         )
         .await?;

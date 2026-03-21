@@ -159,12 +159,12 @@ async fn test_planned_task_executes_direct_tool_without_provider() {
     let result = agent
         .process_planned_task(
             task,
-            RemoteExecutionPlan {
-                summary: "read fixture note".to_string(),
-                tool_name: "read_file".to_string(),
-                tool_args: serde_json::json!({ "path": file_path }),
-                domain_hint: Some("general".to_string()),
-            },
+            RemoteExecutionPlan::direct(
+                "read fixture note",
+                "read_file",
+                serde_json::json!({ "path": file_path }),
+                Some("general".to_string()),
+            ),
         )
         .await
         .expect("planned task should succeed");
@@ -172,6 +172,35 @@ async fn test_planned_task_executes_direct_tool_without_provider() {
     assert!(result.answer.contains("executor payload"));
     assert_eq!(result.provider_used, "executor-plan");
     assert_eq!(result.iterations, 1);
+}
+
+#[tokio::test]
+async fn test_planned_task_executes_bundled_steps_without_provider() {
+    let (temp_dir, mut agent) = setup_test_agent_with_providers(vec![], true).await;
+    let file_path = temp_dir.path().join("note.txt");
+    std::fs::write(&file_path, "executor payload").expect("write fixture");
+
+    let mut plan = RemoteExecutionPlan::direct(
+        "verify note exists",
+        "file_exists",
+        serde_json::json!({ "path": file_path }),
+        Some("general".to_string()),
+    );
+    plan.append_step(
+        "read fixture note",
+        "read_file",
+        serde_json::json!({ "path": file_path }),
+    );
+
+    let task = Task::build_from_cli("read note.txt on the remote executor");
+    let result = agent
+        .process_planned_task(task, plan)
+        .await
+        .expect("planned bundled task should succeed");
+
+    assert!(result.answer.contains("executor payload"));
+    assert_eq!(result.provider_used, "executor-plan");
+    assert_eq!(result.iterations, 2);
 }
 
 #[test]

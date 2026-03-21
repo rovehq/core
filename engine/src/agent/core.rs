@@ -202,7 +202,7 @@ impl AgentCore {
 
         info!(
             task_id = %task_id,
-            tool = %plan.tool_name,
+            tool = %plan.primary_tool_name().unwrap_or("unknown"),
             "Starting planned task {}: {}",
             task_id,
             scrub_text(&task.input)
@@ -241,7 +241,7 @@ impl AgentCore {
                 info!(
                     task_id = %task_id,
                     duration_ms = task_result.duration_ms,
-                    tool = %plan.tool_name,
+                    tool = %plan.primary_tool_name().unwrap_or("unknown"),
                     "Planned task completed"
                 );
 
@@ -265,7 +265,7 @@ impl AgentCore {
 
                 error!(
                     task_id = %task_id,
-                    tool = %plan.tool_name,
+                    tool = %plan.primary_tool_name().unwrap_or("unknown"),
                     "Planned task {} failed: {}",
                     task_id,
                     scrub_text(&error.to_string())
@@ -296,6 +296,11 @@ impl AgentCore {
         task: &Task,
         plan: &RemoteExecutionPlan,
     ) -> Result<TaskResult> {
+        let steps = plan.steps();
+        if steps.is_empty() {
+            anyhow::bail!("Remote execution plan contains no executable steps");
+        }
+
         let start_time = Instant::now();
         let task_id = task.id;
         let task_id_str = task_id.to_string();
@@ -336,35 +341,53 @@ impl AgentCore {
         self.run_steering_preflight(&task_id, &context.domain_str)
             .await?;
 
-        let tool_call = ToolCall::new(
-            format!("remote-plan-{}", task_id),
-            &plan.tool_name,
-            serde_json::to_string(&plan.tool_args).context("Failed to serialize plan tool args")?,
-        );
-        self.memory
-            .add_message(self.assistant_tool_message(&task_id, &tool_call));
-        self.insert_tool_call_event(&task_id, &tool_call, 1, &context.domain_str)
-            .await?;
+        let mut step_outputs = Vec::with_capacity(steps.len());
+        for (index, step) in steps.iter().enumerate() {
+            let step_num = index + 1;
+            let tool_call = ToolCall::new(
+                format!("remote-plan-{}-{}", task_id, step_num),
+                &step.tool_name,
+                serde_json::to_string(&step.tool_args)
+                    .context("Failed to serialize plan tool args")?,
+            );
+            self.memory
+                .add_message(self.assistant_tool_message(&task_id, &tool_call));
+            self.insert_tool_call_event(&task_id, &tool_call, step_num, &context.domain_str)
+                .await?;
 
-        let execution = self.execute_tool_call(&task_id_str, &tool_call).await?;
-        self.memory.add_message(crate::llm::Message::tool_result(
-            &execution.safe_result,
-            &tool_call.id,
-        ));
-        self.insert_observation_event(&task_id, &execution.safe_result, 1, &context.domain_str)
+            let execution = self.execute_tool_call(&task_id_str, &tool_call).await?;
+            self.memory.add_message(crate::llm::Message::tool_result(
+                &execution.safe_result,
+                &tool_call.id,
+            ));
+            self.insert_observation_event(
+                &task_id,
+                &execution.safe_result,
+                step_num,
+                &context.domain_str,
+            )
             .await?;
-        self.run_steering_after_write(&task_id, 1, &tool_call.name, &context.domain_str)
-            .await?;
+            self.run_steering_after_write(&task_id, step_num, &tool_call.name, &context.domain_str)
+                .await?;
 
-        self.insert_answer_event(&task_id, &execution.safe_result, 1, &context.domain_str)
-            .await?;
+            step_outputs.push((step.summary.clone(), execution.safe_result));
+        }
+
+        let answer = render_planned_task_answer(&step_outputs);
+        self.insert_answer_event(
+            &task_id,
+            &answer,
+            steps.len(),
+            &context.domain_str,
+        )
+        .await?;
 
         Ok(TaskResult::success(
             task_id.to_string(),
-            execution.safe_result,
+            answer,
             "executor-plan".to_string(),
             start_time.elapsed().as_millis() as i64,
-            1,
+            steps.len(),
             context.domain,
             context.sensitive,
         ))
@@ -420,4 +443,27 @@ impl AgentCore {
     fn prune_finished_background_jobs(&mut self) {
         self.background_jobs.retain(|job| !job.is_finished());
     }
+}
+
+fn render_planned_task_answer(step_outputs: &[(String, String)]) -> String {
+    if step_outputs.len() == 1 {
+        return step_outputs
+            .first()
+            .map(|(_, output)| output.clone())
+            .unwrap_or_default();
+    }
+
+    step_outputs
+        .iter()
+        .enumerate()
+        .map(|(index, (summary, output))| {
+            let label = if summary.trim().is_empty() {
+                format!("Step {}", index + 1)
+            } else {
+                summary.clone()
+            };
+            format!("{label}:\n{output}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }

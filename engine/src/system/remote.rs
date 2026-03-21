@@ -16,7 +16,9 @@ use crate::config::metadata::SERVICE_NAME;
 use crate::config::Config;
 use crate::policy::{infer_domain, PolicyExplainReport, PolicyManager};
 use crate::secrets::SecretManager;
-use sdk::{NodeExecutionRole, NodeIdentity, NodeProfile, RemoteEnvelope, RemoteExecutionPlan};
+use sdk::{
+    NodeExecutionRole, NodeIdentity, NodeProfile, RemoteEnvelope, RemoteExecutionPlan,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemotePeer {
@@ -62,6 +64,7 @@ pub struct RemoteSendOptions {
     pub required_capabilities: Vec<String>,
     pub allow_executor_only: bool,
     pub prefer_executor_only: bool,
+    pub execution_plan: Option<RemoteExecutionPlan>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -319,16 +322,17 @@ impl RemoteManager {
                 peer.identity.node_name
             );
         }
-        let execution_plan = if matches!(peer.profile.execution_role, NodeExecutionRole::ExecutorOnly)
-        {
-            Some(self.build_executor_plan(prompt, &selection)?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Remote node '{}' is executor-only, but this task could not be decomposed into a safe direct execution plan. Choose a full node or use an explicit read-only system action.",
-                    peer.identity.node_name
-                )
-            })?)
-        } else {
-            None
+        let execution_plan = match options.execution_plan.clone() {
+            Some(plan) => Some(plan),
+            None if matches!(peer.profile.execution_role, NodeExecutionRole::ExecutorOnly) => {
+                Some(self.build_executor_plan(prompt, &selection)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Remote node '{}' is executor-only, but this task could not be decomposed into a safe direct execution plan. Choose a full node or use an explicit read-only system action.",
+                        peer.identity.node_name
+                    )
+                })?)
+            }
+            None => None,
         };
 
         let coordinator = self.load_or_init_node_metadata()?;
@@ -911,6 +915,36 @@ impl RemoteManager {
         selection.preferred_capabilities = preferred_capabilities;
     }
 
+    pub async fn plan_execution_bundle(
+        &self,
+        prompt: &str,
+        post_commands: &[String],
+    ) -> Result<Option<RemoteExecutionPlan>> {
+        let mut selection = self.derive_selection_context(prompt);
+        self.enrich_selection_context_with_policy(prompt, &mut selection)
+            .await;
+        let mut plan = match self.build_executor_plan(prompt, &selection)? {
+            Some(plan) => plan,
+            None => return Ok(None),
+        };
+
+        if looks_like_mutating_executor_task(prompt) {
+            for command in post_commands {
+                let command = command.trim();
+                if command.is_empty() {
+                    continue;
+                }
+                plan.append_step(
+                    format!("verify workspace state with `{}`", command),
+                    "run_command",
+                    serde_json::json!({ "command": command }),
+                );
+            }
+        }
+
+        Ok(Some(plan))
+    }
+
     fn build_executor_plan(
         &self,
         prompt: &str,
@@ -922,55 +956,55 @@ impl RemoteManager {
         let domain_hint = selection.domain_tag.clone();
 
         if prompt_lower.contains("screenshot") || prompt_lower.contains("capture screen") {
-            return Ok(Some(RemoteExecutionPlan {
-                summary: "capture screenshot".to_string(),
-                tool_name: "capture_screen".to_string(),
-                tool_args: serde_json::json!({"output_file":"remote-screenshot.png"}),
+            return Ok(Some(RemoteExecutionPlan::direct(
+                "capture screenshot",
+                "capture_screen",
+                serde_json::json!({"output_file":"remote-screenshot.png"}),
                 domain_hint,
-            }));
+            )));
         }
 
         if contains_any(&prompt_lower, &["read ", "show ", "open ", "cat "]) {
             if let Some(path) = extracted.clone() {
-                return Ok(Some(RemoteExecutionPlan {
-                    summary: format!("read file {}", path),
-                    tool_name: "read_file".to_string(),
-                    tool_args: serde_json::json!({ "path": path }),
+                return Ok(Some(RemoteExecutionPlan::direct(
+                    format!("read file {}", path),
+                    "read_file",
+                    serde_json::json!({ "path": path }),
                     domain_hint,
-                }));
+                )));
             }
         }
 
         if contains_any(&prompt_lower, &["does ", "exist", "file exists"]) {
             if let Some(path) = extracted.clone() {
-                return Ok(Some(RemoteExecutionPlan {
-                    summary: format!("check whether {} exists", path),
-                    tool_name: "file_exists".to_string(),
-                    tool_args: serde_json::json!({ "path": path }),
+                return Ok(Some(RemoteExecutionPlan::direct(
+                    format!("check whether {} exists", path),
+                    "file_exists",
+                    serde_json::json!({ "path": path }),
                     domain_hint,
-                }));
+                )));
             }
         }
 
         if contains_any(&prompt_lower, &["list ", "directory", "folder", "files in"]) {
             let path = extracted.clone().unwrap_or_else(|| ".".to_string());
-            return Ok(Some(RemoteExecutionPlan {
-                summary: format!("list directory {}", path),
-                tool_name: "list_dir".to_string(),
-                tool_args: serde_json::json!({ "path": path }),
+            return Ok(Some(RemoteExecutionPlan::direct(
+                format!("list directory {}", path),
+                "list_dir",
+                serde_json::json!({ "path": path }),
                 domain_hint,
-            }));
+            )));
         }
 
         if prompt_lower.contains("find ") || prompt_lower.contains("locate ") {
             if let Some(name) = extracted {
                 let command = format!("fd -a {} .", shlex::try_quote(&name)?);
-                return Ok(Some(RemoteExecutionPlan {
-                    summary: format!("find {}", name),
-                    tool_name: "run_command".to_string(),
-                    tool_args: serde_json::json!({ "command": command }),
+                return Ok(Some(RemoteExecutionPlan::direct(
+                    format!("find {}", name),
+                    "run_command",
+                    serde_json::json!({ "command": command }),
                     domain_hint,
-                }));
+                )));
             }
         }
 
@@ -983,12 +1017,12 @@ impl RemoteManager {
         {
             if let Some(term) = extract_search_term(prompt_trimmed) {
                 let command = format!("rg --line-number {} .", shlex::try_quote(&term)?);
-                return Ok(Some(RemoteExecutionPlan {
-                    summary: format!("search for {}", term),
-                    tool_name: "run_command".to_string(),
-                    tool_args: serde_json::json!({ "command": command }),
+                return Ok(Some(RemoteExecutionPlan::direct(
+                    format!("search for {}", term),
+                    "run_command",
+                    serde_json::json!({ "command": command }),
                     domain_hint,
-                }));
+                )));
             }
         }
 
@@ -1221,6 +1255,25 @@ fn looks_like_direct_executor_task(prompt: &str) -> bool {
             "screenshot",
             "capture screen",
             "search ",
+        ],
+    )
+}
+
+fn looks_like_mutating_executor_task(prompt: &str) -> bool {
+    contains_any(
+        &prompt.to_ascii_lowercase(),
+        &[
+            "write ",
+            "update ",
+            "edit ",
+            "modify ",
+            "change ",
+            "create ",
+            "delete ",
+            "remove ",
+            "rename ",
+            "refactor ",
+            "patch ",
         ],
     )
 }
@@ -1753,12 +1806,16 @@ auto_tag = ["office-workspace"]
         assert_eq!(
             request
                 .get("plan")
+                .and_then(|value| value.get("steps"))
+                .and_then(|value| value.get(0))
                 .and_then(|value| value.get("tool_name"))
                 .and_then(|value| value.as_str()),
             Some("run_command")
         );
         assert!(request
             .get("plan")
+            .and_then(|value| value.get("steps"))
+            .and_then(|value| value.get(0))
             .and_then(|value| value.get("tool_args"))
             .and_then(|value| value.get("command"))
             .and_then(|value| value.as_str())
@@ -1768,5 +1825,26 @@ auto_tag = ["office-workspace"]
         assert_eq!(result.answer.as_deref(), Some("found file"));
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn plan_execution_bundle_appends_verification_steps_for_mutating_prompt() {
+        let (_temp, config) = test_config();
+        let manager = RemoteManager::new(config);
+
+        let plan = manager
+            .plan_execution_bundle(
+                "read `Cargo.toml` and update the dependency version",
+                &["cargo check".to_string(), "cargo test -q".to_string()],
+            )
+            .await
+            .expect("bundle planning")
+            .expect("bundle should be produced");
+
+        let steps = plan.steps();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].tool_name, "read_file");
+        assert_eq!(steps[1].tool_name, "run_command");
+        assert_eq!(steps[2].tool_name, "run_command");
     }
 }

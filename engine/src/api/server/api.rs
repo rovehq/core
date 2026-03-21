@@ -570,6 +570,7 @@ pub async fn remote_send(Json(payload): Json<RemoteSendRequest>) -> impl IntoRes
                     required_capabilities: payload.capabilities,
                     allow_executor_only: payload.allow_executor_only,
                     prefer_executor_only: payload.prefer_executor_only,
+                    execution_plan: None,
                 },
             )
             .await

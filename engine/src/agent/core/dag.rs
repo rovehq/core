@@ -133,6 +133,9 @@ impl AgentDagExecutor {
 
         let prompt = build_remote_step_prompt(step, dependency_context);
         let manager = RemoteManager::new(self.config.as_ref().clone());
+        let execution_plan = manager
+            .plan_execution_bundle(&prompt, &self.steering_after_write_commands)
+            .await?;
         let result = match manager
             .send_with_options(
                 &prompt,
@@ -141,6 +144,7 @@ impl AgentDagExecutor {
                     required_capabilities: vec!["remote-execution".to_string()],
                     allow_executor_only: true,
                     prefer_executor_only: true,
+                    execution_plan,
                     ..crate::remote::RemoteSendOptions::default()
                 },
             )
@@ -766,6 +770,18 @@ mod tests {
             .expect("remote delegation should occur");
 
         assert_eq!(execution.output, "remote executor answer");
+        let requests = server.received_requests().await.expect("received requests");
+        let request_body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("request body");
+        assert_eq!(
+            request_body
+                .get("plan")
+                .and_then(|value| value.get("steps"))
+                .and_then(|value| value.get(0))
+                .and_then(|value| value.get("tool_name"))
+                .and_then(|value| value.as_str()),
+            Some("run_command")
+        );
         let events = task_repo
             .get_agent_events(&parent_task_id.to_string())
             .await

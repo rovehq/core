@@ -139,7 +139,83 @@ pub struct RemoteEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteExecutionPlan {
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<RemoteExecutionStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_args: Option<Value>,
+    pub domain_hint: Option<String>,
+}
+
+/// One ordered execution step inside a remote direct-execution bundle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteExecutionStep {
+    pub summary: String,
     pub tool_name: String,
     pub tool_args: Value,
-    pub domain_hint: Option<String>,
+}
+
+impl RemoteExecutionPlan {
+    pub fn direct(
+        summary: impl Into<String>,
+        tool_name: impl Into<String>,
+        tool_args: Value,
+        domain_hint: Option<String>,
+    ) -> Self {
+        let summary = summary.into();
+        let tool_name = tool_name.into();
+        let step = RemoteExecutionStep {
+            summary: summary.clone(),
+            tool_name: tool_name.clone(),
+            tool_args: tool_args.clone(),
+        };
+
+        Self {
+            summary,
+            steps: vec![step],
+            tool_name: Some(tool_name),
+            tool_args: Some(tool_args),
+            domain_hint,
+        }
+    }
+
+    pub fn append_step(
+        &mut self,
+        summary: impl Into<String>,
+        tool_name: impl Into<String>,
+        tool_args: Value,
+    ) {
+        self.steps.push(RemoteExecutionStep {
+            summary: summary.into(),
+            tool_name: tool_name.into(),
+            tool_args,
+        });
+    }
+
+    pub fn steps(&self) -> Vec<RemoteExecutionStep> {
+        if !self.steps.is_empty() {
+            return self.steps.clone();
+        }
+
+        match self.tool_name.as_ref() {
+            Some(tool_name) => vec![RemoteExecutionStep {
+                summary: self.summary.clone(),
+                tool_name: tool_name.clone(),
+                tool_args: self.tool_args.clone().unwrap_or(Value::Null),
+            }],
+            None => Vec::new(),
+        }
+    }
+
+    pub fn primary_tool_name(&self) -> Option<&str> {
+        self.steps
+            .first()
+            .map(|step| step.tool_name.as_str())
+            .or(self.tool_name.as_deref())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty() && self.tool_name.is_none()
+    }
 }
