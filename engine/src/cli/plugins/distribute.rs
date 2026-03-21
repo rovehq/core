@@ -12,7 +12,7 @@ use super::package::{
     manifest_from_signed_json, read_required_file, resolve_package_root, MANIFEST_FILE,
     PACKAGE_FILE, RUNTIME_FILE,
 };
-use super::registry::{update_registry_metadata, PublishedBundle};
+use super::registry::{sign_registry_json, update_registry_metadata, PublishedBundle};
 use super::test::{ensure_wasm_target_installed, run_cargo};
 use super::validate::{resolve_payload_source, review_manifest_permissions, validate_plugin_shape};
 
@@ -24,6 +24,8 @@ struct ReleaseManifest {
     plugin_type: String,
     trust_tier: String,
     generated_at: i64,
+    signed_at: i64,
+    signature: String,
     bundled_from: String,
     artifact: Option<String>,
     runtime_config: Option<String>,
@@ -255,6 +257,8 @@ pub(super) async fn prepare_distribution_bundle(
         plugin_type: manifest.plugin_type.as_str().to_string(),
         trust_tier: format!("{:?}", manifest.trust_tier),
         generated_at: unix_now()?,
+        signed_at: 0,
+        signature: String::new(),
         bundled_from: package_root.display().to_string(),
         artifact: normalized_package
             .get("artifact")
@@ -266,9 +270,11 @@ pub(super) async fn prepare_distribution_bundle(
             .map(|value| value.to_string()),
         permission_review: review_manifest_permissions(&manifest),
     };
+    let mut release_json = serde_json::to_value(&release_manifest)?;
+    sign_registry_json(&mut release_json, release_manifest.generated_at)?;
     fs::write(
         bundle_dir.join("release.json"),
-        serde_json::to_string_pretty(&release_manifest)?,
+        serde_json::to_string_pretty(&release_json)?,
     )
     .with_context(|| {
         format!(
@@ -416,6 +422,12 @@ mod tests {
         )
         .expect("package json");
         assert_eq!(package_json["artifact"], "sample.wasm");
+        let release_json: Value = serde_json::from_str(
+            &fs::read_to_string(bundle.bundle_dir.join("release.json")).expect("read release"),
+        )
+        .expect("release json");
+        assert!(release_json["signature"].is_string());
+        assert!(release_json["signed_at"].is_number());
     }
 
     #[tokio::test]
@@ -437,6 +449,48 @@ mod tests {
         assert!(bundle.bundle_dir.join("plugin-package.json").exists());
         assert!(bundle.bundle_dir.join("runtime.json").exists());
         assert!(bundle.bundle_dir.join("echo_skill.wasm").exists());
+    }
+
+    #[tokio::test]
+    async fn fixture_channel_package_packs() {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugins/echo-channel");
+        let temp_dir = TempDir::new().expect("temp dir");
+        let bundle_dir = temp_dir.path().join("bundle");
+
+        let bundle = prepare_distribution_bundle(
+            Some(fixture.to_str().expect("fixture path")),
+            Some(&bundle_dir),
+            true,
+        )
+        .await
+        .expect("bundle channel package");
+
+        assert!(bundle.bundle_dir.join("manifest.json").exists());
+        assert!(bundle.bundle_dir.join("plugin-package.json").exists());
+        assert!(bundle.bundle_dir.join("runtime.json").exists());
+        assert!(bundle.bundle_dir.join("echo_channel.wasm").exists());
+    }
+
+    #[tokio::test]
+    async fn fixture_mcp_package_packs() {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugins/github-mcp");
+        let temp_dir = TempDir::new().expect("temp dir");
+        let bundle_dir = temp_dir.path().join("bundle");
+
+        let bundle = prepare_distribution_bundle(
+            Some(fixture.to_str().expect("fixture path")),
+            Some(&bundle_dir),
+            true,
+        )
+        .await
+        .expect("bundle mcp package");
+
+        assert!(bundle.bundle_dir.join("manifest.json").exists());
+        assert!(bundle.bundle_dir.join("plugin-package.json").exists());
+        assert!(bundle.bundle_dir.join("runtime.json").exists());
+        assert!(!bundle.bundle_dir.join("github-mcp").exists());
     }
 
     #[test]

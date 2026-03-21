@@ -2,23 +2,30 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use ed25519_dalek::{Signer, SigningKey};
 use reqwest::StatusCode;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
 use crate::runtime::Manifest;
+use crate::security::crypto::CryptoModule;
 
 use super::package::{MANIFEST_FILE, PACKAGE_FILE, RUNTIME_FILE};
 
 const REGISTRY_SCHEMA_VERSION: &str = "1";
 pub(super) const REGISTRY_FILE: &str = "registry.json";
 pub(super) const PLUGIN_INDEX_FILE: &str = "index.json";
+const LOCAL_DEV_REGISTRY_SIGNATURE: &str = "LOCAL_DEV_REGISTRY_SIGNATURE";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct RegistryCatalog {
     pub schema_version: String,
     pub generated_at: i64,
+    #[serde(default)]
+    pub signed_at: i64,
+    #[serde(default)]
+    pub signature: String,
     pub plugins: Vec<RegistryCatalogEntry>,
 }
 
@@ -36,6 +43,10 @@ pub(super) struct RegistryCatalogEntry {
 pub(super) struct RegistryPluginIndex {
     pub schema_version: String,
     pub generated_at: i64,
+    #[serde(default)]
+    pub signed_at: i64,
+    #[serde(default)]
+    pub signature: String,
     pub plugin: RegistryCatalogEntry,
     pub versions: Vec<RegistryVersionEntry>,
 }
@@ -90,6 +101,8 @@ pub(super) fn update_registry_metadata(
     .unwrap_or_else(|_| RegistryPluginIndex {
         schema_version: REGISTRY_SCHEMA_VERSION.to_string(),
         generated_at: published.published_at,
+        signed_at: 0,
+        signature: String::new(),
         plugin: RegistryCatalogEntry {
             id: plugin_id.to_string(),
             name: manifest.name.clone(),
@@ -126,9 +139,11 @@ pub(super) fn update_registry_metadata(
         .map(|entry| entry.version.clone())
         .unwrap_or_else(|| manifest.version.clone());
 
+    let mut plugin_index_json = serde_json::to_value(&plugin_index)?;
+    sign_registry_json(&mut plugin_index_json, published.published_at)?;
     fs::write(
         plugin_dir.join(PLUGIN_INDEX_FILE),
-        serde_json::to_string_pretty(&plugin_index)?,
+        serde_json::to_string_pretty(&plugin_index_json)?,
     )
     .with_context(|| {
         format!(
@@ -141,6 +156,8 @@ pub(super) fn update_registry_metadata(
         .unwrap_or_else(|_| RegistryCatalog {
             schema_version: REGISTRY_SCHEMA_VERSION.to_string(),
             generated_at: published.published_at,
+            signed_at: 0,
+            signature: String::new(),
             plugins: Vec::new(),
         });
     registry.generated_at = published.published_at;
@@ -150,9 +167,11 @@ pub(super) fn update_registry_metadata(
         .plugins
         .sort_by(|left, right| left.name.cmp(&right.name));
 
+    let mut registry_json = serde_json::to_value(&registry)?;
+    sign_registry_json(&mut registry_json, published.published_at)?;
     fs::write(
         registry_dir.join(REGISTRY_FILE),
-        serde_json::to_string_pretty(&registry)?,
+        serde_json::to_string_pretty(&registry_json)?,
     )
     .with_context(|| {
         format!(
@@ -170,9 +189,21 @@ pub(super) async fn materialize_registry_bundle(
     version: Option<&str>,
 ) -> Result<TempDir> {
     let location = parse_registry_location(registry);
+    enforce_remote_registry_policy(&location)?;
     let index = load_plugin_index(&location, plugin_id).await?;
     let entry = select_version(&index, version)?;
     let temp_dir = TempDir::new().context("Failed to create temporary plugin bundle directory")?;
+    if matches!(location, RegistryLocation::Remote(_)) {
+        let release_raw = fetch_remote_text(&join_remote(
+            match &location {
+                RegistryLocation::Remote(base) => base,
+                RegistryLocation::Local(_) => unreachable!("guarded above"),
+            },
+            &entry.release_path,
+        ))
+        .await?;
+        verify_signed_registry_json(&release_raw, &format!("release metadata for {}", plugin_id))?;
+    }
 
     fetch_text_into(
         &location,
@@ -201,6 +232,24 @@ pub(super) async fn materialize_registry_bundle(
     }
 
     Ok(temp_dir)
+}
+
+fn enforce_remote_registry_policy(location: &RegistryLocation) -> Result<()> {
+    let RegistryLocation::Remote(base) = location else {
+        return Ok(());
+    };
+
+    if base.starts_with("https://")
+        || base.starts_with("http://localhost")
+        || base.starts_with("http://127.0.0.1")
+    {
+        return Ok(());
+    }
+
+    bail!(
+        "Remote plugin registries must use HTTPS or localhost. '{}' is not allowed",
+        base
+    )
 }
 
 fn parse_registry_location(registry: &str) -> RegistryLocation {
@@ -232,6 +281,10 @@ async fn load_plugin_index(
             .await?
         }
     };
+
+    if matches!(location, RegistryLocation::Remote(_)) {
+        verify_signed_registry_json(&raw, &format!("plugin index for {}", plugin_id))?;
+    }
 
     serde_json::from_str(&raw).context("Invalid plugin registry index")
 }
@@ -362,6 +415,58 @@ fn file_name_from_relative(relative: &str) -> Result<&str> {
         .context("Registry entry path is missing a file name")
 }
 
+pub(super) fn sign_registry_json(value: &mut serde_json::Value, signed_at: i64) -> Result<()> {
+    let Some(object) = value.as_object_mut() else {
+        bail!("Registry metadata must be a JSON object");
+    };
+    object.insert("signed_at".to_string(), serde_json::json!(signed_at));
+    let signature = resolve_registry_signature(value)?;
+    let Some(object) = value.as_object_mut() else {
+        bail!("Registry metadata must be a JSON object");
+    };
+    object.insert(
+        "signature".to_string(),
+        serde_json::Value::String(signature),
+    );
+    Ok(())
+}
+
+fn resolve_registry_signature(value: &serde_json::Value) -> Result<String> {
+    let Some(signing_key) = load_registry_signing_key()? else {
+        return Ok(LOCAL_DEV_REGISTRY_SIGNATURE.to_string());
+    };
+
+    let canonical = CryptoModule::canonicalize_manifest(
+        serde_json::to_vec(value)
+            .context("Failed to serialize registry metadata for signing")?
+            .as_slice(),
+    )?;
+    Ok(hex::encode(signing_key.sign(&canonical).to_bytes()))
+}
+
+fn load_registry_signing_key() -> Result<Option<SigningKey>> {
+    let Some(raw) = std::env::var("ROVE_REGISTRY_PRIVATE_KEY")
+        .ok()
+        .or_else(|| std::env::var("ROVE_TEAM_PRIVATE_KEY").ok())
+    else {
+        return Ok(None);
+    };
+
+    let bytes = hex::decode(raw.trim()).context("Failed to decode registry signing key hex")?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Registry signing key must be 32 bytes"))?;
+    Ok(Some(SigningKey::from_bytes(&bytes)))
+}
+
+fn verify_signed_registry_json(raw: &str, label: &str) -> Result<()> {
+    let crypto = CryptoModule::new().context("Failed to initialize registry verifier")?;
+    crypto
+        .verify_manifest_file(raw.as_bytes())
+        .with_context(|| format!("Unsigned or invalid {} metadata", label))?;
+    Ok(())
+}
+
 fn read_local_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("Failed to read '{}'", path.display()))?;
@@ -390,8 +495,9 @@ mod tests {
     };
 
     use super::{
-        materialize_registry_bundle, update_registry_metadata, PublishedBundle, RegistryCatalog,
-        RegistryPluginIndex, PLUGIN_INDEX_FILE, REGISTRY_FILE,
+        enforce_remote_registry_policy, materialize_registry_bundle, update_registry_metadata,
+        PublishedBundle, RegistryCatalog, RegistryLocation, RegistryPluginIndex, PLUGIN_INDEX_FILE,
+        REGISTRY_FILE,
     };
 
     fn sample_manifest(version: &str) -> Manifest {
@@ -442,6 +548,8 @@ mod tests {
         .expect("registry");
         assert_eq!(registry.plugins.len(), 1);
         assert_eq!(registry.plugins[0].latest_version, "0.2.0");
+        assert!(!registry.signature.is_empty());
+        assert!(registry.signed_at > 0);
 
         let plugin_index: RegistryPluginIndex = serde_json::from_str(
             &fs::read_to_string(temp_dir.path().join("echo-skill").join(PLUGIN_INDEX_FILE))
@@ -450,6 +558,8 @@ mod tests {
         .expect("plugin index json");
         assert_eq!(plugin_index.versions.len(), 1);
         assert_eq!(plugin_index.versions[0].version, "0.2.0");
+        assert!(!plugin_index.signature.is_empty());
+        assert!(plugin_index.signed_at > 0);
     }
 
     #[tokio::test]
@@ -492,5 +602,15 @@ mod tests {
         assert!(bundle.path().join("plugin-package.json").exists());
         assert!(bundle.path().join("runtime.json").exists());
         assert!(bundle.path().join("echo.wasm").exists());
+    }
+
+    #[test]
+    fn remote_registry_policy_rejects_plain_http_hosts() {
+        let error = enforce_remote_registry_policy(&RegistryLocation::Remote(
+            "http://example.com/registry".to_string(),
+        ))
+        .expect_err("plain http should be rejected");
+
+        assert!(error.to_string().contains("must use HTTPS or localhost"));
     }
 }
