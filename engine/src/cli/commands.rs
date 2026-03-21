@@ -579,7 +579,26 @@ pub enum RemoteAction {
     /// Rename this node.
     Rename { name: String },
     /// Pair with a remote node descriptor or invite.
-    Pair { target: String },
+    Pair {
+        /// Node name, or a daemon URL when --url is omitted.
+        target: String,
+
+        /// Explicit daemon base URL when target is a human node name.
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Bearer token for the target daemon.
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Mark the node as executor-only.
+        #[arg(long)]
+        executor_only: bool,
+
+        /// Optional capability tags for this node.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+    },
     /// Remove a paired node.
     Unpair { name: String },
     /// Mark a paired node as trusted.

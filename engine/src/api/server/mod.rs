@@ -17,7 +17,7 @@ pub mod ws;
 use anyhow::Result;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::net::SocketAddr;
@@ -86,6 +86,7 @@ pub async fn start_daemon(
     let protected = Router::new()
         .route("/api/run", post(api::execute_task))
         .route("/api/v1/execute", post(api::execute_task))
+        .route("/api/v1/tasks/:task_id", get(api::task_status))
         .route("/api/v1/steering/active", get(api::active_skills))
         .route("/api/v1/policies", get(api::list_policies))
         .route("/api/v1/policies/active", get(api::active_policies))
@@ -95,8 +96,14 @@ pub async fn start_daemon(
         .route("/api/v1/services/:name/enable", post(api::enable_service))
         .route("/api/v1/services/:name/disable", post(api::disable_service))
         .route("/api/v1/channels", get(api::list_channels))
+        .route("/api/v1/remote/execute", post(api::execute_remote_task))
         .route("/api/v1/remote/status", get(api::remote_status))
         .route("/api/v1/remote/nodes", get(api::remote_nodes))
+        .route("/api/v1/remote/pair", post(api::remote_pair))
+        .route("/api/v1/remote/nodes/:name/trust", post(api::remote_trust))
+        .route("/api/v1/remote/nodes/:name", delete(api::remote_unpair))
+        .route("/api/v1/remote/rename", post(api::remote_rename))
+        .route("/api/v1/remote/send", post(api::remote_send))
         .route("/v1/chat/completions", post(mcp::mcp_chat_completions))
         .route("/ws/task", get(ws::task_ws_handler))
         // Legacy telemetry endpoint, also protected

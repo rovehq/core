@@ -48,13 +48,14 @@ impl Gateway {
     pub async fn submit_remote(
         &self,
         input: &str,
+        origin_node: Option<&str>,
         session_id: Option<&str>,
         workspace: Option<&str>,
         team_id: Option<&str>,
     ) -> anyhow::Result<String> {
         self.submit_task(
             input,
-            TaskSource::Remote(String::new()),
+            TaskSource::Remote(origin_node.unwrap_or_default().to_string()),
             session_id,
             workspace,
             team_id,

@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
         Some(Command::Service { action }) => handle_service(action).await?,
         Some(Command::Remote { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
-            handle_remote(action, &config)?;
+            handle_remote(action, &config).await?;
         }
         Some(Command::Add { target }) => handle_add(target).await?,
         Some(Command::Activate { target }) => handle_activate(target, true).await?,
@@ -502,12 +502,24 @@ async fn handle_service(action: ServiceAction) -> Result<()> {
     Ok(())
 }
 
-fn handle_remote(action: RemoteAction, config: &rove_engine::config::Config) -> Result<()> {
+async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Config) -> Result<()> {
     let action = match action {
         RemoteAction::Status => rove_engine::cli::remote::RemoteAction::Status,
         RemoteAction::Nodes => rove_engine::cli::remote::RemoteAction::Nodes,
         RemoteAction::Rename { name } => rove_engine::cli::remote::RemoteAction::Rename(name),
-        RemoteAction::Pair { target } => rove_engine::cli::remote::RemoteAction::Pair(target),
+        RemoteAction::Pair {
+            target,
+            url,
+            token,
+            executor_only,
+            tags,
+        } => rove_engine::cli::remote::RemoteAction::Pair {
+            target,
+            url,
+            token,
+            executor_only,
+            tags,
+        },
         RemoteAction::Unpair { name } => rove_engine::cli::remote::RemoteAction::Unpair(name),
         RemoteAction::Trust { name } => rove_engine::cli::remote::RemoteAction::Trust(name),
         RemoteAction::Send { node, prompt } => rove_engine::cli::remote::RemoteAction::Send {
@@ -515,7 +527,7 @@ fn handle_remote(action: RemoteAction, config: &rove_engine::config::Config) -> 
             prompt: prompt.join(" "),
         },
     };
-    rove_engine::cli::remote::handle(action, config)
+    rove_engine::cli::remote::handle(action, config).await
 }
 
 async fn handle_add(target: AddTarget) -> Result<()> {

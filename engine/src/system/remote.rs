@@ -1,11 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::config::metadata::SERVICE_NAME;
 use crate::config::Config;
+use crate::secrets::SecretManager;
 use sdk::{NodeExecutionRole, NodeIdentity, NodeProfile, RemoteEnvelope};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +18,7 @@ pub struct RemotePeer {
     pub profile: NodeProfile,
     pub target: String,
     pub trusted: bool,
+    pub auth_secret_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,6 +34,18 @@ pub struct RemoteSendPreview {
     pub envelope: RemoteEnvelope,
     pub trusted: bool,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteSendResult {
+    pub envelope: RemoteEnvelope,
+    pub trusted: bool,
+    pub status: String,
+    pub remote_task_id: String,
+    pub answer: Option<String>,
+    pub provider: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub message: Option<String>,
 }
 
 pub struct RemoteManager {
@@ -63,43 +80,81 @@ impl RemoteManager {
         Ok(metadata.identity)
     }
 
-    pub fn pair(&self, target: &str) -> Result<RemotePeer> {
+    pub async fn pair(
+        &self,
+        target: &str,
+        url: Option<&str>,
+        token: Option<&str>,
+        executor_only: bool,
+        tags: &[String],
+    ) -> Result<RemotePeer> {
         let mut peers = self.load_peers()?;
+        let (node_name, endpoint) = resolve_pair_target(target, url)?;
+
         if peers.iter().any(|peer| {
-            peer.identity.node_name == target || peer.target == target || peer.identity.node_id == target
+            peer.identity.node_name.eq_ignore_ascii_case(&node_name)
+                || peer.target.eq_ignore_ascii_case(&endpoint)
+                || peer.identity.node_id == target
         }) {
-            bail!("Remote node '{}' is already paired", target);
+            bail!("Remote node '{}' is already paired", node_name);
         }
+
+        let auth_secret_key = if let Some(token) = token {
+            let key = format!("remote_node_token_{}", secret_key_fragment(&node_name));
+            SecretManager::new(SERVICE_NAME)
+                .set_secret(&key, token)
+                .await?;
+            Some(key)
+        } else {
+            None
+        };
 
         let peer = RemotePeer {
             identity: NodeIdentity {
                 node_id: Uuid::new_v4().to_string(),
-                node_name: target.to_string(),
+                node_name: node_name.clone(),
                 public_key: Uuid::new_v4().simple().to_string(),
             },
             profile: NodeProfile {
                 capabilities: vec!["remote-execution".to_string()],
-                tags: vec![],
-                execution_role: NodeExecutionRole::Full,
+                tags: tags.to_vec(),
+                execution_role: if executor_only {
+                    NodeExecutionRole::ExecutorOnly
+                } else {
+                    NodeExecutionRole::Full
+                },
             },
-            target: target.to_string(),
+            target: endpoint,
             trusted: false,
+            auth_secret_key,
         };
         peers.push(peer.clone());
         self.save_peers(&peers)?;
         Ok(peer)
     }
 
-    pub fn unpair(&self, name: &str) -> Result<()> {
+    pub async fn unpair(&self, name: &str) -> Result<()> {
         let mut peers = self.load_peers()?;
+        let mut removed_secret = None;
         let original_len = peers.len();
         peers.retain(|peer| {
-            peer.identity.node_name != name && peer.target != name && peer.identity.node_id != name
+            let matched = peer.identity.node_name == name
+                || peer.target == name
+                || peer.identity.node_id == name;
+            if matched {
+                removed_secret = peer.auth_secret_key.clone();
+            }
+            !matched
         });
         if peers.len() == original_len {
             bail!("Remote node '{}' is not paired", name);
         }
         self.save_peers(&peers)?;
+        if let Some(secret_key) = removed_secret {
+            let _ = SecretManager::new(SERVICE_NAME)
+                .delete_secret(&secret_key)
+                .await;
+        }
         Ok(())
     }
 
@@ -145,8 +200,157 @@ impl RemoteManager {
         Ok(RemoteSendPreview {
             envelope,
             trusted: peer.trusted,
-            message: "Remote task execution transport is not wired yet; this preview validates routing prerequisites and the envelope shape.".to_string(),
+            message: "Remote transport ready. The coordinator will submit to the target daemon and poll task completion.".to_string(),
         })
+    }
+
+    pub async fn send(&self, node: &str, prompt: &str) -> Result<RemoteSendResult> {
+        if !self.config.ws_client.enabled {
+            bail!("Remote service is disabled. Run `rove service enable remote` first.");
+        }
+
+        let peers = self.load_peers()?;
+        let Some(peer) = peers.iter().find(|peer| {
+            peer.identity.node_name == node || peer.target == node || peer.identity.node_id == node
+        }) else {
+            bail!("Remote node '{}' is not paired", node);
+        };
+        if !peer.trusted {
+            bail!("Remote node '{}' is paired but not trusted. Run `rove remote trust {}` first.", node, node);
+        }
+
+        let coordinator = self.load_or_init_node_metadata()?;
+        let envelope = RemoteEnvelope {
+            origin_node: coordinator.identity.node_name.clone(),
+            target_node: peer.identity.node_name.clone(),
+            coordinator_node: coordinator.identity.node_name.clone(),
+            task_id: Uuid::new_v4().to_string(),
+            task_input: prompt.to_string(),
+            stream_policy: "events+result".to_string(),
+        };
+
+        let auth_token = self.auth_token_for_peer(peer).await?;
+        let client = Client::new();
+        let endpoint = format!("{}/api/v1/remote/execute", peer.target.trim_end_matches('/'));
+        let request = RemoteExecuteRequest {
+            input: Some(prompt.to_string()),
+            task: None,
+            origin_node: Some(envelope.origin_node.clone()),
+            coordinator_node: Some(envelope.coordinator_node.clone()),
+            workspace: None,
+            team_id: None,
+            wait_seconds: Some(1),
+        };
+
+        let execute = client
+            .post(endpoint)
+            .bearer_auth(auth_token.clone())
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to reach remote daemon")?;
+
+        let execute = parse_remote_response(execute).await?;
+        if execute.status == "completed" {
+            return Ok(RemoteSendResult {
+                envelope,
+                trusted: peer.trusted,
+                status: execute.status,
+                remote_task_id: execute.task_id.unwrap_or_else(|| "unknown".to_string()),
+                answer: execute.answer,
+                provider: execute.provider,
+                duration_ms: execute.duration_ms,
+                message: execute.message,
+            });
+        }
+
+        let remote_task_id = execute
+            .task_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Remote daemon did not return a task id"))?;
+
+        let completion = self
+            .poll_remote_completion(&client, peer, &auth_token, &remote_task_id)
+            .await?;
+
+        Ok(RemoteSendResult {
+            envelope,
+            trusted: peer.trusted,
+            status: completion.status,
+            remote_task_id,
+            answer: completion.answer,
+            provider: completion.provider,
+            duration_ms: completion.duration_ms,
+            message: completion.message,
+        })
+    }
+
+    async fn poll_remote_completion(
+        &self,
+        client: &Client,
+        peer: &RemotePeer,
+        auth_token: &str,
+        task_id: &str,
+    ) -> Result<RemoteExecuteResponse> {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let status_url = format!(
+            "{}/api/v1/tasks/{}",
+            peer.target.trim_end_matches('/'),
+            task_id
+        );
+
+        loop {
+            let response = client
+                .get(&status_url)
+                .bearer_auth(auth_token)
+                .send()
+                .await
+                .context("Failed to poll remote daemon")?;
+            let completion = parse_remote_response(response).await?;
+            match completion.status.as_str() {
+                "running" if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                "running" => {
+                    return Ok(RemoteExecuteResponse {
+                        success: true,
+                        task_id: Some(task_id.to_string()),
+                        status: "running".to_string(),
+                        answer: None,
+                        provider: None,
+                        duration_ms: None,
+                        message: Some("Remote task is still running; polling timed out after 120s".to_string()),
+                    });
+                }
+                _ => return Ok(completion),
+            }
+        }
+    }
+
+    async fn auth_token_for_peer(&self, peer: &RemotePeer) -> Result<String> {
+        if let Some(secret_key) = &peer.auth_secret_key {
+            return SecretManager::new(SERVICE_NAME)
+                .get_secret(secret_key)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Missing auth token for remote node '{}'. Pair again with `--token` or restore secret '{}'.",
+                        peer.identity.node_name, secret_key
+                    )
+                });
+        }
+
+        self.config
+            .ws_client
+            .auth_token
+            .clone()
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Remote node '{}' has no stored auth token. Pair again with `--token`.",
+                    peer.identity.node_name
+                )
+            })
     }
 
     fn remote_node_file(&self) -> PathBuf {
@@ -194,9 +398,20 @@ impl RemoteManager {
             return Ok(Vec::new());
         }
         let raw = fs::read_to_string(&path)?;
-        let peers: Vec<RemotePeer> =
-            toml::from_str(&raw).with_context(|| format!("Failed to parse {}", path.display()))?;
-        Ok(peers)
+        if let Ok(file) = toml::from_str::<RemotePeersFile>(&raw) {
+            return Ok(file.peers);
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct LegacyRemotePeersFile {
+            remote_peers: Vec<RemotePeer>,
+        }
+
+        if let Ok(file) = toml::from_str::<LegacyRemotePeersFile>(&raw) {
+            return Ok(file.remote_peers);
+        }
+
+        Err(anyhow::anyhow!("Failed to parse {}", path.display()))
     }
 
     fn save_peers(&self, peers: &[RemotePeer]) -> Result<()> {
@@ -204,7 +419,10 @@ impl RemoteManager {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, toml::to_string_pretty(peers)?)?;
+        let file = RemotePeersFile {
+            peers: peers.to_vec(),
+        };
+        fs::write(path, toml::to_string_pretty(&file)?)?;
         Ok(())
     }
 
@@ -224,4 +442,199 @@ impl RemoteManager {
 struct RemoteNodeMetadata {
     identity: NodeIdentity,
     profile: NodeProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RemotePeersFile {
+    peers: Vec<RemotePeer>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RemoteExecuteRequest {
+    input: Option<String>,
+    task: Option<String>,
+    origin_node: Option<String>,
+    coordinator_node: Option<String>,
+    workspace: Option<String>,
+    team_id: Option<String>,
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteExecuteResponse {
+    success: bool,
+    task_id: Option<String>,
+    status: String,
+    answer: Option<String>,
+    provider: Option<String>,
+    duration_ms: Option<i64>,
+    message: Option<String>,
+}
+
+async fn parse_remote_response(response: reqwest::Response) -> Result<RemoteExecuteResponse> {
+    let status_code = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let parsed: RemoteExecuteResponse = serde_json::from_str(&body).with_context(|| {
+        format!(
+            "Remote daemon returned non-JSON response (status {}): {}",
+            status_code, body
+        )
+    })?;
+    if !parsed.success && status_code.is_success() {
+        bail!(
+            "Remote daemon reported failure: {}",
+            parsed
+                .message
+                .clone()
+                .unwrap_or_else(|| parsed.status.clone())
+        );
+    }
+    if !status_code.is_success() && status_code.as_u16() != 202 {
+        bail!(
+            "Remote daemon rejected request: {}",
+            parsed
+                .message
+                .unwrap_or_else(|| format!("status {} {}", status_code.as_u16(), parsed.status))
+        );
+    }
+    Ok(parsed)
+}
+
+fn resolve_pair_target(target: &str, url: Option<&str>) -> Result<(String, String)> {
+    match url {
+        Some(url) => Ok((target.to_string(), normalize_base_url(url)?)),
+        None if target.starts_with("http://") || target.starts_with("https://") => {
+            Ok((derive_node_name(target), normalize_base_url(target)?))
+        }
+        None => bail!(
+            "Pairing requires a daemon URL. Use `rove remote pair office-mac --url http://host:3727 --token ...` or pass the URL directly as the target."
+        ),
+    }
+}
+
+fn normalize_base_url(url: &str) -> Result<String> {
+    let parsed = reqwest::Url::parse(url)
+        .with_context(|| format!("Invalid remote daemon URL '{}'", url))?;
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
+}
+
+fn derive_node_name(target: &str) -> String {
+    reqwest::Url::parse(target)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.replace('.', "-")))
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "remote-node".to_string())
+}
+
+fn secret_key_fragment(node_name: &str) -> String {
+    node_name
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_config() -> (TempDir, Config) {
+        let temp = TempDir::new().expect("temp dir");
+        let mut config = Config::default();
+        config.core.workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&config.core.workspace).expect("workspace");
+        config.core.data_dir = temp.path().join("data");
+        config.ws_client.enabled = true;
+        config.ws_client.auth_token = Some("remote-token".to_string());
+        (temp, config)
+    }
+
+    #[tokio::test]
+    async fn send_to_trusted_node_polls_until_completion() {
+        let (_temp, config) = test_config();
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/remote/execute"))
+            .and(header("authorization", "Bearer remote-token"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
+                "success": true,
+                "task_id": "remote-task-1",
+                "status": "running",
+                "answer": null,
+                "provider": null,
+                "duration_ms": null,
+                "message": "accepted"
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/tasks/remote-task-1"))
+            .and(header("authorization", "Bearer remote-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "task_id": "remote-task-1",
+                "status": "completed",
+                "answer": "done",
+                "provider": "ollama",
+                "duration_ms": 12,
+                "message": null
+            })))
+            .mount(&server)
+            .await;
+
+        let manager = RemoteManager::new(config);
+        manager
+            .pair("office-mac", Some(&server.uri()), None, false, &[])
+            .await
+            .expect("pair");
+        manager.trust("office-mac").expect("trust");
+
+        let result = manager
+            .send("office-mac", "find test.txt")
+            .await
+            .expect("send");
+
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.answer.as_deref(), Some("done"));
+        assert_eq!(result.provider.as_deref(), Some("ollama"));
+    }
+
+    #[tokio::test]
+    async fn send_requires_trusted_peer() {
+        let (_temp, config) = test_config();
+        let server = MockServer::start().await;
+        let manager = RemoteManager::new(config);
+        manager
+            .pair("office-mac", Some(&server.uri()), None, false, &[])
+            .await
+            .expect("pair");
+
+        let error = manager
+            .send("office-mac", "find test.txt")
+            .await
+            .expect_err("send should fail");
+        assert!(error.to_string().contains("not trusted"));
+    }
+
+    #[tokio::test]
+    async fn pair_persists_peer_inventory_in_wrapped_toml() {
+        let (_temp, config) = test_config();
+        let server = MockServer::start().await;
+        let manager = RemoteManager::new(config);
+
+        manager
+            .pair("office-mac", Some(&server.uri()), None, true, &["office".to_string()])
+            .await
+            .expect("pair");
+
+        let nodes = manager.nodes().expect("nodes");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].identity.node_name, "office-mac");
+        assert_eq!(nodes[0].profile.execution_role, NodeExecutionRole::ExecutorOnly);
+        assert_eq!(nodes[0].profile.tags, vec!["office".to_string()]);
+    }
 }

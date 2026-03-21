@@ -7,22 +7,34 @@ pub enum RemoteAction {
     Status,
     Nodes,
     Rename(String),
-    Pair(String),
+    Pair {
+        target: String,
+        url: Option<String>,
+        token: Option<String>,
+        executor_only: bool,
+        tags: Vec<String>,
+    },
     Unpair(String),
     Trust(String),
     Send { node: String, prompt: String },
 }
 
-pub fn handle(action: RemoteAction, config: &Config) -> Result<()> {
+pub async fn handle(action: RemoteAction, config: &Config) -> Result<()> {
     let manager = RemoteManager::new(config.clone());
     match action {
         RemoteAction::Status => status(&manager),
         RemoteAction::Nodes => nodes(&manager),
         RemoteAction::Rename(name) => rename(&manager, &name),
-        RemoteAction::Pair(target) => pair(&manager, &target),
-        RemoteAction::Unpair(name) => unpair(&manager, &name),
+        RemoteAction::Pair {
+            target,
+            url,
+            token,
+            executor_only,
+            tags,
+        } => pair(&manager, &target, url.as_deref(), token.as_deref(), executor_only, &tags).await,
+        RemoteAction::Unpair(name) => unpair(&manager, &name).await,
         RemoteAction::Trust(name) => trust(&manager, &name),
-        RemoteAction::Send { node, prompt } => send(&manager, &node, &prompt),
+        RemoteAction::Send { node, prompt } => send(&manager, &node, &prompt).await,
     }
 }
 
@@ -45,10 +57,11 @@ fn nodes(manager: &RemoteManager) -> Result<()> {
     println!("Paired nodes:");
     for peer in peers {
         println!(
-            "- {} [{}] {}",
+            "- {} [{}] {} role={:?}",
             peer.identity.node_name,
             if peer.trusted { "trusted" } else { "paired" },
-            peer.target
+            peer.target,
+            peer.profile.execution_role
         );
     }
     Ok(())
@@ -60,14 +73,34 @@ fn rename(manager: &RemoteManager, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn pair(manager: &RemoteManager, target: &str) -> Result<()> {
-    manager.pair(target)?;
-    println!("Paired remote node '{}'.", target);
+async fn pair(
+    manager: &RemoteManager,
+    target: &str,
+    url: Option<&str>,
+    token: Option<&str>,
+    executor_only: bool,
+    tags: &[String],
+) -> Result<()> {
+    let peer = manager
+        .pair(target, url, token, executor_only, tags)
+        .await?;
+    println!(
+        "Paired remote node '{}' at {}.",
+        peer.identity.node_name, peer.target
+    );
+    if peer.auth_secret_key.is_some() {
+        println!("Stored bearer token for '{}'.", peer.identity.node_name);
+    } else {
+        println!(
+            "No bearer token stored for '{}'. Remote sends will use the configured remote auth token if available.",
+            peer.identity.node_name
+        );
+    }
     Ok(())
 }
 
-fn unpair(manager: &RemoteManager, name: &str) -> Result<()> {
-    manager.unpair(name)?;
+async fn unpair(manager: &RemoteManager, name: &str) -> Result<()> {
+    manager.unpair(name).await?;
     println!("Removed remote node '{}'.", name);
     Ok(())
 }
@@ -78,12 +111,20 @@ fn trust(manager: &RemoteManager, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn send(manager: &RemoteManager, node: &str, prompt: &str) -> Result<()> {
-    let preview = manager.send_preview(node, prompt)?;
+async fn send(manager: &RemoteManager, node: &str, prompt: &str) -> Result<()> {
+    let result = manager.send(node, prompt).await?;
     println!(
-        "Remote send preview: coordinator='{}' target='{}' prompt='{}'",
-        preview.envelope.coordinator_node, preview.envelope.target_node, prompt
+        "Remote send: coordinator='{}' target='{}' remote_task_id='{}' status='{}'",
+        result.envelope.coordinator_node,
+        result.envelope.target_node,
+        result.remote_task_id,
+        result.status
     );
-    println!("{}", preview.message);
+    if let Some(answer) = result.answer {
+        println!();
+        println!("{}", answer);
+    } else if let Some(message) = result.message {
+        println!("{}", message);
+    }
     Ok(())
 }
