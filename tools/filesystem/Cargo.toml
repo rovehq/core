@@ -1,0 +1,15 @@
+[package]
+name = "filesystem"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sdk = { path = "../../sdk" }
+anyhow.workspace = true
+dirs.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true

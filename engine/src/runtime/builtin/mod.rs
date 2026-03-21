@@ -1,10 +1,6 @@
-pub mod filesystem;
-pub mod terminal;
-pub mod vision;
-
 pub use filesystem::FilesystemTool;
+pub use screenshot::VisionTool;
 pub use terminal::TerminalTool;
-pub use vision::VisionTool;
 
 use std::path::PathBuf;
 

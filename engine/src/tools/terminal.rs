@@ -1,1 +1,1 @@
-pub use crate::runtime::builtin::terminal::*;
+pub use crate::runtime::builtin::TerminalTool;

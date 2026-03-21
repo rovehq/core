@@ -39,6 +39,7 @@ use super::{completion, AppState};
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg {
     StartTask { input: String },
+    SubscribeTask { task_id: String },
     Ping,
 }
 
@@ -46,12 +47,20 @@ enum ClientMsg {
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum ServerMsg<'a> {
+enum ServerMsg {
     Accepted {
-        task_id: &'a str,
+        task_id: String,
     },
     Progress {
-        message: &'a str,
+        message: String,
+    },
+    Event {
+        task_id: String,
+        event_type: String,
+        payload: String,
+        step_num: i64,
+        domain: Option<String>,
+        created_at: i64,
     },
     Result {
         answer: String,
@@ -65,7 +74,7 @@ enum ServerMsg<'a> {
     Pong,
 }
 
-impl<'a> ServerMsg<'a> {
+impl ServerMsg {
     fn to_text(&self) -> String {
         serde_json::to_string(self)
             .unwrap_or_else(|_| r#"{"type":"error","message":"serialization failure"}"#.into())
@@ -127,6 +136,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                     ClientMsg::StartTask { input } => {
                         handle_start_task(&mut socket, &state, input).await;
                     }
+                    ClientMsg::SubscribeTask { task_id } => {
+                        stream_task_updates(&mut socket, &state, task_id).await;
+                    }
                     ClientMsg::Ping => {
                         let _ = socket.send(Message::Text(ServerMsg::Pong.to_text())).await;
                     }
@@ -158,23 +170,60 @@ async fn handle_start_task(socket: &mut WebSocket, state: &AppState, input: Stri
     };
 
     // Immediately acknowledge with the task ID so the client can track it
-    let accepted = ServerMsg::Accepted { task_id: &task_id };
+    let accepted = ServerMsg::Accepted {
+        task_id: task_id.clone(),
+    };
     if socket
         .send(Message::Text(accepted.to_text()))
         .await
-        .is_err()
+    .is_err()
     {
         return;
     }
 
-    // Stream a progress note (pre-execution)
-    let prog = ServerMsg::Progress {
-        message: "Task accepted. Executing…",
-    };
-    let _ = socket.send(Message::Text(prog.to_text())).await;
+    let _ = socket
+        .send(Message::Text(
+            ServerMsg::Progress {
+                message: "Task accepted. Executing...".to_string(),
+            }
+            .to_text(),
+        ))
+        .await;
+
+    stream_task_updates(socket, state, task_id).await;
+}
+
+async fn stream_task_updates(socket: &mut WebSocket, state: &AppState, task_id: String) {
+    let mut sent_event_ids = std::collections::HashSet::new();
 
     loop {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        match state.db.tasks().get_agent_events(&task_id).await {
+            Ok(events) => {
+                for event in events
+                    .into_iter()
+                    .filter(|event| sent_event_ids.insert(event.id.clone()))
+                {
+                    let message = ServerMsg::Event {
+                        task_id: event.task_id,
+                        event_type: event.event_type,
+                        payload: event.payload,
+                        step_num: event.step_num,
+                        domain: event.domain,
+                        created_at: event.created_at,
+                    };
+                    if socket.send(Message::Text(message.to_text())).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                let msg = ServerMsg::Error {
+                    message: format!("Failed to load task events: {}", error),
+                };
+                let _ = socket.send(Message::Text(msg.to_text())).await;
+                return;
+            }
+        }
 
         match completion::load_completion(state, &task_id).await {
             Ok(completion::CompletionState::Done(result)) => {
@@ -204,10 +253,7 @@ async fn handle_start_task(socket: &mut WebSocket, state: &AppState, input: Stri
                 break;
             }
             Ok(completion::CompletionState::Running) => {
-                let prog = ServerMsg::Progress {
-                    message: "Task is running...",
-                };
-                let _ = socket.send(Message::Text(prog.to_text())).await;
+                tokio::time::sleep(Duration::from_millis(300)).await;
             }
             Err(error) => {
                 let msg = ServerMsg::Error {

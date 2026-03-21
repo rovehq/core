@@ -1,5 +1,9 @@
-use anyhow::Result;
 use std::path::PathBuf;
+
+use anyhow::Result;
+use sdk::core_tool::{CoreContext, CoreTool};
+use sdk::errors::EngineError;
+use sdk::tool_io::{ToolInput, ToolOutput};
 use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
@@ -12,7 +16,6 @@ impl VisionTool {
         Self { work_dir }
     }
 
-    /// Capture a screenshot and save it to the specified relative or absolute path
     pub async fn capture_screen(&self, output_file: &str) -> Result<PathBuf> {
         let mut save_path = PathBuf::from(output_file);
         if !save_path.is_absolute() {
@@ -26,7 +29,7 @@ impl VisionTool {
 
         #[cfg(target_os = "macos")]
         let result = tokio::process::Command::new("screencapture")
-            .arg("-x") // silent
+            .arg("-x")
             .arg(&save_path_str)
             .output()
             .await;
@@ -45,10 +48,7 @@ impl VisionTool {
             ));
 
         match result {
-            Ok(output) if output.status.success() => {
-                info!("Screenshot captured successfully");
-                Ok(save_path)
-            }
+            Ok(output) if output.status.success() => Ok(save_path),
             Ok(output) => {
                 let err = String::from_utf8_lossy(&output.stderr);
                 warn!("Screenshot command failed: {}", err);
@@ -63,4 +63,50 @@ impl VisionTool {
             }
         }
     }
+}
+
+impl CoreTool for VisionTool {
+    fn name(&self) -> &str {
+        "vision"
+    }
+
+    fn version(&self) -> &str {
+        env!("CARGO_PKG_VERSION")
+    }
+
+    fn start(&mut self, ctx: CoreContext) -> Result<(), EngineError> {
+        if let Some(workspace) = ctx.config.get("core.workspace").and_then(|v| v.as_str().map(PathBuf::from)) {
+            self.work_dir = workspace;
+        }
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<(), EngineError> {
+        Ok(())
+    }
+
+    fn handle(&self, input: ToolInput) -> Result<ToolOutput, EngineError> {
+        let output_file = match input.method.as_str() {
+            "capture_screen" => input.param_str_opt("output_file").unwrap_or_else(|| "screenshot.png".to_string()),
+            other => {
+                return Err(EngineError::ToolError(format!(
+                    "Unknown vision method '{}'",
+                    other
+                )))
+            }
+        };
+        let runtime = tokio::runtime::Handle::try_current()
+            .map_err(|error| EngineError::ToolError(error.to_string()))?;
+        let path = runtime
+            .block_on(self.capture_screen(&output_file))
+            .map_err(|error| EngineError::ToolError(error.to_string()))?;
+        Ok(ToolOutput::json(serde_json::json!(path.display().to_string())))
+    }
+}
+
+#[allow(improper_ctypes_definitions)]
+#[no_mangle]
+pub extern "C" fn create_tool() -> *mut dyn CoreTool {
+    let work_dir = std::env::current_dir().unwrap_or_default();
+    Box::into_raw(Box::new(VisionTool::new(work_dir)))
 }

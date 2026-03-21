@@ -3,8 +3,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderValue};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
 use crate::config::metadata::SERVICE_NAME;
@@ -46,6 +51,17 @@ pub struct RemoteSendResult {
     pub provider: Option<String>,
     pub duration_ms: Option<i64>,
     pub message: Option<String>,
+    pub events: Vec<RemoteTaskEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteTaskEvent {
+    pub task_id: String,
+    pub event_type: String,
+    pub payload: String,
+    pub step_num: i64,
+    pub domain: Option<String>,
+    pub created_at: i64,
 }
 
 pub struct RemoteManager {
@@ -200,7 +216,7 @@ impl RemoteManager {
         Ok(RemoteSendPreview {
             envelope,
             trusted: peer.trusted,
-            message: "Remote transport ready. The coordinator will submit to the target daemon and poll task completion.".to_string(),
+            message: "Remote transport ready. The coordinator will submit to the target daemon and stream task events before the final result.".to_string(),
         })
     }
 
@@ -261,6 +277,7 @@ impl RemoteManager {
                 provider: execute.provider,
                 duration_ms: execute.duration_ms,
                 message: execute.message,
+                events: Vec::new(),
             });
         }
 
@@ -269,9 +286,25 @@ impl RemoteManager {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Remote daemon did not return a task id"))?;
 
-        let completion = self
-            .poll_remote_completion(&client, peer, &auth_token, &remote_task_id)
-            .await?;
+        let (events, completion) = match self
+            .stream_remote_events(peer, &auth_token, &remote_task_id)
+            .await
+        {
+            Ok((events, completion)) => (events, completion),
+            Err(error) => {
+                tracing::warn!(
+                    node = %peer.identity.node_name,
+                    task_id = %remote_task_id,
+                    error = %error,
+                    "Remote task event stream failed, falling back to completion polling"
+                );
+                (
+                    Vec::new(),
+                    self.poll_remote_completion(&client, peer, &auth_token, &remote_task_id)
+                        .await?,
+                )
+            }
+        };
 
         Ok(RemoteSendResult {
             envelope,
@@ -282,7 +315,115 @@ impl RemoteManager {
             provider: completion.provider,
             duration_ms: completion.duration_ms,
             message: completion.message,
+            events,
         })
+    }
+
+    async fn stream_remote_events(
+        &self,
+        peer: &RemotePeer,
+        auth_token: &str,
+        task_id: &str,
+    ) -> Result<(Vec<RemoteTaskEvent>, RemoteExecuteResponse)> {
+        let mut request = websocket_task_url(&peer.target)?
+            .into_client_request()
+            .context("Failed to prepare remote WebSocket request")?;
+        let header = HeaderValue::from_str(&format!("Bearer {}", auth_token))
+            .context("Invalid remote bearer token")?;
+        request.headers_mut().insert(AUTHORIZATION, header);
+
+        let (mut ws, _) = connect_async(request)
+            .await
+            .context("Failed to open remote task stream")?;
+
+        let subscribe = RemoteTaskStreamClientMessage::SubscribeTask {
+            task_id: task_id.to_string(),
+        };
+        ws.send(WsMessage::Text(serde_json::to_string(&subscribe)?))
+            .await
+            .context("Failed to subscribe to remote task stream")?;
+
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut events = Vec::new();
+
+        while let Some(message) = ws.next().await {
+            let message = message.context("Remote task stream failed")?;
+            match message {
+                WsMessage::Text(text) => {
+                    let server: RemoteTaskStreamServerMessage = serde_json::from_str(&text)
+                        .with_context(|| format!("Invalid remote task stream message: {}", text))?;
+                    match server {
+                        RemoteTaskStreamServerMessage::Event {
+                            task_id,
+                            event_type,
+                            payload,
+                            step_num,
+                            domain,
+                            created_at,
+                        } => {
+                            events.push(RemoteTaskEvent {
+                                task_id,
+                                event_type,
+                                payload,
+                                step_num,
+                                domain,
+                                created_at,
+                            });
+                        }
+                        RemoteTaskStreamServerMessage::Result {
+                            answer,
+                            provider,
+                            duration_ms,
+                            ..
+                        } => {
+                            return Ok((
+                                events,
+                                RemoteExecuteResponse {
+                                    success: true,
+                                    task_id: Some(task_id.to_string()),
+                                    status: "completed".to_string(),
+                                    answer: Some(answer),
+                                    provider,
+                                    duration_ms: Some(duration_ms),
+                                    message: None,
+                                },
+                            ));
+                        }
+                        RemoteTaskStreamServerMessage::Error { message } => {
+                            return Ok((
+                                events,
+                                RemoteExecuteResponse {
+                                    success: false,
+                                    task_id: Some(task_id.to_string()),
+                                    status: "failed".to_string(),
+                                    answer: None,
+                                    provider: None,
+                                    duration_ms: None,
+                                    message: Some(message),
+                                },
+                            ));
+                        }
+                        RemoteTaskStreamServerMessage::Accepted { .. }
+                        | RemoteTaskStreamServerMessage::Progress { .. }
+                        | RemoteTaskStreamServerMessage::Connected { .. }
+                        | RemoteTaskStreamServerMessage::Pong => {}
+                    }
+                }
+                WsMessage::Ping(payload) => {
+                    ws.send(WsMessage::Pong(payload))
+                        .await
+                        .context("Failed to reply to remote task stream ping")?;
+                }
+                WsMessage::Close(_) => break,
+                _ => {}
+            }
+
+            if Instant::now() >= deadline {
+                bail!("Remote task stream timed out after 120s");
+            }
+        }
+
+        bail!("Remote task stream closed before task completion")
     }
 
     async fn poll_remote_completion(
@@ -471,6 +612,37 @@ struct RemoteExecuteResponse {
     message: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RemoteTaskStreamClientMessage {
+    SubscribeTask { task_id: String },
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RemoteTaskStreamServerMessage {
+    Connected { version: String },
+    Accepted { task_id: String },
+    Progress { message: String },
+    Event {
+        task_id: String,
+        event_type: String,
+        payload: String,
+        step_num: i64,
+        domain: Option<String>,
+        created_at: i64,
+    },
+    Result {
+        answer: String,
+        provider: Option<String>,
+        duration_ms: i64,
+        iterations: usize,
+    },
+    Error { message: String },
+    Pong,
+}
+
 async fn parse_remote_response(response: reqwest::Response) -> Result<RemoteExecuteResponse> {
     let status_code = response.status();
     let body = response.text().await.unwrap_or_default();
@@ -518,6 +690,27 @@ fn normalize_base_url(url: &str) -> Result<String> {
     Ok(parsed.as_str().trim_end_matches('/').to_string())
 }
 
+fn websocket_task_url(base_url: &str) -> Result<String> {
+    let mut url = reqwest::Url::parse(base_url)
+        .with_context(|| format!("Invalid remote daemon URL '{}'", base_url))?;
+    match url.scheme() {
+        "http" => {
+            url.set_scheme("ws")
+                .map_err(|_| anyhow::anyhow!("Failed to convert '{}' to ws://", base_url))?;
+        }
+        "https" => {
+            url.set_scheme("wss")
+                .map_err(|_| anyhow::anyhow!("Failed to convert '{}' to wss://", base_url))?;
+        }
+        "ws" | "wss" => {}
+        other => bail!("Unsupported remote daemon scheme '{}'", other),
+    }
+    url.set_path("/ws/task");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
 fn derive_node_name(target: &str) -> String {
     reqwest::Url::parse(target)
         .ok()
@@ -536,7 +729,18 @@ fn secret_key_fragment(node_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        extract::{
+            ws::{Message, WebSocket, WebSocketUpgrade},
+            Json,
+        },
+        response::IntoResponse,
+        routing::{get, post},
+        Router,
+    };
+    use futures::StreamExt;
     use tempfile::TempDir;
+    use tokio::net::TcpListener;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -601,6 +805,111 @@ mod tests {
         assert_eq!(result.status, "completed");
         assert_eq!(result.answer.as_deref(), Some("done"));
         assert_eq!(result.provider.as_deref(), Some("ollama"));
+    }
+
+    #[tokio::test]
+    async fn send_streams_remote_events_when_ws_task_stream_exists() {
+        async fn execute_remote() -> impl IntoResponse {
+            Json(serde_json::json!({
+                "success": true,
+                "task_id": "stream-task-1",
+                "status": "running",
+                "answer": null,
+                "provider": null,
+                "duration_ms": null,
+                "message": "accepted"
+            }))
+        }
+
+        async fn ws_task(ws: WebSocketUpgrade) -> impl IntoResponse {
+            ws.on_upgrade(|socket| async move {
+                handle_stream_test_socket(socket).await;
+            })
+        }
+
+        async fn handle_stream_test_socket(mut socket: WebSocket) {
+            let _ = socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "connected",
+                        "version": "test"
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await;
+
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let message: serde_json::Value =
+                    serde_json::from_str(&text).expect("valid subscribe message");
+                if message.get("type").and_then(|v| v.as_str()) == Some("subscribe_task") {
+                    let _ = socket
+                        .send(Message::Text(
+                            serde_json::json!({
+                                "type": "event",
+                                "task_id": "stream-task-1",
+                                "event_type": "thought",
+                                "payload": "{\"summary\":\"searching\"}",
+                                "step_num": 1,
+                                "domain": "general",
+                                "created_at": 1
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await;
+                    let _ = socket
+                        .send(Message::Text(
+                            serde_json::json!({
+                                "type": "result",
+                                "answer": "done",
+                                "provider": "ollama",
+                                "duration_ms": 7,
+                                "iterations": 1
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await;
+                    break;
+                }
+            }
+        }
+
+        let (_temp, config) = test_config();
+        let app = Router::new()
+            .route("/api/v1/remote/execute", post(execute_remote))
+            .route("/ws/task", get(ws_task));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let manager = RemoteManager::new(config);
+        manager
+            .pair(
+                "office-mac",
+                Some(&format!("http://{}", addr)),
+                None,
+                false,
+                &[],
+            )
+            .await
+            .expect("pair");
+        manager.trust("office-mac").expect("trust");
+
+        let result = manager
+            .send("office-mac", "find test.txt")
+            .await
+            .expect("send");
+
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.answer.as_deref(), Some("done"));
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].event_type, "thought");
+
+        server.abort();
     }
 
     #[tokio::test]

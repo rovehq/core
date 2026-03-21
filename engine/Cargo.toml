@@ -21,6 +21,9 @@ tokio-stream = "0.1.15"
 
 sdk = { path = "../sdk" }
 brain = { path = "../brain" }
+filesystem = { path = "../tools/filesystem" }
+screenshot = { path = "../tools/screenshot" }
+terminal = { path = "../tools/terminal" }
 
 # Workspace dependencies
 tokio.workspace = true

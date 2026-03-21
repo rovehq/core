@@ -120,6 +120,15 @@ async fn send(manager: &RemoteManager, node: &str, prompt: &str) -> Result<()> {
         result.remote_task_id,
         result.status
     );
+    if !result.events.is_empty() {
+        println!("Streamed {} remote event(s):", result.events.len());
+        for event in &result.events {
+            println!(
+                "- [{}] {} {}",
+                event.step_num, event.event_type, event.payload
+            );
+        }
+    }
     if let Some(answer) = result.answer {
         println!();
         println!("{}", answer);

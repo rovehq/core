@@ -1,1 +1,1 @@
-pub use crate::runtime::builtin::vision::*;
+pub use crate::runtime::builtin::VisionTool;
