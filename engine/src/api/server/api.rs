@@ -1,21 +1,24 @@
 use axum::{
     extract::{Json, Path, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
 
-use super::{completion, AppState};
+use super::{auth::AuthManager, completion, AppState};
 use crate::channels::manager::ChannelManager;
 use crate::config::Config;
 use crate::gateway::Task;
 use crate::policy::PolicyManager;
 use crate::remote::RemoteManager;
 use crate::services::{ManagedService, ServiceManager};
-use sdk::{RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, TaskSource};
+use sdk::{
+    AuthState, DaemonCapabilities, DaemonHello, NodeSummary, RemoteExecutionPlan, RunContextId,
+    RunIsolation, RunMode, TaskSource,
+};
 
 #[derive(Serialize)]
 pub struct HealthResponse {
@@ -29,6 +32,231 @@ pub async fn health_check() -> impl IntoResponse {
         version: crate::info::VERSION.to_string(),
     };
     (StatusCode::OK, Json(res))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuthSetupRequest {
+    pub password: String,
+    pub node_name: Option<String>,
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuthLoginRequest {
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateTaskRequest {
+    pub prompt: Option<String>,
+    pub input: Option<String>,
+}
+
+pub async fn hello(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let auth_manager = AuthManager::new(state.db.clone());
+    let config = match Config::load_or_create() {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response();
+        }
+    };
+
+    let remote_status = RemoteManager::new(config.clone()).status();
+    let auth_state = match AuthManager::bearer_token(&headers) {
+        Some(token) => match auth_manager.validate_session(&token, false).await {
+            Ok(validated) => validated.status.state,
+            Err(_) => auth_manager.auth_state().unwrap_or(AuthState::Locked),
+        },
+        None => auth_manager.auth_state().unwrap_or(AuthState::Locked),
+    };
+
+    let service_statuses = ServiceManager::new(config.clone()).list();
+    let capabilities = DaemonCapabilities {
+        brains: if config.brains.enabled {
+            vec!["dispatch".to_string()]
+        } else {
+            Vec::new()
+        },
+        services: service_statuses
+            .into_iter()
+            .filter(|service| service.enabled)
+            .map(|service| service.name)
+            .collect(),
+        extensions: match state.db.installed_plugins().list_plugins().await {
+            Ok(plugins) => plugins
+                .into_iter()
+                .filter(|plugin| plugin.enabled)
+                .map(|plugin| format!("{}:{}", plugin.plugin_type.to_lowercase(), plugin.name))
+                .collect(),
+            Err(_) => Vec::new(),
+        },
+    };
+
+    let (node_id, node_name, role) = match remote_status {
+        Ok(status) => (
+            status.node.node_id,
+            status.node.node_name,
+            status.profile.execution_role,
+        ),
+        Err(_) => (
+            "local-node".to_string(),
+            "local".to_string(),
+            sdk::NodeExecutionRole::Full,
+        ),
+    };
+
+    (
+        StatusCode::OK,
+        Json(DaemonHello {
+            version: crate::info::VERSION.to_string(),
+            daemon_running: true,
+            auth_state,
+            node: NodeSummary {
+                node_id,
+                node_name,
+                role,
+            },
+            capabilities,
+        }),
+    )
+        .into_response()
+}
+
+pub async fn auth_setup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<AuthSetupRequest>,
+) -> impl IntoResponse {
+    match AuthManager::new(state.db.clone())
+        .setup(
+            &payload.password,
+            payload.node_name.as_deref(),
+            payload.mode.as_deref(),
+            &headers,
+        )
+        .await
+    {
+        Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn auth_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<AuthLoginRequest>,
+) -> impl IntoResponse {
+    match AuthManager::new(state.db.clone())
+        .login(&payload.password, &headers)
+        .await
+    {
+        Ok(session) => (StatusCode::OK, Json(session)).into_response(),
+        Err(error) => json_error_response(StatusCode::UNAUTHORIZED, error),
+    }
+}
+
+pub async fn auth_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(token) = AuthManager::bearer_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Missing bearer token" })),
+        )
+            .into_response();
+    };
+
+    match AuthManager::new(state.db.clone()).status_for_token(&token).await {
+        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+        Err(error) => json_error_response(StatusCode::UNAUTHORIZED, error),
+    }
+}
+
+pub async fn auth_lock(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(token) = AuthManager::bearer_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Missing bearer token" })),
+        )
+            .into_response();
+    };
+
+    match AuthManager::new(state.db.clone()).lock(&token).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn auth_reauth(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<AuthLoginRequest>,
+) -> impl IntoResponse {
+    let Some(token) = AuthManager::bearer_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Missing bearer token" })),
+        )
+            .into_response();
+    };
+
+    match AuthManager::new(state.db.clone())
+        .reauth(&token, &payload.password, &headers)
+        .await
+    {
+        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+        Err(error) => json_error_response(StatusCode::UNAUTHORIZED, error),
+    }
+}
+
+pub async fn list_tasks(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.tasks().get_recent_tasks(50).await {
+        Ok(tasks) => (StatusCode::OK, Json(tasks)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+fn json_error_response(
+    status: StatusCode,
+    error: impl std::fmt::Display,
+) -> Response {
+    (
+        status,
+        Json(serde_json::json!({ "error": error.to_string() })),
+    )
+        .into_response()
+}
+
+pub async fn create_task(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateTaskRequest>,
+) -> impl IntoResponse {
+    let Some(input) = parse_task_input(payload.input, payload.prompt) else {
+        return invalid_request("Request must include a non-empty `input` or `prompt` field");
+    };
+
+    match state.gateway.submit_webui(&input, None).await {
+        Ok(task_id) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "task_id": task_id,
+                "status": "pending",
+            })),
+        )
+            .into_response(),
+        Err(error) => internal_submission_error(error),
+    }
 }
 
 #[derive(Deserialize)]

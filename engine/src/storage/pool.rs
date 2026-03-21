@@ -7,7 +7,7 @@ use std::str::FromStr;
 use tracing::{debug, info};
 
 use super::{
-    InstalledPluginRepository, PendingTaskRepository, PluginRepository, ScheduleRepository,
+    AuthRepository, InstalledPluginRepository, PendingTaskRepository, PluginRepository, ScheduleRepository,
     TaskRepository,
 };
 
@@ -116,6 +116,10 @@ impl Database {
 
     pub fn tasks(&self) -> TaskRepository {
         TaskRepository::new(self.pool.clone())
+    }
+
+    pub fn auth(&self) -> AuthRepository {
+        AuthRepository::new(self.pool.clone())
     }
 
     pub fn plugins(&self) -> PluginRepository {

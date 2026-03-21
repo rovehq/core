@@ -1,6 +1,53 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthState {
+    Uninitialized,
+    Locked,
+    Unlocked,
+    ReauthRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub access_token: String,
+    pub expires_in_secs: u64,
+    pub absolute_expires_in_secs: u64,
+    pub reauth_required_for: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthStatus {
+    pub state: AuthState,
+    pub idle_expires_in_secs: Option<u64>,
+    pub absolute_expires_in_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonHello {
+    pub version: String,
+    pub daemon_running: bool,
+    pub auth_state: AuthState,
+    pub node: NodeSummary,
+    pub capabilities: DaemonCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSummary {
+    pub node_id: String,
+    pub node_name: String,
+    pub role: NodeExecutionRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DaemonCapabilities {
+    pub brains: Vec<String>,
+    pub services: Vec<String>,
+    pub extensions: Vec<String>,
+}
+
 /// Public kind for installable Rove capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExtensionKind {

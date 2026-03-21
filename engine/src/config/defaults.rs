@@ -18,6 +18,31 @@ pub fn default_webui_bind_addr() -> String {
     "127.0.0.1:3000".to_string()
 }
 
+pub fn default_webui_idle_timeout_secs() -> u64 {
+    20 * 60
+}
+
+pub fn default_webui_absolute_timeout_secs() -> u64 {
+    12 * 60 * 60
+}
+
+pub fn default_webui_reauth_window_secs() -> u64 {
+    10 * 60
+}
+
+pub fn default_webui_allowed_origins() -> Vec<String> {
+    vec![
+        "https://app.roveai.co".to_string(),
+        "https://staging.roveai.co".to_string(),
+        "http://localhost:3000".to_string(),
+        "http://127.0.0.1:3000".to_string(),
+    ]
+}
+
+pub fn default_privacy_mode() -> String {
+    "local_only".to_string()
+}
+
 /// Default log level
 pub fn default_log_level() -> String {
     "info".to_string()

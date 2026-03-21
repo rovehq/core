@@ -381,3 +381,56 @@ CREATE TRIGGER IF NOT EXISTS agent_events_fts_delete AFTER DELETE ON agent_event
     INSERT INTO agent_events_fts(agent_events_fts, rowid, task_id, event_type, payload)
     VALUES ('delete', old.rowid, old.task_id, old.event_type, old.payload);
 END;
+
+-- 11. Local Daemon Auth / WebUI Sessions
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    session_id           TEXT PRIMARY KEY,
+    created_at           INTEGER NOT NULL,
+    last_seen_at         INTEGER NOT NULL,
+    expires_at           INTEGER NOT NULL,
+    absolute_expires_at  INTEGER NOT NULL,
+    revoked_at           INTEGER,
+    client_label         TEXT,
+    origin               TEXT,
+    user_agent           TEXT,
+    requires_reauth      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry
+    ON auth_sessions(expires_at, absolute_expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_revoked
+    ON auth_sessions(revoked_at);
+
+CREATE TABLE IF NOT EXISTS auth_reauth (
+    session_id   TEXT PRIMARY KEY,
+    verified_at  INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_reauth_expiry
+    ON auth_reauth(expires_at);
+
+CREATE TABLE IF NOT EXISTS auth_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type  TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    session_id  TEXT,
+    metadata    TEXT,
+    FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_events_created
+    ON auth_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS pending_approvals (
+    approval_id  TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL,
+    risk_level   TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    resolved_at  INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_approvals_created
+    ON pending_approvals(created_at DESC);

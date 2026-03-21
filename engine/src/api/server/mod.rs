@@ -5,8 +5,9 @@
 //!
 //! Security properties (Requirement 16):
 //! - Binds to 127.0.0.1 only — not reachable from the network.
-//! - All routes are protected by a bearer token stored in the OS keychain.
-//! - CORS is restricted to localhost origins.
+//! - Public auth bootstrap routes are limited to trusted origins.
+//! - Control-plane routes require a daemon-issued local session token.
+//! - CORS is restricted to trusted WebUI origins.
 
 pub mod api;
 pub mod auth;
@@ -25,7 +26,6 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
@@ -71,19 +71,31 @@ pub async fn start_daemon(
         db,
     };
 
-    // Only allow localhost origins for CORS
+    // Only allow explicit hosted and local dev origins for CORS.
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, _req| {
             let host = origin.as_bytes();
-            host.starts_with(b"http://localhost")
+            host.starts_with(b"https://app.roveai.co")
+                || host.starts_with(b"https://staging.roveai.co")
+                || host.starts_with(b"http://localhost")
                 || host.starts_with(b"http://127.0.0.1")
                 || host.starts_with(b"https://localhost")
         }))
         .allow_methods(tower_http::cors::Any)
         .allow_headers(tower_http::cors::Any);
 
-    // Routes that require bearer token authentication
+    let public = Router::new()
+        .route("/api/v1/health", get(api::health_check))
+        .route("/v1/hello", get(api::hello))
+        .route("/v1/auth/setup", post(api::auth_setup))
+        .route("/v1/auth/login", post(api::auth_login));
+
+    // Routes that require daemon session authentication
     let protected = Router::new()
+        .route("/v1/auth/status", get(api::auth_status))
+        .route("/v1/auth/lock", post(api::auth_lock))
+        .route("/v1/auth/reauth", post(api::auth_reauth))
+        .route("/v1/tasks", get(api::list_tasks).post(api::create_task))
         .route("/api/run", post(api::execute_task))
         .route("/api/v1/execute", post(api::execute_task))
         .route("/api/v1/tasks/:task_id", get(api::task_status))
@@ -106,43 +118,20 @@ pub async fn start_daemon(
         .route("/api/v1/remote/rename", post(api::remote_rename))
         .route("/api/v1/remote/send", post(api::remote_send))
         .route("/v1/chat/completions", post(mcp::mcp_chat_completions))
+        .route("/v1/events/ws", get(ws::task_ws_handler))
         .route("/ws/task", get(ws::task_ws_handler))
         // Legacy telemetry endpoint, also protected
         .route("/ws/telemetry", get(ws::telemetry_handler))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            auth::require_bearer_token,
+            auth::require_session_token,
         ));
 
-    // Health check is always public (for process monitoring)
-    // Serve WebUI static files from Next.js build
-    let public = if webui_enabled {
-        let webui_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| {
-                p.parent()
-                    .map(|p| p.join("../../webui/dist").canonicalize().ok())
-            })
-            .flatten()
-            .or_else(|| {
-                std::path::PathBuf::from("core/webui/dist")
-                    .canonicalize()
-                    .ok()
-            })
-            .unwrap_or_else(|| std::path::PathBuf::from("core/webui"));
-
-        info!("Serving WebUI from: {:?}", webui_dir);
-
-        Router::new()
-            .route("/api/v1/health", get(api::health_check))
-            .nest_service(
-                "/",
-                ServeDir::new(&webui_dir).append_index_html_on_directories(true),
-            )
+    if webui_enabled {
+        info!("WebUI service enabled; daemon serving control-plane API for hosted UI");
     } else {
         info!("WebUI service disabled; serving control-plane API only");
-        Router::new().route("/api/v1/health", get(api::health_check))
-    };
+    }
 
     let app = Router::new()
         .merge(protected)

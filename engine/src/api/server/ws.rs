@@ -21,9 +21,11 @@
 
 use axum::{
     extract::{
+        Query,
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::StatusCode,
     response::IntoResponse,
 };
 use futures::stream::StreamExt;
@@ -31,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-use super::{completion, AppState};
+use super::{auth::AuthManager, completion, AppState};
 
 // ── Client → Server messages ─────────────────────────────────────────────────
 
@@ -40,6 +42,7 @@ use super::{completion, AppState};
 enum ClientMsg {
     StartTask { input: String },
     SubscribeTask { task_id: String },
+    Subscribe { topic: String },
     Ping,
 }
 
@@ -87,7 +90,15 @@ impl ServerMsg {
 pub async fn task_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
+    let manager = AuthManager::new(state.db.clone());
+    let Some(token) = query.token.as_deref() else {
+        return (StatusCode::UNAUTHORIZED, "Missing WebSocket token").into_response();
+    };
+    if let Err(error) = manager.validate_session(token, true).await {
+        return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+    }
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
@@ -95,8 +106,21 @@ pub async fn task_ws_handler(
 pub async fn telemetry_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
+    let manager = AuthManager::new(state.db.clone());
+    let Some(token) = query.token.as_deref() else {
+        return (StatusCode::UNAUTHORIZED, "Missing WebSocket token").into_response();
+    };
+    if let Err(error) = manager.validate_session(token, true).await {
+        return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+    }
     ws.on_upgrade(|socket| handle_socket(socket, state))
+}
+
+#[derive(Deserialize)]
+pub struct AuthQuery {
+    pub token: Option<String>,
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
@@ -138,6 +162,21 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                     }
                     ClientMsg::SubscribeTask { task_id } => {
                         stream_task_updates(&mut socket, &state, task_id).await;
+                    }
+                    ClientMsg::Subscribe { topic } => {
+                        if let Some(task_id) = topic.strip_prefix("task:") {
+                            stream_task_updates(&mut socket, &state, task_id.to_string()).await;
+                        } else if topic == "daemon" {
+                            let _ = socket
+                                .send(Message::Text(
+                                    serde_json::json!({
+                                        "type": "daemon.status",
+                                        "state": "running"
+                                    })
+                                    .to_string(),
+                                ))
+                                .await;
+                        }
                     }
                     ClientMsg::Ping => {
                         let _ = socket.send(Message::Text(ServerMsg::Pong.to_text())).await;
