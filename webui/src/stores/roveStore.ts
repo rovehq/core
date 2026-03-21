@@ -5,10 +5,13 @@ import { create } from 'zustand';
 import {
   AuthState,
   AuthStatus,
+  DaemonConfig,
   DaemonError,
   DaemonHello,
   DaemonEvent,
+  ExtensionRecord,
   RoveDaemonClient,
+  ServiceStatus,
   TaskSummary,
   readStoredToken,
   writeStoredToken,
@@ -43,10 +46,13 @@ interface RoveStore {
   appState: AppScreenState;
   hello: DaemonHello | null;
   authStatus: AuthStatus | null;
+  config: DaemonConfig | null;
   daemonUrl: string | null;
   token: string | null;
   error: string | null;
   tasks: TaskRecord[];
+  services: ServiceStatus[];
+  extensions: ExtensionRecord[];
   ws: WebSocketState;
   initialize: () => Promise<void>;
   setupPassword: (password: string, nodeName: string, mode: string) => Promise<boolean>;
@@ -58,6 +64,13 @@ interface RoveStore {
     options?: { parallel?: boolean; isolate?: 'none' | 'worktree' | 'snapshot' },
   ) => Promise<boolean>;
   refreshTasks: () => Promise<void>;
+  refreshServices: () => Promise<void>;
+  refreshExtensions: () => Promise<void>;
+  refreshConfig: () => Promise<void>;
+  setServiceEnabled: (name: string, enabled: boolean) => Promise<boolean>;
+  setExtensionEnabled: (kind: string, name: string, enabled: boolean) => Promise<boolean>;
+  removeExtension: (kind: string, name: string) => Promise<boolean>;
+  updateConfig: (payload: Partial<DaemonConfig>) => Promise<boolean>;
   clearError: () => void;
 }
 
@@ -276,10 +289,13 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
   appState: 'checking',
   hello: null,
   authStatus: null,
+  config: null,
   daemonUrl: null,
   token: null,
   error: null,
   tasks: [],
+  services: [],
+  extensions: [],
   ws: { connected: false, connecting: false, error: null },
 
   initialize: async () => {
@@ -301,8 +317,16 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
 
       if (storedToken && (nextState === 'unlocked' || nextState === 'reauth_required')) {
         const authStatus = await daemon.authStatus();
+        const [services, extensions, config] = await Promise.all([
+          daemon.listServices(),
+          daemon.listExtensions(),
+          daemon.getConfig(),
+        ]);
         set({
           authStatus,
+          services,
+          extensions,
+          config,
           appState: deriveAppState(authStatus.state, true),
         });
         await get().refreshTasks();
@@ -313,6 +337,9 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         stopAuthPolling();
         set({
           authStatus: null,
+          config: null,
+          services: [],
+          extensions: [],
           tasks: nextState === 'locked' || nextState === 'uninitialized' ? [] : get().tasks,
           ws: { connected: false, connecting: false, error: null },
         });
@@ -324,6 +351,9 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
       set({
         token: null,
         authStatus: null,
+        config: null,
+        services: [],
+        extensions: [],
         appState: 'offline',
         error: error instanceof Error ? error.message : 'Unable to reach daemon',
         ws: { connected: false, connecting: false, error: null },
@@ -387,6 +417,9 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
       set({
         token: null,
         authStatus: null,
+        config: null,
+        services: [],
+        extensions: [],
         appState: 'locked',
         tasks: [],
         ws: { connected: false, connecting: false, error: null },
@@ -432,6 +465,94 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         return;
       }
       set({ error: error instanceof Error ? error.message : 'Unable to load task history' });
+    }
+  },
+
+  refreshServices: async () => {
+    try {
+      const services = await daemon.listServices();
+      set({ services, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load services' });
+    }
+  },
+
+  refreshExtensions: async () => {
+    try {
+      const extensions = await daemon.listExtensions();
+      set({ extensions, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load extensions' });
+    }
+  },
+
+  refreshConfig: async () => {
+    try {
+      const config = await daemon.getConfig();
+      set({ config, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load daemon config' });
+    }
+  },
+
+  setServiceEnabled: async (name, enabled) => {
+    try {
+      const updated = await daemon.setServiceEnabled(name, enabled);
+      set((state) => ({
+        services: state.services.map((service) =>
+          service.name === updated.name ? updated : service,
+        ),
+        error: null,
+      }));
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to update service' });
+      return false;
+    }
+  },
+
+  setExtensionEnabled: async (kind, name, enabled) => {
+    try {
+      const updated = await daemon.setExtensionEnabled(kind, name, enabled);
+      set((state) => ({
+        extensions: state.extensions.map((extension) =>
+          extension.id === updated.id ? updated : extension,
+        ),
+        error: null,
+      }));
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to update extension' });
+      return false;
+    }
+  },
+
+  removeExtension: async (kind, name) => {
+    try {
+      await daemon.removeExtension(kind, name);
+      set((state) => ({
+        extensions: state.extensions.filter(
+          (extension) => !(extension.kind === kind && (extension.id === name || extension.name === name)),
+        ),
+        error: null,
+      }));
+      await get().refreshExtensions();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to remove extension' });
+      return false;
+    }
+  },
+
+  updateConfig: async (payload) => {
+    try {
+      const config = await daemon.updateConfig(payload);
+      set({ config, error: null });
+      await get().initialize();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to save daemon config' });
+      return false;
     }
   },
 

@@ -9,6 +9,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::{auth::AuthManager, completion, AppState};
+use crate::cli::extensions;
 use crate::channels::manager::ChannelManager;
 use crate::config::Config;
 use crate::gateway::Task;
@@ -50,6 +51,30 @@ pub struct AuthLoginRequest {
 pub struct CreateTaskRequest {
     pub prompt: Option<String>,
     pub input: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DaemonConfigView {
+    pub node_name: String,
+    pub privacy_mode: String,
+    pub idle_timeout_secs: u64,
+    pub absolute_timeout_secs: u64,
+    pub reauth_window_secs: u64,
+    pub session_persist_on_restart: bool,
+    pub bind_addr: String,
+    pub tls_enabled: bool,
+    pub tls_cert_path: String,
+    pub tls_key_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateDaemonConfigRequest {
+    pub node_name: Option<String>,
+    pub privacy_mode: Option<String>,
+    pub idle_timeout_secs: Option<u64>,
+    pub absolute_timeout_secs: Option<u64>,
+    pub reauth_window_secs: Option<u64>,
+    pub session_persist_on_restart: Option<bool>,
 }
 
 pub async fn hello(
@@ -227,6 +252,50 @@ pub async fn list_tasks(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+pub async fn get_config() -> impl IntoResponse {
+    match daemon_config_view() {
+        Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn update_config(
+    Json(payload): Json<UpdateDaemonConfigRequest>,
+) -> impl IntoResponse {
+    match apply_config_update(payload) {
+        Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn list_extensions() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match extensions::inventory(&config).await {
+            Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn enable_extension(Path((kind, name)): Path<(String, String)>) -> impl IntoResponse {
+    set_extension_enabled_inner(kind, name, true).await
+}
+
+pub async fn disable_extension(Path((kind, name)): Path<(String, String)>) -> impl IntoResponse {
+    set_extension_enabled_inner(kind, name, false).await
+}
+
+pub async fn remove_extension(Path((kind, name)): Path<(String, String)>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match extensions::remove_extension_api(&config, &kind, &name).await {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 fn json_error_response(
     status: StatusCode,
     error: impl std::fmt::Display,
@@ -236,6 +305,67 @@ fn json_error_response(
         Json(serde_json::json!({ "error": error.to_string() })),
     )
         .into_response()
+}
+
+async fn set_extension_enabled_inner(
+    kind: String,
+    name: String,
+    enabled: bool,
+) -> Response {
+    match Config::load_or_create() {
+        Ok(config) => match extensions::set_extension_enabled_api(&config, &kind, &name, enabled).await {
+            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+fn daemon_config_view() -> anyhow::Result<DaemonConfigView> {
+    let config = Config::load_or_create()?;
+    let remote = RemoteManager::new(config.clone());
+    let tls_status = super::tls::localhost_tls_status();
+    let node_name = remote.status()?.node.node_name;
+
+    Ok(DaemonConfigView {
+        node_name,
+        privacy_mode: config.webui.privacy_mode.clone(),
+        idle_timeout_secs: config.webui.idle_timeout_secs,
+        absolute_timeout_secs: config.webui.absolute_timeout_secs,
+        reauth_window_secs: config.webui.reauth_window_secs,
+        session_persist_on_restart: config.webui.session_persist_on_restart,
+        bind_addr: config.webui.bind_addr.clone(),
+        tls_enabled: tls_status.enabled,
+        tls_cert_path: tls_status.cert_path,
+        tls_key_path: tls_status.key_path,
+    })
+}
+
+fn apply_config_update(payload: UpdateDaemonConfigRequest) -> anyhow::Result<DaemonConfigView> {
+    let mut config = Config::load_or_create()?;
+    let remote = RemoteManager::new(config.clone());
+
+    if let Some(node_name) = payload.node_name.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        remote.rename(node_name)?;
+    }
+    if let Some(privacy_mode) = payload.privacy_mode {
+        config.webui.privacy_mode = privacy_mode;
+    }
+    if let Some(idle) = payload.idle_timeout_secs {
+        config.webui.idle_timeout_secs = idle.max(60);
+    }
+    if let Some(absolute) = payload.absolute_timeout_secs {
+        config.webui.absolute_timeout_secs = absolute.max(config.webui.idle_timeout_secs);
+    }
+    if let Some(reauth) = payload.reauth_window_secs {
+        config.webui.reauth_window_secs = reauth.max(60);
+    }
+    if let Some(persist) = payload.session_persist_on_restart {
+        config.webui.session_persist_on_restart = persist;
+    }
+
+    config.save()?;
+    daemon_config_view()
 }
 
 pub async fn create_task(

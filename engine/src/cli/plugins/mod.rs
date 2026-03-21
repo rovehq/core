@@ -16,5 +16,6 @@ pub use inventory::{
     handle_inspect, handle_inspect_filtered, handle_list, handle_list_filtered, handle_remove,
     handle_remove_filtered, handle_set_enabled, handle_set_enabled_filtered,
 };
+pub(crate) use inventory::resolve_installed_plugin;
 pub use scaffold::handle_new;
 pub use test::handle_test;

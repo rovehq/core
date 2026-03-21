@@ -42,6 +42,36 @@ export interface TaskSummary {
   completed_at?: number | null;
 }
 
+export interface ServiceStatus {
+  name: string;
+  enabled: boolean;
+  details: Record<string, string>;
+}
+
+export interface ExtensionRecord {
+  id: string;
+  name: string;
+  kind: string;
+  state: string;
+  source: string;
+  description: string;
+  version?: string | null;
+  official: boolean;
+}
+
+export interface DaemonConfig {
+  node_name: string;
+  privacy_mode: string;
+  idle_timeout_secs: number;
+  absolute_timeout_secs: number;
+  reauth_window_secs: number;
+  session_persist_on_restart: boolean;
+  bind_addr: string;
+  tls_enabled: boolean;
+  tls_cert_path: string;
+  tls_key_path: string;
+}
+
 export interface CreateTaskResponse {
   task_id: string;
   status: string;
@@ -158,6 +188,44 @@ export class RoveDaemonClient {
 
   async listTasks(): Promise<TaskSummary[]> {
     return this.request<TaskSummary[]>('/v1/tasks');
+  }
+
+  async getConfig(): Promise<DaemonConfig> {
+    return this.request<DaemonConfig>('/v1/config');
+  }
+
+  async updateConfig(payload: Partial<DaemonConfig>): Promise<DaemonConfig> {
+    return this.request<DaemonConfig>('/v1/config', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async listServices(): Promise<ServiceStatus[]> {
+    return this.request<ServiceStatus[]>('/v1/services');
+  }
+
+  async setServiceEnabled(name: string, enabled: boolean): Promise<ServiceStatus> {
+    return this.request<ServiceStatus>(`/v1/services/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
+      method: 'POST',
+    });
+  }
+
+  async listExtensions(): Promise<ExtensionRecord[]> {
+    return this.request<ExtensionRecord[]>('/v1/extensions');
+  }
+
+  async setExtensionEnabled(kind: string, name: string, enabled: boolean): Promise<ExtensionRecord> {
+    return this.request<ExtensionRecord>(
+      `/v1/extensions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`,
+      { method: 'POST' },
+    );
+  }
+
+  async removeExtension(kind: string, name: string): Promise<void> {
+    await this.request<void>(`/v1/extensions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    });
   }
 
   async createTask(

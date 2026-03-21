@@ -1,16 +1,34 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 import Nav from '@/components/Nav';
 import { useRoveStore } from '@/stores/roveStore';
 
 export default function ConfigPage() {
-  const { appState, daemonUrl, hello, initialize } = useRoveStore();
+  const { appState, clearError, config, daemonUrl, error, hello, initialize, updateConfig } = useRoveStore();
+  const [nodeName, setNodeName] = useState('');
+  const [privacyMode, setPrivacyMode] = useState('local_only');
+  const [idleTimeout, setIdleTimeout] = useState('1200');
+  const [absoluteTimeout, setAbsoluteTimeout] = useState('43200');
+  const [reauthWindow, setReauthWindow] = useState('600');
+  const [persistOnRestart, setPersistOnRestart] = useState(false);
 
   useEffect(() => {
     void initialize();
   }, [initialize]);
+
+  useEffect(() => {
+    if (!config) {
+      return;
+    }
+    setNodeName(config.node_name);
+    setPrivacyMode(config.privacy_mode);
+    setIdleTimeout(String(config.idle_timeout_secs));
+    setAbsoluteTimeout(String(config.absolute_timeout_secs));
+    setReauthWindow(String(config.reauth_window_secs));
+    setPersistOnRestart(config.session_persist_on_restart);
+  }, [config]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -60,6 +78,69 @@ export default function ConfigPage() {
                 <SettingRow label="Extensions" value={String(hello?.capabilities.extensions.length ?? 0)} />
               </div>
             </div>
+
+            <form
+              className="p-4 bg-surface2 rounded-lg space-y-4"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                await updateConfig({
+                  node_name: nodeName,
+                  privacy_mode: privacyMode,
+                  idle_timeout_secs: Number(idleTimeout),
+                  absolute_timeout_secs: Number(absoluteTimeout),
+                  reauth_window_secs: Number(reauthWindow),
+                  session_persist_on_restart: persistOnRestart,
+                });
+              }}
+            >
+              <h3 className="font-medium">Daemon Settings</h3>
+              <Field label="Node name">
+                <input
+                  value={nodeName}
+                  onChange={(event) => setNodeName(event.target.value)}
+                  className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                />
+              </Field>
+              <Field label="Privacy mode">
+                <select
+                  value={privacyMode}
+                  onChange={(event) => setPrivacyMode(event.target.value)}
+                  className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                >
+                  <option value="local_only">Local only</option>
+                  <option value="hybrid">Hybrid</option>
+                  <option value="cloud_enabled">Cloud enabled</option>
+                </select>
+              </Field>
+              <div className="grid gap-4 md:grid-cols-3">
+                <Field label="Idle timeout (secs)">
+                  <input value={idleTimeout} onChange={(event) => setIdleTimeout(event.target.value)} className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary" />
+                </Field>
+                <Field label="Absolute timeout (secs)">
+                  <input value={absoluteTimeout} onChange={(event) => setAbsoluteTimeout(event.target.value)} className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary" />
+                </Field>
+                <Field label="Reauth window (secs)">
+                  <input value={reauthWindow} onChange={(event) => setReauthWindow(event.target.value)} className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary" />
+                </Field>
+              </div>
+              <label className="flex items-center gap-3 text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={persistOnRestart}
+                  onChange={(event) => setPersistOnRestart(event.target.checked)}
+                />
+                Keep sessions after daemon restart
+              </label>
+              <div className="rounded-lg bg-background p-3 text-sm text-gray-400">
+                TLS: {config?.tls_enabled ? 'enabled' : 'disabled'}<br />
+                Cert: <code>{config?.tls_cert_path ?? 'unknown'}</code><br />
+                Key: <code>{config?.tls_key_path ?? 'unknown'}</code>
+              </div>
+              <ErrorBanner error={error} onDismiss={clearError} />
+              <button className="rounded-lg bg-primary px-4 py-2 font-medium hover:bg-primary/80">
+                Save Config
+              </button>
+            </form>
           </div>
         </section>
       </main>
@@ -76,6 +157,27 @@ function SettingRow({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between">
       <span className="text-gray-400">{label}</span>
       <span className="font-mono text-sm">{value}</span>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block space-y-2 text-sm">
+      <span className="text-gray-400">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function ErrorBanner({ error, onDismiss }: { error: string | null; onDismiss: () => void }) {
+  if (!error) return null;
+  return (
+    <div className="rounded-lg border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
+      <div className="flex items-start justify-between gap-3">
+        <p>{error}</p>
+        <button onClick={onDismiss}>×</button>
+      </div>
     </div>
   );
 }

@@ -13,6 +13,7 @@ pub mod api;
 pub mod auth;
 mod completion;
 pub mod mcp;
+pub mod tls;
 pub mod ws;
 
 use anyhow::Result;
@@ -95,7 +96,16 @@ pub async fn start_daemon(
         .route("/v1/auth/status", get(api::auth_status))
         .route("/v1/auth/lock", post(api::auth_lock))
         .route("/v1/auth/reauth", post(api::auth_reauth))
+        .route("/v1/config", get(api::get_config).post(api::update_config))
         .route("/v1/tasks", get(api::list_tasks).post(api::create_task))
+        .route("/v1/extensions", get(api::list_extensions))
+        .route("/v1/extensions/:kind/:name/enable", post(api::enable_extension))
+        .route("/v1/extensions/:kind/:name/disable", post(api::disable_extension))
+        .route("/v1/extensions/:kind/:name", delete(api::remove_extension))
+        .route("/v1/services", get(api::list_services))
+        .route("/v1/services/:name", get(api::service_status))
+        .route("/v1/services/:name/enable", post(api::enable_service))
+        .route("/v1/services/:name/disable", post(api::disable_service))
         .route("/api/run", post(api::execute_task))
         .route("/api/v1/execute", post(api::execute_task))
         .route("/api/v1/tasks/:task_id", get(api::task_status))
@@ -147,9 +157,29 @@ pub async fn start_daemon(
         addr
     );
 
-    let listener = TcpListener::bind(addr).await?;
-    if let Err(e) = axum::serve(listener, app).await {
-        error!("Daemon server error: {}", e);
+    let tls_status = tls::localhost_tls_status();
+    if tls_status.enabled {
+        info!(
+            "Localhost TLS enabled using cert '{}' and key '{}'",
+            tls_status.cert_path,
+            tls_status.key_path
+        );
+        let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            tls_status.cert_path,
+            tls_status.key_path,
+        )
+        .await?;
+        if let Err(error) = axum_server::bind_rustls(addr, rustls_config)
+            .serve(app.into_make_service())
+            .await
+        {
+            error!("Daemon TLS server error: {}", error);
+        }
+    } else {
+        let listener = TcpListener::bind(addr).await?;
+        if let Err(error) = axum::serve(listener, app).await {
+            error!("Daemon server error: {}", error);
+        }
     }
 
     Ok(())

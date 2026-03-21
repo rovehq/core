@@ -20,6 +20,18 @@ pub enum ExtensionSurface {
     Channel,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExtensionInventoryItem {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub state: String,
+    pub source: String,
+    pub description: String,
+    pub version: Option<String>,
+    pub official: bool,
+}
+
 impl ExtensionSurface {
     fn noun(&self) -> &'static str {
         match self {
@@ -369,6 +381,125 @@ async fn install_official_system(config: &Config, name: &str, upgrade: bool) -> 
         installed.id,
         installed.version
     );
+    Ok(())
+}
+
+pub(crate) async fn inventory(config: &Config) -> Result<Vec<ExtensionInventoryItem>> {
+    let database = open_database(config).await?;
+    let installed = database
+        .installed_plugins()
+        .list_plugins()
+        .await
+        .context("Failed to list installed plugins")?;
+
+    let mut items = Vec::new();
+    for system in OFFICIAL_SYSTEMS {
+        let installed_plugin = installed.iter().find(|plugin| plugin.id == system.id);
+        items.push(ExtensionInventoryItem {
+            id: system.id.to_string(),
+            name: system.id.to_string(),
+            kind: "system".to_string(),
+            state: system_state(&installed, system.id).to_string(),
+            source: "official".to_string(),
+            description: system.description.to_string(),
+            version: installed_plugin.map(|plugin| plugin.version.clone()),
+            official: true,
+        });
+    }
+
+    for plugin in installed {
+        if is_official_system_id(&plugin.id) {
+            continue;
+        }
+
+        items.push(ExtensionInventoryItem {
+            id: plugin.id.clone(),
+            name: plugin.name.clone(),
+            kind: plugin_public_kind(&plugin).to_string(),
+            state: if plugin.enabled {
+                "installed".to_string()
+            } else {
+                "installed-disabled".to_string()
+            },
+            source: "installed".to_string(),
+            description: format!("Installed {} extension", plugin_public_kind(&plugin)),
+            version: Some(plugin.version.clone()),
+            official: false,
+        });
+    }
+
+    Ok(items)
+}
+
+pub(crate) async fn set_extension_enabled_api(
+    config: &Config,
+    kind: &str,
+    selector: &str,
+    enabled: bool,
+) -> Result<ExtensionInventoryItem> {
+    if kind == "system" && official_system(selector).is_some() {
+        if enabled {
+            enable_official_system(config, selector).await?;
+        } else {
+            disable_official_system(config, selector).await?;
+        }
+        return inventory(config)
+            .await?
+            .into_iter()
+            .find(|item| item.kind == "system" && item.id.eq_ignore_ascii_case(selector))
+            .context("Updated official system did not appear in inventory");
+    }
+
+    let database = open_database(config).await?;
+    let plugin = crate::cli::plugins::resolve_installed_plugin(&database, selector).await?;
+    if plugin_public_kind(&plugin) != kind {
+        bail!(
+            "'{}' is a {} extension, but this request targeted {}",
+            selector,
+            plugin_public_kind(&plugin),
+            kind
+        );
+    }
+
+    database
+        .installed_plugins()
+        .set_enabled(&plugin.id, enabled)
+        .await
+        .context("Failed to update installed extension state")?;
+
+    inventory(config)
+        .await?
+        .into_iter()
+        .find(|item| item.id == plugin.id)
+        .context("Updated extension did not appear in inventory")
+}
+
+pub(crate) async fn remove_extension_api(
+    config: &Config,
+    kind: &str,
+    selector: &str,
+) -> Result<()> {
+    if kind == "system" && official_system(selector).is_some() {
+        remove_official_system(config, selector).await?;
+        return Ok(());
+    }
+
+    let database = open_database(config).await?;
+    let plugin = crate::cli::plugins::resolve_installed_plugin(&database, selector).await?;
+    if plugin_public_kind(&plugin) != kind {
+        bail!(
+            "'{}' is a {} extension, but this request targeted {}",
+            selector,
+            plugin_public_kind(&plugin),
+            kind
+        );
+    }
+
+    database
+        .installed_plugins()
+        .delete_plugin(&plugin.id)
+        .await
+        .context("Failed to remove installed extension")?;
     Ok(())
 }
 

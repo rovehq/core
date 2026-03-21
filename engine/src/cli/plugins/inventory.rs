@@ -136,7 +136,7 @@ pub(super) async fn resolve_filtered_plugin(
     )
 }
 
-pub(super) async fn resolve_installed_plugin(
+pub(crate) async fn resolve_installed_plugin(
     database: &Database,
     selector: &str,
 ) -> Result<InstalledPlugin> {
