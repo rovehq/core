@@ -8,8 +8,9 @@ use tracing_subscriber::{
 };
 
 use rove_engine::cli::{
-    ActivateTarget, AddTarget, Cli, Command, ConfigAction, ExtensionAction, McpAction,
-    ModelAction, OutputFormat, PluginAction, PolicyAction, RemoteAction, SecretsAction,
+    ActivateTarget, AddTarget, Cli, Command, ConfigAction, ExtensionAction,
+    ExtensionFacadeAction, ExtensionKindArg, McpAction, ModelAction, OutputFormat, PluginAction,
+    PolicyAction, RemoteAction, RemoteNodeAction, RemoteProfileAction, SecretsAction,
     ServiceAction, SteeringAction,
 };
 use rove_engine::server;
@@ -79,6 +80,10 @@ async fn main() -> Result<()> {
         Some(Command::Policy { action, dir }) => {
             let config = rove_engine::config::Config::load_or_create()?;
             handle_policy(action, dir, &config).await?;
+        }
+        Some(Command::Extension { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            handle_extension_facade(action, &config).await?;
         }
         Some(Command::Skill { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
@@ -436,6 +441,211 @@ async fn handle_extension(
     rove_engine::cli::extensions::handle(config, surface, action).await
 }
 
+async fn handle_extension_facade(
+    action: ExtensionFacadeAction,
+    config: &rove_engine::config::Config,
+) -> Result<()> {
+    match action {
+        ExtensionFacadeAction::New { kind, name } => {
+            match kind {
+                ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                    handle_extension(
+                        ExtensionAction::New { name },
+                        config,
+                        extension_surface(kind),
+                    )
+                    .await
+                }
+                ExtensionKindArg::Connector => {
+                    anyhow::bail!(
+                        "Connector authoring uses the dedicated surface. Use `rove connector scaffold ...` or `rove connector add ...`."
+                    )
+                }
+            }
+        }
+        ExtensionFacadeAction::Test {
+            kind,
+            source,
+            tool,
+            input,
+            files,
+            args,
+            no_build,
+        } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::Test {
+                        source,
+                        tool,
+                        input,
+                        files,
+                        args,
+                        no_build,
+                    },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => {
+                anyhow::bail!("Connector testing uses `rove connector test <name>`.")
+            }
+        },
+        ExtensionFacadeAction::Pack {
+            kind,
+            source,
+            out,
+            no_build,
+        } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::Pack {
+                        source,
+                        out,
+                        no_build,
+                    },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => {
+                anyhow::bail!("Connector packaging uses `rove connector scaffold/export/install`.")
+            }
+        },
+        ExtensionFacadeAction::Publish {
+            kind,
+            source,
+            registry_dir,
+            no_build,
+        } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::Publish {
+                        source,
+                        registry_dir,
+                        no_build,
+                    },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => {
+                anyhow::bail!("Connector publishing uses the MCP catalog flow, not `rove extension publish connector`.")
+            }
+        },
+        ExtensionFacadeAction::Install {
+            kind,
+            source,
+            registry,
+            version,
+        } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::Install {
+                        source,
+                        registry,
+                        version,
+                    },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => {
+                handle_mcp(McpAction::Install { source }, config).await
+            }
+        },
+        ExtensionFacadeAction::Upgrade {
+            kind,
+            source,
+            registry,
+            version,
+        } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::Upgrade {
+                        source,
+                        registry,
+                        version,
+                    },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => {
+                if registry.is_some() || version.is_some() {
+                    anyhow::bail!(
+                        "Connector upgrades currently accept only a local package directory: `rove connector upgrade <source>`."
+                    );
+                }
+                handle_mcp(McpAction::Upgrade { source }, config).await
+            }
+        },
+        ExtensionFacadeAction::List { kind } => match kind {
+            Some(kind @ ExtensionKindArg::Skill)
+            | Some(kind @ ExtensionKindArg::System)
+            | Some(kind @ ExtensionKindArg::Channel) => {
+                handle_extension(ExtensionAction::List, config, extension_surface(kind)).await
+            }
+            Some(ExtensionKindArg::Connector) => handle_mcp(McpAction::List, config).await,
+            None => handle_plugin(PluginAction::List).await,
+        },
+        ExtensionFacadeAction::Inspect { kind, name } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::Inspect { name },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => handle_mcp(McpAction::Show { name }, config).await,
+        },
+        ExtensionFacadeAction::Enable { kind, name } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::Enable { name },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => {
+                handle_mcp(McpAction::Enable { name }, config).await
+            }
+        },
+        ExtensionFacadeAction::Disable { kind, name } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::Disable { name },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => {
+                handle_mcp(McpAction::Disable { name }, config).await
+            }
+        },
+        ExtensionFacadeAction::Remove { kind, name } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::Remove { name },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => {
+                handle_mcp(McpAction::Remove { name }, config).await
+            }
+        },
+    }
+}
+
 async fn handle_model(action: ModelAction) -> Result<()> {
     match action {
         ModelAction::Setup => rove_engine::cli::model::handle_setup().await?,
@@ -505,6 +715,41 @@ async fn handle_service(action: ServiceAction) -> Result<()> {
 async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Config) -> Result<()> {
     let action = match action {
         RemoteAction::Status => rove_engine::cli::remote::RemoteAction::Status,
+        RemoteAction::Node { action } => match action {
+            RemoteNodeAction::List => rove_engine::cli::remote::RemoteAction::Nodes,
+            RemoteNodeAction::Rename { name } => {
+                rove_engine::cli::remote::RemoteAction::Rename(name)
+            }
+            RemoteNodeAction::Pair {
+                target,
+                url,
+                token,
+                executor_only,
+                tags,
+            } => rove_engine::cli::remote::RemoteAction::Pair {
+                target,
+                url,
+                token,
+                executor_only,
+                tags,
+            },
+            RemoteNodeAction::Unpair { name } => {
+                rove_engine::cli::remote::RemoteAction::Unpair(name)
+            }
+            RemoteNodeAction::Trust { name } => {
+                rove_engine::cli::remote::RemoteAction::Trust(name)
+            }
+        },
+        RemoteAction::Profile { action } => match action {
+            RemoteProfileAction::Show => rove_engine::cli::remote::RemoteAction::ProfileShow,
+            RemoteProfileAction::ExecutorOnly => {
+                rove_engine::cli::remote::RemoteAction::ProfileExecutorOnly
+            }
+            RemoteProfileAction::Full => rove_engine::cli::remote::RemoteAction::ProfileFull,
+            RemoteProfileAction::Tags { tags } => {
+                rove_engine::cli::remote::RemoteAction::ProfileTags(tags)
+            }
+        },
         RemoteAction::Nodes => rove_engine::cli::remote::RemoteAction::Nodes,
         RemoteAction::Rename { name } => rove_engine::cli::remote::RemoteAction::Rename(name),
         RemoteAction::Pair {
@@ -528,6 +773,17 @@ async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Confi
         },
     };
     rove_engine::cli::remote::handle(action, config).await
+}
+
+fn extension_surface(
+    kind: ExtensionKindArg,
+) -> rove_engine::cli::extensions::ExtensionSurface {
+    match kind {
+        ExtensionKindArg::Skill => rove_engine::cli::extensions::ExtensionSurface::Skill,
+        ExtensionKindArg::System => rove_engine::cli::extensions::ExtensionSurface::System,
+        ExtensionKindArg::Channel => rove_engine::cli::extensions::ExtensionSurface::Channel,
+        ExtensionKindArg::Connector => unreachable!("connectors use MCP handlers"),
+    }
 }
 
 async fn handle_add(target: AddTarget) -> Result<()> {

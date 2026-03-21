@@ -144,6 +144,12 @@ pub enum Command {
         dir: Option<PathBuf>,
     },
 
+    /// Unified extension management across skills, systems, connectors, and channels.
+    Extension {
+        #[command(subcommand)]
+        action: ExtensionFacadeAction,
+    },
+
     /// Skill extension management.
     Skill {
         #[command(subcommand)]
@@ -425,11 +431,182 @@ pub enum ExtensionAction {
     Remove { name: String },
 }
 
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Subcommand, Debug)]
+pub enum ExtensionFacadeAction {
+    /// Create a new extension authoring scaffold.
+    New {
+        /// Extension kind to scaffold.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Directory name for the new extension package.
+        name: String,
+    },
+    /// Build and run a local extension package against a mock runtime.
+    Test {
+        /// Extension kind to test.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Extension package directory. Defaults to the current directory.
+        source: Option<String>,
+
+        /// Specific exported tool to call.
+        #[arg(long)]
+        tool: Option<String>,
+
+        /// Primary task input for the extension.
+        #[arg(long)]
+        input: Option<String>,
+
+        /// File paths to include in the extension input.
+        #[arg(long = "file", value_name = "FILE")]
+        files: Vec<PathBuf>,
+
+        /// Additional extension input fields in key=value form.
+        #[arg(long = "arg", value_name = "KEY=VALUE")]
+        args: Vec<String>,
+
+        /// Skip cargo test/build before executing the extension.
+        #[arg(long)]
+        no_build: bool,
+    },
+    /// Create a normalized distribution bundle directory.
+    Pack {
+        /// Extension kind to pack.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Extension package directory. Defaults to the current directory.
+        source: Option<String>,
+
+        /// Optional output directory for the generated bundle.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+
+        /// Skip cargo test/build before packing.
+        #[arg(long)]
+        no_build: bool,
+    },
+    /// Publish a bundled extension into a registry directory structure.
+    Publish {
+        /// Extension kind to publish.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Extension package directory. Defaults to the current directory.
+        source: Option<String>,
+
+        /// Registry directory that will receive id/version bundles.
+        #[arg(long = "registry-dir", value_name = "DIR")]
+        registry_dir: PathBuf,
+
+        /// Skip cargo test/build before publishing.
+        #[arg(long)]
+        no_build: bool,
+    },
+    /// Install an extension from a local package directory or a registry.
+    Install {
+        /// Extension kind to install.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Package directory, or extension id when --registry is set.
+        source: String,
+
+        /// Static registry directory or base URL.
+        #[arg(long, value_name = "REGISTRY")]
+        registry: Option<String>,
+
+        /// Specific version to install from the registry.
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// Upgrade or replace an installed extension from a local package directory or a registry.
+    Upgrade {
+        /// Extension kind to upgrade.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Package directory, or extension id when --registry is set.
+        source: String,
+
+        /// Static registry directory or base URL.
+        #[arg(long, value_name = "REGISTRY")]
+        registry: Option<String>,
+
+        /// Specific version to upgrade to from the registry.
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// List installed extensions, optionally filtered by kind.
+    List {
+        /// Limit the list to one extension kind.
+        #[arg(value_enum)]
+        kind: Option<ExtensionKindArg>,
+    },
+    /// Show one installed extension.
+    Inspect {
+        /// Extension kind.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Extension name or id.
+        name: String,
+    },
+    /// Enable an installed extension.
+    Enable {
+        /// Extension kind.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Extension name or id.
+        name: String,
+    },
+    /// Disable an installed extension.
+    Disable {
+        /// Extension kind.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Extension name or id.
+        name: String,
+    },
+    /// Remove an extension.
+    Remove {
+        /// Extension kind.
+        #[arg(value_enum)]
+        kind: ExtensionKindArg,
+
+        /// Extension name or id.
+        name: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum PluginScaffoldType {
     Skill,
     System,
     Channel,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ExtensionKindArg {
+    Skill,
+    System,
+    Connector,
+    Channel,
+}
+
+impl ExtensionKindArg {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Skill => "skill",
+            Self::System => "system",
+            Self::Connector => "connector",
+            Self::Channel => "channel",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -535,15 +712,40 @@ pub enum BrainAction {
     /// Show installation instructions for llama.cpp.
     Setup,
     /// Show local brain status.
-    Status,
-    /// Install a model.
-    Install { model: String },
-    /// List installed models.
-    List,
-    /// Remove a model.
-    Remove { model: String },
+    Status {
+        /// Optional brain family to inspect.
+        #[arg(value_enum)]
+        family: Option<BrainFamilyArg>,
+    },
+    /// Install a brain model or artifact family entry.
+    Install {
+        /// `dispatch bert-tiny` or a compatibility reasoning model like `qwen2.5-coder-0.5b`.
+        target: Vec<String>,
+
+        /// Optional source directory for family-specific artifacts.
+        #[arg(long, value_name = "DIR")]
+        source: Option<PathBuf>,
+    },
+    /// List installed brains, optionally scoped to one family.
+    List {
+        /// Optional brain family to list.
+        #[arg(value_enum)]
+        family: Option<BrainFamilyArg>,
+    },
+    /// Select the active model for a brain family.
+    Use {
+        #[arg(value_enum)]
+        family: BrainFamilyArg,
+        model: String,
+    },
+    /// Remove a brain model or family entry.
+    Remove { target: Vec<String> },
     /// Start llama-server with an installed model.
     Start {
+        /// Optional brain family. Reasoning is the default.
+        #[arg(long, value_enum)]
+        family: Option<BrainFamilyArg>,
+
         /// Model name to start.
         #[arg(short, long)]
         model: Option<String>,
@@ -555,7 +757,11 @@ pub enum BrainAction {
     /// Stop the running llama-server.
     Stop,
     /// Verify llama-server is responding.
-    Verify,
+    Verify {
+        /// Optional brain family. Reasoning is the default.
+        #[arg(long, value_enum)]
+        family: Option<BrainFamilyArg>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -574,8 +780,64 @@ pub enum ServiceAction {
 pub enum RemoteAction {
     /// Show remote service status for this node.
     Status,
-    /// List trusted or paired nodes.
+    /// Manage paired nodes in the remote mesh.
+    Node {
+        #[command(subcommand)]
+        action: RemoteNodeAction,
+    },
+    /// Show or update this node's execution profile.
+    Profile {
+        #[command(subcommand)]
+        action: RemoteProfileAction,
+    },
+    /// Send a task to a specific remote node.
+    Send {
+        /// Remote node name.
+        node: String,
+
+        /// Task prompt to forward.
+        prompt: Vec<String>,
+    },
+    /// Compatibility alias for `rove remote node list`.
+    #[command(hide = true)]
     Nodes,
+    /// Compatibility alias for `rove remote node rename`.
+    #[command(hide = true)]
+    Rename { name: String },
+    /// Compatibility alias for `rove remote node pair`.
+    #[command(hide = true)]
+    Pair {
+        /// Node name, or a daemon URL when --url is omitted.
+        target: String,
+
+        /// Explicit daemon base URL when target is a human node name.
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Bearer token for the target daemon.
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Mark the node as executor-only.
+        #[arg(long)]
+        executor_only: bool,
+
+        /// Optional capability tags for this node.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+    },
+    /// Compatibility alias for `rove remote node unpair`.
+    #[command(hide = true)]
+    Unpair { name: String },
+    /// Compatibility alias for `rove remote node trust`.
+    #[command(hide = true)]
+    Trust { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RemoteNodeAction {
+    /// List trusted or paired nodes.
+    List,
     /// Rename this node.
     Rename { name: String },
     /// Pair with a remote node descriptor or invite.
@@ -603,14 +865,43 @@ pub enum RemoteAction {
     Unpair { name: String },
     /// Mark a paired node as trusted.
     Trust { name: String },
-    /// Send a task to a specific remote node.
-    Send {
-        /// Remote node name.
-        node: String,
+}
 
-        /// Task prompt to forward.
-        prompt: Vec<String>,
+#[derive(Subcommand, Debug)]
+pub enum RemoteProfileAction {
+    /// Show the local node profile.
+    Show,
+    /// Set this node to executor-only mode.
+    ExecutorOnly,
+    /// Set this node back to full execution mode.
+    Full,
+    /// Replace this node's capability tags.
+    Tags {
+        /// Repeated tag value.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum BrainFamilyArg {
+    Dispatch,
+    Reasoning,
+    Embedding,
+    Rerank,
+    Vision,
+}
+
+impl BrainFamilyArg {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Dispatch => "dispatch",
+            Self::Reasoning => "reasoning",
+            Self::Embedding => "embedding",
+            Self::Rerank => "rerank",
+            Self::Vision => "vision",
+        }
+    }
 }
 
 #[derive(Clone, Debug, ValueEnum)]

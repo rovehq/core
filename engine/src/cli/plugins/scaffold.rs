@@ -23,10 +23,16 @@ pub async fn handle_new(name: &str, plugin_type: PluginScaffoldType) -> Result<(
     println!("- {}", dir.join("src/lib.rs").display());
     println!("- {}", dir.join("tests/integration.rs").display());
     println!("- {}", dir.join("README.md").display());
-    println!(
-        "Next: cargo test, cargo build --target wasm32-wasip1 --release, rove plugin test {} --input \"hello\", then replace placeholder hash/signatures before install.",
-        dir.display()
-    );
+    match plugin_type {
+        PluginScaffoldType::System => println!(
+            "Next: cargo test, cargo build --release, rove system test {} --input \"hello\", then replace placeholder hash/signatures before install.",
+            dir.display()
+        ),
+        _ => println!(
+            "Next: cargo test, cargo build --target wasm32-wasip1 --release, rove plugin test {} --input \"hello\", then replace placeholder hash/signatures before install.",
+            dir.display()
+        ),
+    }
 
     Ok(())
 }
@@ -41,7 +47,7 @@ pub fn generate_plugin_scaffold(
     let crate_slug = default_plugin_id(package_name).replace('-', "_");
     let install_id = default_plugin_id(package_name);
     let plugin_type_name = plugin_type_name(plugin_type);
-    let artifact = format!("target/wasm32-wasip1/release/{}.wasm", crate_slug);
+    let artifact = scaffold_artifact(plugin_type, &crate_slug);
     let tool_name = "run";
 
     fs::create_dir_all(dir.join("src"))
@@ -51,10 +57,10 @@ pub fn generate_plugin_scaffold(
 
     fs::write(
         dir.join("Cargo.toml"),
-        cargo_toml(&crate_slug, package_name, plugin_type_name),
+        cargo_toml(&crate_slug, package_name, plugin_type_name, plugin_type),
     )
     .with_context(|| format!("Failed to write '{}'", dir.join("Cargo.toml").display()))?;
-    fs::write(dir.join(".gitignore"), "target/\n*.wasm\n.DS_Store\n")
+    fs::write(dir.join(".gitignore"), "target/\n*.wasm\n*.so\n*.dylib\n*.dll\n.DS_Store\n")
         .with_context(|| format!("Failed to write '{}'", dir.join(".gitignore").display()))?;
     fs::write(
         dir.join(MANIFEST_FILE),
@@ -63,7 +69,7 @@ pub fn generate_plugin_scaffold(
     .with_context(|| format!("Failed to write '{}'", dir.join(MANIFEST_FILE).display()))?;
     fs::write(
         dir.join(PACKAGE_FILE),
-        serde_json::to_string_pretty(&package_json(&install_id, &artifact))?,
+        serde_json::to_string_pretty(&package_json(&install_id, artifact.as_deref()))?,
     )
     .with_context(|| format!("Failed to write '{}'", dir.join(PACKAGE_FILE).display()))?;
     fs::write(
@@ -71,11 +77,14 @@ pub fn generate_plugin_scaffold(
         serde_json::to_string_pretty(&runtime_json(package_name, tool_name))?,
     )
     .with_context(|| format!("Failed to write '{}'", dir.join(RUNTIME_FILE).display()))?;
-    fs::write(dir.join("src/lib.rs"), lib_rs(tool_name, plugin_type_name))
-        .with_context(|| format!("Failed to write '{}'", dir.join("src/lib.rs").display()))?;
+    fs::write(
+        dir.join("src/lib.rs"),
+        lib_rs(tool_name, plugin_type_name, plugin_type),
+    )
+    .with_context(|| format!("Failed to write '{}'", dir.join("src/lib.rs").display()))?;
     fs::write(
         dir.join("tests/integration.rs"),
-        integration_test_rs(&crate_slug),
+        integration_test_rs(&crate_slug, plugin_type),
     )
     .with_context(|| {
         format!(
@@ -85,7 +94,13 @@ pub fn generate_plugin_scaffold(
     })?;
     fs::write(
         dir.join("README.md"),
-        readme(dir, package_name, plugin_type_name, &artifact),
+        readme(
+            dir,
+            package_name,
+            plugin_type_name,
+            artifact.as_deref(),
+            plugin_type,
+        ),
     )
     .with_context(|| format!("Failed to write '{}'", dir.join("README.md").display()))?;
 
@@ -143,9 +158,39 @@ fn plugin_type_name(plugin_type: PluginScaffoldType) -> &'static str {
     }
 }
 
-fn cargo_toml(crate_slug: &str, package_name: &str, plugin_type: &str) -> String {
-    format!(
-        r#"[package]
+fn scaffold_artifact(plugin_type: PluginScaffoldType, crate_slug: &str) -> Option<String> {
+    match plugin_type {
+        PluginScaffoldType::Skill | PluginScaffoldType::Channel => {
+            Some(format!("target/wasm32-wasip1/release/{}.wasm", crate_slug))
+        }
+        PluginScaffoldType::System => None,
+    }
+}
+
+fn cargo_toml(
+    crate_slug: &str,
+    package_name: &str,
+    plugin_type: &str,
+    scaffold_type: PluginScaffoldType,
+) -> String {
+    match scaffold_type {
+        PluginScaffoldType::System => format!(
+            r#"[package]
+name = "{crate_slug}"
+version = "0.1.0"
+edition = "2021"
+description = "{package_name} {plugin_type} extension for Rove"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sdk = {{ path = "../../sdk" }}
+serde_json = "1"
+"#
+        ),
+        _ => format!(
+            r#"[package]
 name = "{crate_slug}"
 version = "0.1.0"
 edition = "2021"
@@ -159,7 +204,8 @@ extism-pdk = "1"
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 "#
-    )
+        ),
+    }
 }
 
 fn manifest_json(package_name: &str, plugin_type: &str) -> serde_json::Value {
@@ -175,22 +221,25 @@ fn manifest_json(package_name: &str, plugin_type: &str) -> serde_json::Value {
             "memory_write": false,
             "tools": []
         },
-        "trust_tier": "Community",
+        "trust_tier": if plugin_type == "Workspace" { "Reviewed" } else { "Community" },
         "min_model": null,
         "description": format!("{package_name} plugin for Rove"),
         "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
     })
 }
 
-fn package_json(install_id: &str, artifact: &str) -> serde_json::Value {
-    json!({
+fn package_json(install_id: &str, artifact: Option<&str>) -> serde_json::Value {
+    let mut value = json!({
         "id": install_id,
-        "artifact": artifact,
         "runtime_config": "runtime.json",
         "payload_hash": "LOCAL_DEV_PAYLOAD_HASH",
         "payload_signature": "LOCAL_DEV_PAYLOAD_SIGNATURE",
         "enabled": true
-    })
+    });
+    if let Some(artifact) = artifact {
+        value["artifact"] = serde_json::Value::String(artifact.to_string());
+    }
+    value
 }
 
 fn runtime_json(package_name: &str, tool_name: &str) -> serde_json::Value {
@@ -217,9 +266,52 @@ fn runtime_json(package_name: &str, tool_name: &str) -> serde_json::Value {
     })
 }
 
-fn lib_rs(tool_name: &str, plugin_type: &str) -> String {
-    format!(
-        r#"use serde::{{Deserialize, Serialize}};
+fn lib_rs(tool_name: &str, plugin_type: &str, scaffold_type: PluginScaffoldType) -> String {
+    match scaffold_type {
+        PluginScaffoldType::System => format!(
+            r#"use sdk::{{CoreContext, CoreTool, EngineError, ToolInput, ToolOutput}};
+
+#[derive(Default)]
+pub struct GeneratedSystemTool {{
+    ctx: Option<CoreContext>,
+}}
+
+impl CoreTool for GeneratedSystemTool {{
+    fn name(&self) -> &str {{
+        "{tool_name}"
+    }}
+
+    fn version(&self) -> &str {{
+        "0.1.0"
+    }}
+
+    fn start(&mut self, ctx: CoreContext) -> Result<(), EngineError> {{
+        self.ctx = Some(ctx);
+        Ok(())
+    }}
+
+    fn stop(&mut self) -> Result<(), EngineError> {{
+        self.ctx = None;
+        Ok(())
+    }}
+
+    fn handle(&self, input: ToolInput) -> Result<ToolOutput, EngineError> {{
+        Ok(ToolOutput::json(serde_json::json!({{
+            "summary": format!("Replace this scaffold with real system logic for method '{{}}'.", input.method),
+            "plugin_type": "{plugin_type}",
+            "params": input.params,
+        }})))
+    }}
+}}
+
+#[no_mangle]
+pub extern "C" fn create_tool() -> *mut dyn CoreTool {{
+    Box::into_raw(Box::new(GeneratedSystemTool::default()))
+}}
+"#
+        ),
+        _ => format!(
+            r#"use serde::{{Deserialize, Serialize}};
 use serde_json::Value;
 
 #[cfg(target_arch = "wasm32")]
@@ -271,13 +363,29 @@ pub fn {tool_name}(Json(input): Json<RunInput>) -> FnResult<Json<RunOutput>> {{
     Ok(Json(run_impl(input)))
 }}
 "#
-    )
-    .replace("{plugin_type}", plugin_type)
+        ),
+    }
 }
 
-fn integration_test_rs(crate_slug: &str) -> String {
-    format!(
-        r#"use {crate_slug}::{{run_impl, RunInput}};
+fn integration_test_rs(crate_slug: &str, scaffold_type: PluginScaffoldType) -> String {
+    match scaffold_type {
+        PluginScaffoldType::System => format!(
+            r#"use {crate_slug}::GeneratedSystemTool;
+use sdk::{{CoreTool, ToolInput}};
+
+#[test]
+fn generated_system_tool_reports_method() {{
+    let tool = GeneratedSystemTool::default();
+    let input = ToolInput::new("run").with_param("input", serde_json::json!("hello"));
+    let output = tool.handle(input).expect("tool output");
+
+    assert!(output.success);
+    assert_eq!(output.data["plugin_type"], serde_json::json!("Workspace"));
+}}
+"#
+        ),
+        _ => format!(
+            r#"use {crate_slug}::{{run_impl, RunInput}};
 
 #[test]
 fn run_impl_reports_input_and_files() {{
@@ -293,13 +401,49 @@ fn run_impl_reports_input_and_files() {{
     assert!(output.files_seen.contains(&"sample.pdf".to_string()));
 }}
 "#
-    )
+        ),
+    }
 }
 
-fn readme(dir: &Path, package_name: &str, plugin_type: &str, artifact: &str) -> String {
+fn readme(
+    dir: &Path,
+    package_name: &str,
+    plugin_type: &str,
+    artifact: Option<&str>,
+    scaffold_type: PluginScaffoldType,
+) -> String {
     let dir_display = dir.display();
-    format!(
-        "# {package_name}\n\n\
+    match scaffold_type {
+        PluginScaffoldType::System => format!(
+            "# {package_name}\n\n\
+This is a generated native {plugin_type} extension scaffold for Rove.\n\n\
+## Files\n\n\
+- `Cargo.toml` - Rust crate configured for a native `cdylib`\n\
+- `manifest.json` - extension manifest with placeholder signature\n\
+- `plugin-package.json` - install metadata with placeholder hash/signature\n\
+- `runtime.json` - tool catalog consumed by Rove\n\
+- `src/lib.rs` - native tool entry point exporting `create_tool`\n\
+- `tests/integration.rs` - local unit test for the scaffold logic\n\n\
+## Authoring loop\n\n\
+1. Place this package under `core/tools/<name>` or adjust the `sdk` path in `Cargo.toml`\n\
+2. `cargo test`\n\
+3. `cargo build --release`\n\
+4. `rove system test {dir_display} --input \"hello\"`\n\n\
+## Packaging and registry flow\n\n\
+1. `rove system pack {dir_display}`\n\
+2. `rove system publish {dir_display} --registry-dir ./registry`\n\
+3. `rove system install {{install_id}} --registry ./registry --version 0.1.0`\n\n\
+## Before install or publish\n\n\
+1. Build the native artifact with `cargo build --release`\n\
+2. Replace the placeholder permissions in `manifest.json`\n\
+3. Compute the SHA256 of the built artifact and place it in `plugin-package.json`\n\
+4. Sign the built artifact and place the signature in `plugin-package.json`\n\
+5. Sign `manifest.json` and replace `signature`\n\
+6. Install with `rove system install {dir_display}`\n"
+        )
+        .replace("{install_id}", &default_plugin_id(package_name)),
+        _ => format!(
+            "# {package_name}\n\n\
 This is a generated {plugin_type} plugin scaffold for Rove.\n\n\
 ## Files\n\n\
 - `Cargo.toml` - Rust crate configured for `wasm32-wasip1`\n\
@@ -323,9 +467,11 @@ This is a generated {plugin_type} plugin scaffold for Rove.\n\n\
 3. Compute the SHA256 of the built artifact and place it in `plugin-package.json`\n\
 4. Sign the built artifact and place the signature in `plugin-package.json`\n\
 5. Sign `manifest.json` and replace `signature`\n\
-6. Install with `rove plugin install {dir_display}`\n"
-    )
-    .replace("{install_id}", &default_plugin_id(package_name))
+6. Install with `rove plugin install {dir_display}`\n",
+            artifact = artifact.unwrap_or("target/wasm32-wasip1/release/plugin.wasm")
+        )
+        .replace("{install_id}", &default_plugin_id(package_name)),
+    }
 }
 
 #[cfg(test)]
@@ -356,5 +502,22 @@ mod tests {
 
         let runtime = fs::read_to_string(output_dir.join("runtime.json")).expect("runtime");
         assert!(runtime.contains("\"name\": \"run\""));
+    }
+
+    #[test]
+    fn generate_system_scaffold_uses_native_defaults() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let output_dir = temp_dir.path().join("notifications");
+
+        generate_plugin_scaffold(&output_dir, "Notifications", PluginScaffoldType::System)
+            .expect("generate scaffold");
+
+        let cargo = fs::read_to_string(output_dir.join("Cargo.toml")).expect("cargo");
+        let manifest = fs::read_to_string(output_dir.join("manifest.json")).expect("manifest");
+        let package = fs::read_to_string(output_dir.join("plugin-package.json")).expect("package");
+
+        assert!(cargo.contains("sdk = { path = \"../../sdk\" }"));
+        assert!(manifest.contains("\"trust_tier\": \"Reviewed\""));
+        assert!(!package.contains("\"artifact\""));
     }
 }

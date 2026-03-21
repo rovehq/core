@@ -171,7 +171,11 @@ pub(crate) fn discover_default_artifacts() -> Option<DispatchArtifacts> {
     }
 
     if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".rove/brains/dispatch"));
+        let dispatch_root = home.join(".rove/brains/dispatch");
+        if let Some(active_root) = resolve_active_dispatch_root(&dispatch_root) {
+            candidates.push(active_root);
+        }
+        candidates.push(dispatch_root);
     }
 
     let workspace_relative =
@@ -181,6 +185,18 @@ pub(crate) fn discover_default_artifacts() -> Option<DispatchArtifacts> {
     candidates
         .into_iter()
         .find_map(|candidate| DispatchArtifacts::from_root(candidate).ok())
+}
+
+fn resolve_active_dispatch_root(root: &Path) -> Option<PathBuf> {
+    let pointer = root.join("current-model");
+    let active = std::fs::read_to_string(pointer).ok()?;
+    let active = active.trim();
+    if active.is_empty() {
+        return None;
+    }
+
+    let candidate = root.join(active);
+    candidate.exists().then_some(candidate)
 }
 
 fn load_prototypes(path: &Path) -> Result<Vec<(String, Vec<f32>)>, String> {

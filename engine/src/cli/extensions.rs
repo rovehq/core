@@ -55,14 +55,9 @@ pub async fn handle(
     }
 
     match action {
-        ExtensionAction::New { name } => match surface {
-            ExtensionSurface::Skill | ExtensionSurface::Channel => {
-                crate::cli::plugins::handle_new(&name, surface.scaffold_type()).await
-            }
-            ExtensionSurface::System => bail!(
-                "rove system new is not available yet. System extensions use native packages; scaffold support lands in a follow-up slice."
-            ),
-        },
+        ExtensionAction::New { name } => {
+            crate::cli::plugins::handle_new(&name, surface.scaffold_type()).await
+        }
         ExtensionAction::Test {
             source,
             tool,
@@ -70,47 +65,27 @@ pub async fn handle(
             files,
             args,
             no_build,
-        } => match surface {
-            ExtensionSurface::Skill | ExtensionSurface::Channel => {
-                crate::cli::plugins::handle_test(
-                    source.as_deref(),
-                    tool.as_deref(),
-                    input.as_deref(),
-                    &files,
-                    &args,
-                    no_build,
-                )
-                .await
-            }
-            ExtensionSurface::System => bail!(
-                "rove system test is not available yet. Native system extension testing will be added after the command and service migration."
-            ),
-        },
+        } => {
+            crate::cli::plugins::handle_test(
+                source.as_deref(),
+                tool.as_deref(),
+                input.as_deref(),
+                &files,
+                &args,
+                no_build,
+            )
+            .await
+        }
         ExtensionAction::Pack {
             source,
             out,
             no_build,
-        } => match surface {
-            ExtensionSurface::Skill | ExtensionSurface::Channel => {
-                crate::cli::plugins::handle_pack(source.as_deref(), out.as_deref(), no_build).await
-            }
-            ExtensionSurface::System => bail!(
-                "rove system pack is not available yet. Native packaging is not part of the current runtime bundle flow."
-            ),
-        },
+        } => crate::cli::plugins::handle_pack(source.as_deref(), out.as_deref(), no_build).await,
         ExtensionAction::Publish {
             source,
             registry_dir,
             no_build,
-        } => match surface {
-            ExtensionSurface::Skill | ExtensionSurface::Channel => {
-                crate::cli::plugins::handle_publish(source.as_deref(), &registry_dir, no_build)
-                    .await
-            }
-            ExtensionSurface::System => bail!(
-                "rove system publish is not available yet. Native packaging is not part of the current runtime bundle flow."
-            ),
-        },
+        } => crate::cli::plugins::handle_publish(source.as_deref(), &registry_dir, no_build).await,
         ExtensionAction::Install {
             source,
             registry,

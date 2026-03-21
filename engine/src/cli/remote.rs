@@ -7,6 +7,10 @@ pub enum RemoteAction {
     Status,
     Nodes,
     Rename(String),
+    ProfileShow,
+    ProfileExecutorOnly,
+    ProfileFull,
+    ProfileTags(Vec<String>),
     Pair {
         target: String,
         url: Option<String>,
@@ -25,6 +29,12 @@ pub async fn handle(action: RemoteAction, config: &Config) -> Result<()> {
         RemoteAction::Status => status(&manager),
         RemoteAction::Nodes => nodes(&manager),
         RemoteAction::Rename(name) => rename(&manager, &name),
+        RemoteAction::ProfileShow => profile_show(&manager),
+        RemoteAction::ProfileExecutorOnly => {
+            profile_set_role(&manager, sdk::NodeExecutionRole::ExecutorOnly)
+        }
+        RemoteAction::ProfileFull => profile_set_role(&manager, sdk::NodeExecutionRole::Full),
+        RemoteAction::ProfileTags(tags) => profile_tags(&manager, &tags),
         RemoteAction::Pair {
             target,
             url,
@@ -70,6 +80,38 @@ fn nodes(manager: &RemoteManager) -> Result<()> {
 fn rename(manager: &RemoteManager, name: &str) -> Result<()> {
     manager.rename(name)?;
     println!("Local node renamed to '{}'.", name);
+    Ok(())
+}
+
+fn profile_show(manager: &RemoteManager) -> Result<()> {
+    let profile = manager.local_profile()?;
+    println!("execution_role: {:?}", profile.execution_role);
+    if profile.tags.is_empty() {
+        println!("tags: (none)");
+    } else {
+        println!("tags: {}", profile.tags.join(", "));
+    }
+    if profile.capabilities.is_empty() {
+        println!("capabilities: (none)");
+    } else {
+        println!("capabilities: {}", profile.capabilities.join(", "));
+    }
+    Ok(())
+}
+
+fn profile_set_role(manager: &RemoteManager, role: sdk::NodeExecutionRole) -> Result<()> {
+    let profile = manager.set_execution_role(role)?;
+    println!("Local node execution role set to {:?}.", profile.execution_role);
+    Ok(())
+}
+
+fn profile_tags(manager: &RemoteManager, tags: &[String]) -> Result<()> {
+    let profile = manager.replace_tags(tags)?;
+    if profile.tags.is_empty() {
+        println!("Cleared local node tags.");
+    } else {
+        println!("Local node tags: {}", profile.tags.join(", "));
+    }
     Ok(())
 }
 

@@ -1,10 +1,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use extism::{Manifest as ExtismManifest, Plugin, Wasm};
 use serde_json::{Map, Value};
+use sdk::{
+    AgentHandle, AgentHandleImpl, BusHandle, BusHandleImpl, ConfigHandle, ConfigHandleImpl,
+    CoreContext, CoreTool, CryptoHandle, CryptoHandleImpl, DbHandle, DbHandleImpl, EngineError,
+    NetworkHandle, NetworkHandleImpl, ToolInput,
+};
 
 use crate::runtime::{DeclaredTool, PluginType, ToolCatalog};
 
@@ -37,33 +43,42 @@ pub async fn handle_test(
     let runtime_raw = load_runtime_config(&package_root, runtime_rel.as_deref())?;
     validate_plugin_shape(&manifest, runtime_raw.as_deref())?;
 
-    if !matches!(
-        manifest.plugin_type,
-        PluginType::Skill | PluginType::Channel
-    ) {
-        bail!(
-            "rove plugin test currently supports Skill and Channel packages. '{}' is {}.",
-            manifest.name,
-            manifest.plugin_type.as_str()
-        );
-    }
-
     if !no_build {
         run_cargo(&package_root, &["test"])?;
-        ensure_wasm_target_installed()?;
-        run_cargo(
-            &package_root,
-            &["build", "--target", "wasm32-wasip1", "--release"],
-        )?;
+        match manifest.plugin_type {
+            PluginType::Skill | PluginType::Channel => {
+                ensure_wasm_target_installed()?;
+                run_cargo(
+                    &package_root,
+                    &["build", "--target", "wasm32-wasip1", "--release"],
+                )?;
+            }
+            PluginType::Brain | PluginType::Workspace => {
+                run_cargo(&package_root, &["build", "--release"])?;
+            }
+            PluginType::Mcp => {
+                bail!(
+                    "rove plugin test does not execute MCP packages directly. Use `rove connector test <name>` after installing or adding a connector."
+                );
+            }
+        }
     }
 
     let artifact =
         resolve_payload_source(&package_root, &manifest, &package, runtime_rel.as_deref())?
-            .context("Plugin test requires a WASM artifact")?;
+            .context("Plugin test requires a package artifact")?;
     let catalog = ToolCatalog::from_json(runtime_raw.as_deref())?;
     let selected_tool = select_tool(&catalog, tool)?;
     let payload = build_input_payload(&package_root, input, files, args)?;
-    let output = call_wasm_tool(&artifact, &selected_tool.name, &payload)?;
+    let output = match manifest.plugin_type {
+        PluginType::Skill | PluginType::Channel => {
+            call_wasm_tool(&artifact, &selected_tool.name, &payload)?
+        }
+        PluginType::Brain | PluginType::Workspace => {
+            call_native_tool(&artifact, &selected_tool.name, &payload)?
+        }
+        PluginType::Mcp => unreachable!("handled above"),
+    };
 
     println!("Plugin test");
     println!("package: {}", package_root.display());
@@ -225,6 +240,162 @@ fn call_wasm_tool(artifact: &Path, tool_name: &str, payload: &Value) -> Result<V
     plugin
         .call::<&[u8], Vec<u8>>(tool_name, input.as_slice())
         .map_err(|error| anyhow::anyhow!("Plugin tool '{}' failed: {}", tool_name, error))
+}
+
+fn call_native_tool(artifact: &Path, tool_name: &str, payload: &Value) -> Result<Vec<u8>> {
+    let mut tool = load_native_tool(artifact)?;
+    tool.start(noop_core_context())
+        .map_err(|error| anyhow::anyhow!("Failed to start native tool: {}", error))?;
+
+    let params = payload
+        .as_object()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let input = ToolInput {
+        method: tool_name.to_string(),
+        params,
+    };
+    let output = tool
+        .handle(input)
+        .map_err(|error| anyhow::anyhow!("Native tool '{}' failed: {}", tool_name, error))?;
+    let _ = tool.stop();
+
+    if output.success {
+        serde_json::to_vec(&output.data).context("Failed to serialize native tool output")
+    } else {
+        bail!(
+            "{}",
+            output
+                .error
+                .unwrap_or_else(|| format!("native tool '{}' returned an unspecified error", tool_name))
+        );
+    }
+}
+
+fn load_native_tool(artifact: &Path) -> Result<Box<dyn CoreTool>> {
+    let library = unsafe { libloading::Library::new(artifact) }
+        .with_context(|| format!("Failed to load native artifact '{}'", artifact.display()))?;
+    let create_tool: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn CoreTool> = unsafe {
+        library.get(b"create_tool")
+    }
+    .with_context(|| format!("Native artifact '{}' does not export create_tool", artifact.display()))?;
+    let ptr = unsafe { create_tool() };
+    if ptr.is_null() {
+        bail!(
+            "Native artifact '{}' returned a null create_tool pointer",
+            artifact.display()
+        );
+    }
+
+    let tool = unsafe { Box::from_raw(ptr) };
+    std::mem::forget(library);
+    Ok(tool)
+}
+
+fn noop_core_context() -> CoreContext {
+    CoreContext::new(
+        AgentHandle::new(Arc::new(NoopAgentHandle)),
+        DbHandle::new(Arc::new(NoopDbHandle)),
+        ConfigHandle::new(Arc::new(NoopConfigHandle)),
+        CryptoHandle::new(Arc::new(NoopCryptoHandle)),
+        NetworkHandle::new(Arc::new(NoopNetworkHandle)),
+        BusHandle::new(Arc::new(NoopBusHandle)),
+    )
+}
+
+struct NoopAgentHandle;
+
+impl AgentHandleImpl for NoopAgentHandle {
+    fn submit_task(&self, _task_input: String) -> Result<String, EngineError> {
+        Err(EngineError::ToolError(
+            "native plugin test agent handle is not configured".to_string(),
+        ))
+    }
+
+    fn get_task_status(&self, _task_id: &str) -> Result<String, EngineError> {
+        Err(EngineError::ToolError(
+            "native plugin test agent handle is not configured".to_string(),
+        ))
+    }
+}
+
+struct NoopDbHandle;
+
+impl DbHandleImpl for NoopDbHandle {
+    fn query(
+        &self,
+        _sql: &str,
+        _params: Vec<serde_json::Value>,
+    ) -> Result<Vec<serde_json::Value>, EngineError> {
+        Err(EngineError::ToolError(
+            "native plugin test database handle is not configured".to_string(),
+        ))
+    }
+}
+
+struct NoopConfigHandle;
+
+impl ConfigHandleImpl for NoopConfigHandle {
+    fn get(&self, _key: &str) -> Option<serde_json::Value> {
+        None
+    }
+}
+
+struct NoopCryptoHandle;
+
+impl CryptoHandleImpl for NoopCryptoHandle {
+    fn sign_data(&self, _data: &[u8]) -> Result<Vec<u8>, EngineError> {
+        Err(EngineError::ToolError(
+            "native plugin test crypto handle is not configured".to_string(),
+        ))
+    }
+
+    fn verify_signature(&self, _data: &[u8], _signature: &[u8]) -> Result<(), EngineError> {
+        Err(EngineError::ToolError(
+            "native plugin test crypto handle is not configured".to_string(),
+        ))
+    }
+
+    fn get_secret(&self, key: &str) -> Result<String, EngineError> {
+        Err(EngineError::KeyringError(format!(
+            "secret '{}' is not available in native plugin test context",
+            key
+        )))
+    }
+
+    fn scrub_secrets(&self, text: &str) -> String {
+        text.to_string()
+    }
+}
+
+struct NoopNetworkHandle;
+
+impl NetworkHandleImpl for NoopNetworkHandle {
+    fn http_get(&self, _url: &str) -> Result<Vec<u8>, EngineError> {
+        Err(EngineError::Network(
+            "native plugin test network handle is not configured".to_string(),
+        ))
+    }
+
+    fn http_post(&self, _url: &str, _body: Vec<u8>) -> Result<Vec<u8>, EngineError> {
+        Err(EngineError::Network(
+            "native plugin test network handle is not configured".to_string(),
+        ))
+    }
+}
+
+struct NoopBusHandle;
+
+impl BusHandleImpl for NoopBusHandle {
+    fn subscribe(&self, _event_type: &str) -> Result<(), EngineError> {
+        Ok(())
+    }
+
+    fn publish(&self, _event_type: &str, _payload: serde_json::Value) -> Result<(), EngineError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

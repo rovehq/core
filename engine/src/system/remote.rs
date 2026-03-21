@@ -96,6 +96,26 @@ impl RemoteManager {
         Ok(metadata.identity)
     }
 
+    pub fn local_profile(&self) -> Result<NodeProfile> {
+        Ok(self.load_or_init_node_metadata()?.profile)
+    }
+
+    pub fn set_execution_role(&self, execution_role: NodeExecutionRole) -> Result<NodeProfile> {
+        let path = self.remote_node_file();
+        let mut metadata = self.load_or_init_node_metadata()?;
+        metadata.profile.execution_role = execution_role;
+        self.save_node_metadata(&path, &metadata)?;
+        Ok(metadata.profile)
+    }
+
+    pub fn replace_tags(&self, tags: &[String]) -> Result<NodeProfile> {
+        let path = self.remote_node_file();
+        let mut metadata = self.load_or_init_node_metadata()?;
+        metadata.profile.tags = tags.to_vec();
+        self.save_node_metadata(&path, &metadata)?;
+        Ok(metadata.profile)
+    }
+
     pub async fn pair(
         &self,
         target: &str,
