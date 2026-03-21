@@ -31,6 +31,8 @@ The engine only executes installed plugins. Authoring, testing, packing, publish
 If you need a reference package, start from:
 
 - [/Users/as/workspace/rove/core/engine/tests/fixtures/plugins/echo-skill](/Users/as/workspace/rove/core/engine/tests/fixtures/plugins/echo-skill)
+- [/Users/as/workspace/rove/core/engine/tests/fixtures/plugins/echo-channel](/Users/as/workspace/rove/core/engine/tests/fixtures/plugins/echo-channel)
+- [/Users/as/workspace/rove/core/engine/tests/fixtures/plugins/github-mcp](/Users/as/workspace/rove/core/engine/tests/fixtures/plugins/github-mcp)
 
 ## Local package install
 

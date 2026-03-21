@@ -1,0 +1,19 @@
+{
+  "name": "GitHub MCP",
+  "version": "0.1.0",
+  "sdk_version": "0.1.0",
+  "plugin_type": "Mcp",
+  "permissions": {
+    "filesystem": [],
+    "network": [
+      "api.github.com"
+    ],
+    "memory_read": false,
+    "memory_write": false,
+    "tools": []
+  },
+  "trust_tier": "Reviewed",
+  "min_model": null,
+  "description": "Reference MCP connector package for GitHub-style server setup",
+  "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
+}

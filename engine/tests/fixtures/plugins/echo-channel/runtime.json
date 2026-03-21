@@ -1,0 +1,20 @@
+{
+  "tools": [
+    {
+      "name": "deliver",
+      "description": "Emit a channel-style delivery preview",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "string",
+            "description": "Message body to deliver"
+          }
+        }
+      },
+      "domains": [
+        "all"
+      ]
+    }
+  ]
+}

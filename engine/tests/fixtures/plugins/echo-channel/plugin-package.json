@@ -1,0 +1,8 @@
+{
+  "id": "echo-channel",
+  "artifact": "echo_channel.wasm",
+  "runtime_config": "runtime.json",
+  "payload_hash": "LOCAL_DEV_PAYLOAD_HASH",
+  "payload_signature": "LOCAL_DEV_PAYLOAD_SIGNATURE",
+  "enabled": true
+}

@@ -1,0 +1,17 @@
+{
+  "name": "Echo Channel",
+  "version": "0.1.0",
+  "sdk_version": "0.1.0",
+  "plugin_type": "Channel",
+  "permissions": {
+    "filesystem": [],
+    "network": [],
+    "memory_read": false,
+    "memory_write": false,
+    "tools": []
+  },
+  "trust_tier": "Community",
+  "min_model": null,
+  "description": "Reference channel package for Rove",
+  "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
+}

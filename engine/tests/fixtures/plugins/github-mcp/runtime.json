@@ -1,0 +1,30 @@
+{
+  "name": "github",
+  "template": "github",
+  "description": "Reference MCP connector for GitHub",
+  "command": "github-mcp",
+  "args": [
+    "stdio"
+  ],
+  "profile": {
+    "read_paths": [],
+    "write_paths": [],
+    "allow_network": true,
+    "allow_tmp": false
+  },
+  "cached_tools": [
+    {
+      "name": "mcp_github_search_issues",
+      "description": "Search GitHub issues",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "enabled": true
+}

@@ -1,0 +1,7 @@
+{
+  "id": "github-mcp",
+  "runtime_config": "runtime.json",
+  "payload_hash": "LOCAL_DEV_PAYLOAD_HASH",
+  "payload_signature": "LOCAL_DEV_PAYLOAD_SIGNATURE",
+  "enabled": true
+}
