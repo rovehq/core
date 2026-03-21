@@ -6,9 +6,10 @@ use serde_json::json;
 
 use crate::cli::database_path::expand_data_dir;
 use crate::config::Config;
+use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use crate::platform::llama_search_paths;
 use crate::security::crypto::CryptoModule;
-use crate::steering::SteeringEngine;
+use crate::steering::PolicyEngine;
 use crate::storage::Database;
 use crate::system::daemon::DaemonManager;
 
@@ -278,16 +279,18 @@ fn detect_llama_server_path() -> Option<PathBuf> {
 
 async fn steering_summary(config: &Config) -> String {
     let mut parts = Vec::new();
-    let global_dir = config.steering.skill_dir.clone();
-    let workspace_dir = config.core.workspace.join(".rove").join("steering");
+    let global_dir = config.steering.policy_dir().clone();
+    let primary_workspace_dir = policy_workspace_dir(&config.core.workspace);
+    let legacy_workspace_dir = legacy_policy_workspace_dir(&config.core.workspace);
+    let workspace_dir = active_workspace_policy_dir(&primary_workspace_dir, &legacy_workspace_dir);
 
-    match SteeringEngine::new(&global_dir).await {
+    match PolicyEngine::new(&global_dir).await {
         Ok(engine) => {
             let mut names: Vec<String> = engine
-                .list_skills()
+                .list_policies()
                 .await
                 .into_iter()
-                .map(|skill| skill.name)
+                .map(|policy| policy.name)
                 .collect();
             names.sort();
             if names.is_empty() {

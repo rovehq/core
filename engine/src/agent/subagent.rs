@@ -72,7 +72,7 @@ pub struct SubagentRunner {
     tools: Arc<ToolRegistry>,
     memory_system: Option<Arc<MemorySystem>>,
     workspace_locks: Arc<WorkspaceLocks>,
-    steering_after_write_commands: Vec<String>,
+    policy_after_write_commands: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -100,7 +100,7 @@ impl SubagentRunner {
         tools: Arc<ToolRegistry>,
         memory_system: Option<Arc<MemorySystem>>,
         workspace_locks: Arc<WorkspaceLocks>,
-        steering_after_write_commands: Vec<String>,
+        policy_after_write_commands: Vec<String>,
     ) -> Self {
         spec.memory_budget = spec.memory_budget.max(MIN_MEMORY_BUDGET);
         Self {
@@ -118,7 +118,7 @@ impl SubagentRunner {
             tools,
             memory_system,
             workspace_locks,
-            steering_after_write_commands,
+            policy_after_write_commands,
         }
     }
 
@@ -381,9 +381,9 @@ impl SubagentRunner {
         messages: &mut Vec<Message>,
         progress: &Arc<Mutex<SubagentProgress>>,
     ) -> Result<()> {
-        for command in &self.steering_after_write_commands {
+        for command in &self.policy_after_write_commands {
             let scripted = ToolCall::new(
-                format!("subagent-steering-{}-{}", subtask_id, step_num),
+                format!("subagent-policy-{}-{}", subtask_id, step_num),
                 "run_command",
                 serde_json::json!({ "command": command }).to_string(),
             );

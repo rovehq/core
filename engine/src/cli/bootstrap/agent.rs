@@ -9,9 +9,10 @@ use crate::api::gateway::WorkspaceLocks;
 use crate::config::Config;
 use crate::llm::router::LLMRouter;
 use crate::memory::conductor::MemorySystem;
+use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use crate::security::rate_limiter::RateLimiter;
 use crate::security::risk_assessor::RiskAssessor;
-use crate::steering::loader::SteeringEngine;
+use crate::steering::loader::PolicyEngine;
 use crate::storage::{Database, TaskRepository};
 
 use super::plugins;
@@ -76,7 +77,7 @@ async fn build_task_agent_with_role(
     ));
 
     let tools = plugins::build(&database, &config).await?;
-    let steering = load_steering(&config).await?;
+    let policy_engine = load_policy_engine(&config).await?;
     let workspace_locks = Arc::new(WorkspaceLocks::new());
 
     let mut agent = AgentCore::new(
@@ -85,7 +86,7 @@ async fn build_task_agent_with_role(
         rate_limiter,
         task_repo,
         tools,
-        Some(steering),
+        Some(policy_engine),
         Arc::new(config),
         workspace_locks,
     )?;
@@ -94,13 +95,15 @@ async fn build_task_agent_with_role(
     Ok(agent)
 }
 
-async fn load_steering(config: &Config) -> Result<SteeringEngine> {
-    let steering_dir = config.steering.skill_dir.clone();
-    let workspace_dir = config.core.workspace.join(".rove").join("steering");
-    let mut steering =
-        SteeringEngine::new_with_workspace(&steering_dir, Some(&workspace_dir)).await?;
-    steering.load_all_skills().await?;
-    Ok(steering)
+async fn load_policy_engine(config: &Config) -> Result<PolicyEngine> {
+    let policy_dir = config.steering.policy_dir().clone();
+    let primary_workspace_dir = policy_workspace_dir(&config.core.workspace);
+    let legacy_workspace_dir = legacy_policy_workspace_dir(&config.core.workspace);
+    let workspace_dir = active_workspace_policy_dir(&primary_workspace_dir, &legacy_workspace_dir);
+    let mut policy_engine =
+        PolicyEngine::new_with_workspace(&policy_dir, Some(&workspace_dir)).await?;
+    policy_engine.load_all_policies().await?;
+    Ok(policy_engine)
 }
 
 fn agent_memory_system(agent: &AgentCore) -> Option<Arc<MemorySystem>> {

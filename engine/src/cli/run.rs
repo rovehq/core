@@ -18,9 +18,10 @@ use crate::cli::database_path::database_path;
 use crate::config::Config;
 use crate::llm::router::LLMRouter;
 use crate::memory::conductor::MemorySystem;
+use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use crate::security::rate_limiter::RateLimiter;
 use crate::security::risk_assessor::RiskAssessor;
-use crate::steering::loader::SteeringEngine;
+use crate::steering::loader::PolicyEngine;
 use crate::storage::{Database, PendingTaskStatus, TaskRepository};
 
 use super::output::{OutputFormat, TaskView};
@@ -105,7 +106,7 @@ async fn handle_local_run(
     let task_repo = Arc::new(TaskRepository::new(db_pool.clone()));
     let event_repo = task_repo.clone();
     let tools = super::bootstrap::build_tools(&database, &runtime_config).await?;
-    let steering = load_steering(&runtime_config).await;
+    let policy_engine = load_policy_engine(&runtime_config).await;
     let workspace_locks = Arc::new(WorkspaceLocks::new());
     let memory_system = Arc::new(MemorySystem::new_with_config(
         db_pool,
@@ -119,7 +120,7 @@ async fn handle_local_run(
         rate_limiter,
         task_repo,
         tools,
-        steering,
+        policy_engine,
         Arc::new(runtime_config.clone()),
         workspace_locks,
     )?;
@@ -413,31 +414,33 @@ async fn handle_daemon_run(
     }
 }
 
-async fn load_steering(config: &Config) -> Option<SteeringEngine> {
+async fn load_policy_engine(config: &Config) -> Option<PolicyEngine> {
     if !config.steering.auto_detect {
         return None;
     }
 
-    let skill_dir = expand_skill_dir(&config.steering.skill_dir);
-    let workspace_dir = config.core.workspace.join(".rove").join("steering");
-    match SteeringEngine::new_with_workspace(&skill_dir, Some(&workspace_dir)).await {
+    let policy_dir = expand_policy_dir(config.steering.policy_dir());
+    let primary_workspace_dir = policy_workspace_dir(&config.core.workspace);
+    let legacy_workspace_dir = legacy_policy_workspace_dir(&config.core.workspace);
+    let workspace_dir = active_workspace_policy_dir(&primary_workspace_dir, &legacy_workspace_dir);
+    match PolicyEngine::new_with_workspace(&policy_dir, Some(&workspace_dir)).await {
         Ok(engine) => Some(engine),
         Err(error) => {
-            tracing::warn!("Failed to load steering engine: {}", error);
+            tracing::warn!("Failed to load policy engine: {}", error);
             None
         }
     }
 }
 
-fn expand_skill_dir(skill_dir: &Path) -> std::path::PathBuf {
-    let raw = skill_dir.to_string_lossy();
+fn expand_policy_dir(policy_dir: &Path) -> std::path::PathBuf {
+    let raw = policy_dir.to_string_lossy();
     if let Some(rest) = raw.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }
     }
 
-    skill_dir.to_path_buf()
+    policy_dir.to_path_buf()
 }
 
 #[derive(Default)]

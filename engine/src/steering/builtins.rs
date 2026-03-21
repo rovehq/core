@@ -1,7 +1,7 @@
-//! Builtin steering files.
+//! Builtin policy files.
 //!
-//! These are written to `~/.rove/steering/` on first load so the user can
-//! inspect and override them from a workspace-local `.rove/steering/` folder.
+//! These are written to the user policy directory on first load so the user can
+//! inspect and override them from a workspace-local `.rove/policy/` folder.
 
 use std::path::Path;
 
@@ -12,7 +12,7 @@ pub const GENERAL_TOML: &str = r#"
 [meta]
 id = "general"
 name = "General"
-description = "Baseline steering for normal interactive work."
+description = "Baseline policy for normal interactive work."
 tags = ["default"]
 domains = ["general"]
 
@@ -87,7 +87,7 @@ auto_when = ["task contains: password|secret|key|credential|token|pii"]
 auto_when_risk_tier = 2
 
 [directives]
-system_prefix = "Security steering is active. Never echo secrets back unnecessarily, keep sensitive work local when possible, and prefer refusal over unsafe disclosure."
+system_prefix = "Security policy is active. Never echo secrets back unnecessarily, keep sensitive work local when possible, and prefer refusal over unsafe disclosure."
 
 [routing]
 avoid_providers = ["openai", "anthropic", "gemini"]
@@ -98,7 +98,7 @@ min_score_threshold = 0.90
 auto_tag = ["sensitive", "do-not-share"]
 "#;
 
-/// Writes the default built-in steering files to the specified directory if they
+/// Writes the default built-in policy files to the specified directory if they
 /// do not already exist.
 pub async fn bootstrap_builtins(skills_dir: &Path) -> anyhow::Result<()> {
     if !skills_dir.exists() {
@@ -117,7 +117,7 @@ pub async fn bootstrap_builtins(skills_dir: &Path) -> anyhow::Result<()> {
         let path = skills_dir.join(filename);
         if !path.exists() {
             fs::write(&path, content.trim()).await?;
-            info!("Bootstrapped built-in steering file: {}", filename);
+            info!("Bootstrapped built-in policy file: {}", filename);
         }
     }
 

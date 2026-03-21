@@ -1,9 +1,9 @@
-//! Core types for the Steering System
+//! Core types for the Policy System
 //!
 //! Maps directly to the TOML and Markdown schema specifications
-//! for Agent Skills.
+//! for policy files.
 //!
-//! Requirements: Phase 3a - Steering System Types
+//! Historical names like `SkillFile` remain as aliases for compatibility.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -150,3 +150,11 @@ pub struct RoutingPreferences {
     /// Minimum score threshold (strictest across all active)
     pub min_score_threshold: f32,
 }
+
+pub type PolicyFile = SkillFile;
+pub type PolicyMeta = SkillMeta;
+pub type PolicyActivation = SkillActivation;
+pub type PolicyDirectives = SkillDirectives;
+pub type PolicyRouting = SkillRouting;
+pub type PolicyTools = SkillTools;
+pub type PolicyMemory = SkillMemory;

@@ -51,7 +51,7 @@ impl AgentCore {
         let context = self.initialize_task_context(&task, risk_tier).await?;
         self.insert_user_event(task_id, &task.input, &context.domain_str)
             .await?;
-        self.run_steering_preflight(task_id, &context.domain_str)
+        self.run_policy_preflight(task_id, &context.domain_str)
             .await?;
         if let Some(result) = self
             .try_git_commit_shortcut(
@@ -132,7 +132,7 @@ impl AgentCore {
                         &context.domain_str,
                     )
                     .await?;
-                    self.run_steering_after_write(
+                    self.run_policy_after_write(
                         task_id,
                         iteration,
                         &tool_call.name,

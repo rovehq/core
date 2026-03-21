@@ -13,8 +13,9 @@ use rove_engine::cli::{
     PolicyAction, RemoteAction, RemoteNodeAction, RemoteProfileAction, SecretsAction,
     ServiceAction, SteeringAction,
 };
+use rove_engine::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use rove_engine::server;
-use rove_engine::steering::loader::SteeringEngine;
+use rove_engine::steering::loader::PolicyEngine;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -268,18 +269,20 @@ async fn run_daemon(port: u16) -> Result<()> {
 
 async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>) -> Result<()> {
     let config = rove_engine::config::Config::load_or_create()?;
-    let steering_dir = dir.unwrap_or_else(|| config.steering.skill_dir.clone());
+    let policy_dir = dir.unwrap_or_else(|| config.steering.policy_dir().clone());
     let cwd = std::env::current_dir().unwrap_or_else(|_| config.core.workspace.clone());
-    let workspace_dir = cwd.join(".rove").join("steering");
-    let engine = SteeringEngine::new_with_workspace(&steering_dir, Some(&workspace_dir)).await?;
+    let primary_workspace_dir = policy_workspace_dir(&cwd);
+    let legacy_workspace_dir = legacy_policy_workspace_dir(&cwd);
+    let workspace_dir = active_workspace_policy_dir(&primary_workspace_dir, &legacy_workspace_dir);
+    let engine = PolicyEngine::new_with_workspace(&policy_dir, Some(&workspace_dir)).await?;
 
     match action {
         SteeringAction::List => {
-            let mut all = engine.list_skills().await;
+            let mut all = engine.list_policies().await;
             all.sort_by(|a, b| a.file_path.cmp(&b.file_path));
-            println!("{} steering file(s) loaded", all.len());
-            for skill in all {
-                let domains = skill
+            println!("{} policy file(s) loaded", all.len());
+            for policy in all {
+                let domains = policy
                     .config
                     .as_ref()
                     .map(|cfg| {
@@ -290,31 +293,31 @@ async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>
                         }
                     })
                     .unwrap_or_else(|| "-".to_string());
-                println!("- {} [{}] {}", skill.id, domains, skill.file_path.display());
+                println!("- {} [{}] {}", policy.id, domains, policy.file_path.display());
             }
         }
         SteeringAction::On { name } => {
-            if let Err(error) = engine.activate(&name).await {
+            if let Err(error) = engine.activate_policy(&name).await {
                 error!("{}", error);
             } else {
                 println!("Activated '{}'", name);
             }
         }
         SteeringAction::Off { name } => {
-            engine.deactivate(&name).await;
+            engine.deactivate_policy(&name).await;
             println!("Deactivated '{}'", name);
         }
         SteeringAction::Status => {
             let domain = infer_steering_domain(&cwd);
-            engine.auto_activate("", 0, Some(domain)).await;
-            let active = engine.active_skills().await;
+            engine.auto_activate_policies("", 0, Some(domain)).await;
+            let active = engine.active_policies().await;
             let directives = engine.get_directives().await;
-            println!("Active steering for domain '{}':", domain);
+            println!("Active policy directives for domain '{}':", domain);
             if active.is_empty() {
                 println!("(none)");
             } else {
-                for skill in active {
-                    println!("- {}", skill);
+                for policy in active {
+                    println!("- {}", policy);
                 }
             }
             if !directives.system_prefix.is_empty() {
@@ -327,10 +330,10 @@ async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>
             }
         }
         SteeringAction::Default => {
-            rove_engine::steering::bootstrap_builtins(&steering_dir).await?;
+            rove_engine::steering::bootstrap_builtins(&policy_dir).await?;
             println!(
-                "Built-in steering files ready in {}",
-                steering_dir.display()
+                "Built-in policy files ready in {}",
+                policy_dir.display()
             );
         }
     }

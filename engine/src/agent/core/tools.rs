@@ -15,12 +15,12 @@ pub(super) struct ToolExecution {
 }
 
 impl AgentCore {
-    pub(super) async fn run_steering_preflight(
+    pub(super) async fn run_policy_preflight(
         &mut self,
         task_id: &uuid::Uuid,
         domain: &str,
     ) -> Result<()> {
-        let commands = self.steering_preflight_commands.clone();
+        let commands = self.policy_preflight_commands.clone();
         for command in commands {
             self.execute_scripted_command(task_id, 0, domain, &command)
                 .await?;
@@ -28,7 +28,7 @@ impl AgentCore {
         Ok(())
     }
 
-    pub(super) async fn run_steering_after_write(
+    pub(super) async fn run_policy_after_write(
         &mut self,
         task_id: &uuid::Uuid,
         iteration: usize,
@@ -39,7 +39,7 @@ impl AgentCore {
             return Ok(());
         }
 
-        let commands = self.steering_after_write_commands.clone();
+        let commands = self.policy_after_write_commands.clone();
         for command in commands {
             self.execute_scripted_command(task_id, iteration, domain, &command)
                 .await?;
@@ -54,15 +54,15 @@ impl AgentCore {
         domain: &str,
         command: &str,
     ) -> Result<()> {
-        if !self.steering_executed_commands.insert(command.to_string()) {
+        if !self.policy_executed_commands.insert(command.to_string()) {
             return Ok(());
         }
 
         let tool_call = ToolCall::new(
             format!(
-                "steering-{}-{}",
+                "policy-{}-{}",
                 task_id,
-                self.steering_executed_commands.len()
+                self.policy_executed_commands.len()
             ),
             "run_command",
             serde_json::json!({ "command": command }).to_string(),

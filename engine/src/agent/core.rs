@@ -30,7 +30,7 @@ use crate::llm::router::LLMRouter;
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::{OperationSource, RiskAssessor};
 use crate::security::secrets::scrub_text;
-use crate::steering::loader::SteeringEngine;
+use crate::steering::loader::PolicyEngine;
 use sdk::{RemoteExecutionPlan, TaskDomain};
 
 use super::{preferences::PreferencesManager, WorkingMemory};
@@ -49,7 +49,7 @@ pub struct AgentCore {
     task_repo: Arc<TaskRepository>,
     tools: Arc<ToolRegistry>,
     current_source: OperationSource,
-    steering: Option<SteeringEngine>,
+    policy_engine: Option<PolicyEngine>,
     memory_system: Option<Arc<MemorySystem>>,
     config: Arc<crate::config::Config>,
     preferences_manager: PreferencesManager,
@@ -57,9 +57,9 @@ pub struct AgentCore {
     workspace_locks: Arc<WorkspaceLocks>,
     background_jobs: Vec<JoinHandle<()>>,
     current_task_sensitive: bool,
-    steering_preflight_commands: Vec<String>,
-    steering_after_write_commands: Vec<String>,
-    steering_executed_commands: HashSet<String>,
+    policy_preflight_commands: Vec<String>,
+    policy_after_write_commands: Vec<String>,
+    policy_executed_commands: HashSet<String>,
 }
 
 impl AgentCore {
@@ -71,7 +71,7 @@ impl AgentCore {
         rate_limiter: Arc<RateLimiter>,
         task_repo: Arc<TaskRepository>,
         tools: Arc<ToolRegistry>,
-        steering: Option<SteeringEngine>,
+        policy_engine: Option<PolicyEngine>,
         config: Arc<crate::config::Config>,
         workspace_locks: Arc<WorkspaceLocks>,
     ) -> Result<Self> {
@@ -86,7 +86,7 @@ impl AgentCore {
             task_repo,
             tools,
             current_source: OperationSource::Local,
-            steering,
+            policy_engine,
             memory_system: None,
             config,
             preferences_manager: PreferencesManager::new(router),
@@ -94,9 +94,9 @@ impl AgentCore {
             workspace_locks,
             background_jobs: Vec::new(),
             current_task_sensitive: false,
-            steering_preflight_commands: Vec::new(),
-            steering_after_write_commands: Vec::new(),
-            steering_executed_commands: HashSet::new(),
+            policy_preflight_commands: Vec::new(),
+            policy_after_write_commands: Vec::new(),
+            policy_executed_commands: HashSet::new(),
         })
     }
 
@@ -284,9 +284,9 @@ impl AgentCore {
         }
     }
 
-    pub async fn active_steering_skills(&self) -> Vec<String> {
-        match &self.steering {
-            Some(steering) => steering.active_skills().await,
+    pub async fn active_policies(&self) -> Vec<String> {
+        match &self.policy_engine {
+            Some(policy_engine) => policy_engine.active_policies().await,
             None => Vec::new(),
         }
     }
@@ -338,7 +338,7 @@ impl AgentCore {
             &context.domain_str,
         )
         .await?;
-        self.run_steering_preflight(&task_id, &context.domain_str)
+        self.run_policy_preflight(&task_id, &context.domain_str)
             .await?;
 
         let mut step_outputs = Vec::with_capacity(steps.len());
@@ -367,7 +367,7 @@ impl AgentCore {
                 &context.domain_str,
             )
             .await?;
-            self.run_steering_after_write(&task_id, step_num, &tool_call.name, &context.domain_str)
+            self.run_policy_after_write(&task_id, step_num, &tool_call.name, &context.domain_str)
                 .await?;
 
             step_outputs.push((step.summary.clone(), execution.safe_result));

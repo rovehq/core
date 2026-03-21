@@ -8,7 +8,7 @@ use crate::conductor::memory::{MemorySystem, SessionMemory};
 use crate::conductor::project::ProjectMemory;
 use crate::conductor::types::{MemoryBudget, TaskDomain};
 use crate::llm::Message;
-use crate::steering::loader::SteeringEngine;
+use crate::steering::loader::PolicyEngine;
 use anyhow::Result;
 
 pub struct ContextAssembler {
@@ -31,7 +31,7 @@ impl ContextAssembler {
         project_memory: Option<&ProjectMemory>,
         session_memory: &SessionMemory,
         memory_system: Option<&MemorySystem>,
-        steering: Option<&SteeringEngine>,
+        policy_engine: Option<&PolicyEngine>,
         tool_registry: Option<&ToolRegistry>,
         query: &str,
         domain: &TaskDomain,
@@ -48,32 +48,30 @@ impl ContextAssembler {
             sys_prompt.push_str(&pm.format_for_prompt());
         }
 
-        // 3. Inject Agent Skills (Steering) based on query context
-        if let Some(se) = steering {
-            let mut active_skills = Vec::new();
+        // 3. Inject policy-matched context based on query text.
+        if let Some(policy_engine) = policy_engine {
+            let mut active_policies = Vec::new();
             let query_lower = query.to_lowercase();
 
-            // Very simplistic semantic routing: checks if query mentions the skill name/desc words
-            for skill in se.list_skills().await {
-                if query_lower.contains(&skill.name.to_lowercase()) {
-                    active_skills.push(skill);
+            // Very simplistic semantic routing: checks if query mentions the policy name/desc words.
+            for policy in policy_engine.list_policies().await {
+                if query_lower.contains(&policy.name.to_lowercase()) {
+                    active_policies.push(policy);
                 } else {
-                    // Check description words
-                    let desc_words: Vec<&str> = skill.description.split_whitespace().collect();
+                    let desc_words: Vec<&str> = policy.description.split_whitespace().collect();
                     for word in desc_words {
                         if word.len() > 4 && query_lower.contains(&word.to_lowercase()) {
-                            active_skills.push(skill);
+                            active_policies.push(policy);
                             break;
                         }
                     }
                 }
             }
 
-            if !active_skills.is_empty() {
-                sys_prompt.push_str("\n\n--- Active Skills ---\n");
-                for skill in active_skills.into_iter().take(3) {
-                    // Limit to 3 skills
-                    sys_prompt.push_str(&format!("# {}\n{}\n\n", skill.name, skill.content));
+            if !active_policies.is_empty() {
+                sys_prompt.push_str("\n\n--- Active Policies ---\n");
+                for policy in active_policies.into_iter().take(3) {
+                    sys_prompt.push_str(&format!("# {}\n{}\n\n", policy.name, policy.content));
                 }
             }
         }
@@ -224,7 +222,7 @@ description: React and TailwindCSS rules
 Use hooks correctly."#;
         fs::write(skills_dir.join("ui.md"), skill2).await.unwrap();
 
-        let steering = SteeringEngine::new(skills_dir).await.unwrap();
+        let policy_engine = PolicyEngine::new(skills_dir).await.unwrap();
 
         let budget = MemoryBudget {
             system_tokens: 1000,
@@ -243,7 +241,7 @@ Use hooks correctly."#;
                 None,
                 &session_memory,
                 None, // memory_system
-                Some(&steering),
+                Some(&policy_engine),
                 None, // tool_registry
                 "I need to write a database query.",
                 &TaskDomain::Code,
@@ -252,7 +250,7 @@ Use hooks correctly."#;
             .unwrap();
 
         let sys_content = &messages[0].content;
-        assert!(sys_content.contains("--- Active Skills ---"));
+        assert!(sys_content.contains("--- Active Policies ---"));
         assert!(sys_content.contains("# Database"));
         assert!(!sys_content.contains("# Frontend"));
 
@@ -263,7 +261,7 @@ Use hooks correctly."#;
                 None,
                 &session_memory,
                 None, // memory_system
-                Some(&steering),
+                Some(&policy_engine),
                 None, // tool_registry
                 "Help me with this React component.",
                 &TaskDomain::Code,
@@ -272,7 +270,7 @@ Use hooks correctly."#;
             .unwrap();
 
         let sys_content_ui = &messages_ui[0].content;
-        assert!(sys_content_ui.contains("--- Active Skills ---"));
+        assert!(sys_content_ui.contains("--- Active Policies ---"));
         assert!(!sys_content_ui.contains("# Database"));
         assert!(sys_content_ui.contains("# Frontend"));
     }

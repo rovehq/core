@@ -241,7 +241,7 @@ pub async fn task_status(
 
 pub async fn active_skills(State(state): State<AppState>) -> impl IntoResponse {
     let agent = state.agent.read().await;
-    let active = agent.active_steering_skills().await;
+    let active = agent.active_policies().await;
     (StatusCode::OK, Json(active))
 }
 

@@ -1,9 +1,9 @@
-//! Steering Engine & Hot-Reload Loader
+//! Policy Engine & Hot-Reload Loader
 //!
-//! Loads and manages Agent Skills from TOML and Markdown files.
+//! Loads and manages policy files from TOML and Markdown files.
 //! Integrates `notify` watcher for real-time hot-reloading.
 
-use super::types::{MergedDirectives, RoutingPreferences, SkillFile};
+use super::types::{MergedDirectives, PolicyFile, RoutingPreferences};
 use anyhow::{Context, Result};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
@@ -13,32 +13,36 @@ use tokio::fs;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
-/// Maximum priority allowed for user-created skills
+/// Maximum priority allowed for user-created policies
 const MAX_USER_PRIORITY: u16 = 90;
 
-/// An Agent Skill loaded from a TOML or Markdown file
+/// A policy file loaded from TOML or Markdown.
 #[derive(Debug, Clone)]
-pub struct Skill {
+pub struct PolicyRecord {
     pub id: String,
     pub name: String,
     pub description: String,
     pub content: String,
     pub file_path: PathBuf,
     /// Full TOML config (None for legacy .md skills)
-    pub config: Option<SkillFile>,
+    pub config: Option<PolicyFile>,
 }
 
-/// The Steering Engine manages the library of available skills
-pub struct SteeringEngine {
+pub type Skill = PolicyRecord;
+
+/// The Policy Engine manages the library of available policies.
+pub struct PolicyEngine {
     skills_dirs: Vec<PathBuf>,
-    skills: Arc<RwLock<HashMap<String, Skill>>>,
+    skills: Arc<RwLock<HashMap<String, PolicyRecord>>>,
     active: Arc<RwLock<Vec<String>>>,
     // Channel for the watcher to notify the main engine tasks to perform a reload
     _watcher_tx: Option<mpsc::Sender<()>>,
 }
 
-impl SteeringEngine {
-    /// Create a new Steering Engine and load skills, spawning a hot-reload watcher
+pub type SteeringEngine = PolicyEngine;
+
+impl PolicyEngine {
+    /// Create a new Policy Engine and load policies, spawning a hot-reload watcher.
     pub async fn new(skills_dir: &Path) -> Result<Self> {
         Self::new_with_workspace(skills_dir, Option::<&Path>::None).await
     }
@@ -47,9 +51,9 @@ impl SteeringEngine {
         global_dir: &Path,
         workspace_dir: Option<&Path>,
     ) -> Result<Self> {
-        // Bootstrap built-in skills if they don't exist
+        // Bootstrap built-in policies if they don't exist
         if let Err(e) = super::builtins::bootstrap_builtins(global_dir).await {
-            tracing::warn!("Failed to bootstrap built-in skills: {}", e);
+            tracing::warn!("Failed to bootstrap built-in policies: {}", e);
         }
 
         let skills = Arc::new(RwLock::new(HashMap::new()));
@@ -79,8 +83,8 @@ impl SteeringEngine {
             _watcher_tx: Some(tx.clone()),
         };
 
-        // Initial Load
-        engine.load_all_skills().await?;
+        // Initial load
+        engine.load_all_policies().await?;
 
         // Spawn a background task to listen for file system events and trigger reloads
         let dirs_clone = skills_dirs.clone();
@@ -135,10 +139,10 @@ impl SteeringEngine {
                         // Drain any other events that came in during the sleep
                         while event_rx.try_recv().is_ok() {}
 
-                        info!("Detected changes in steering files. Reloading...");
+                        info!("Detected changes in policy files. Reloading...");
                         // Perform the reload
                         if let Err(e) = Self::perform_reload(&dirs_clone, &skills_clone, &active_clone).await {
-                            error!("Failed to hot-reload steering skills: {:?}", e);
+                            error!("Failed to hot-reload policies: {:?}", e);
                         } else {
                             // Let the engine know if we need to manually trigger via tx (reserved for manual hooks)
                              let _ = tx.send(()).await;
@@ -155,10 +159,10 @@ impl SteeringEngine {
         Ok(engine)
     }
 
-    /// Load all `.toml` and `.md` files in the skills directory (Internal)
+    /// Load all `.toml` and `.md` files in the policy directories (internal).
     async fn perform_reload(
         dirs: &[PathBuf],
-        skills_lock: &Arc<RwLock<HashMap<String, Skill>>>,
+        skills_lock: &Arc<RwLock<HashMap<String, PolicyRecord>>>,
         active_lock: &Arc<RwLock<Vec<String>>>,
     ) -> Result<()> {
         let mut new_skills = HashMap::new();
@@ -190,7 +194,7 @@ impl SteeringEngine {
                         new_skills.insert(skill.id.clone(), skill);
                     }
                     Err(e) => {
-                        warn!("Failed to parse steering file {}: {}", path.display(), e);
+                        warn!("Failed to parse policy file {}: {}", path.display(), e);
                     }
                 }
             }
@@ -198,7 +202,7 @@ impl SteeringEngine {
 
         // Apply topological inheritance based on extends mapping
         if let Err(e) = super::resolver::build_inheritance_graph(&mut new_skills) {
-            error!("Skill inheritance conflict detected during reload: {}", e);
+            error!("Policy inheritance conflict detected during reload: {}", e);
             // We still keep the mapping even if some dependencies are broken,
             // to prevent complete engine failure.
         }
@@ -220,19 +224,23 @@ impl SteeringEngine {
         Ok(())
     }
 
-    /// Primary manual load hook (used on startup)
-    pub async fn load_all_skills(&mut self) -> Result<()> {
+    /// Primary manual load hook (used on startup).
+    pub async fn load_all_policies(&mut self) -> Result<()> {
         Self::perform_reload(&self.skills_dirs, &self.skills, &self.active).await
     }
 
-    /// Parse a TOML skill file
-    async fn parse_toml_skill(path: &Path) -> Result<Skill> {
+    pub async fn load_all_skills(&mut self) -> Result<()> {
+        self.load_all_policies().await
+    }
+
+    /// Parse a TOML policy file.
+    async fn parse_toml_skill(path: &Path) -> Result<PolicyRecord> {
         let content = fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read {}", path.display()))?;
 
-        let mut skill_file: SkillFile = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse TOML skill {}", path.display()))?;
+        let mut skill_file: PolicyFile = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse TOML policy {}", path.display()))?;
 
         // Enforce max priority for non-built-in skills
         if skill_file.activation.priority > MAX_USER_PRIORITY {
@@ -275,7 +283,7 @@ impl SteeringEngine {
             display_content.push_str(&skill_file.directives.system_suffix);
         }
 
-        Ok(Skill {
+        Ok(PolicyRecord {
             id: skill_file.meta.id.to_lowercase(),
             name: skill_file.meta.name.clone(),
             description: skill_file.meta.description.clone(),
@@ -285,8 +293,8 @@ impl SteeringEngine {
         })
     }
 
-    /// Parse a legacy Markdown file containing YAML frontmatter
-    async fn parse_md_skill(path: &Path) -> Result<Skill> {
+    /// Parse a legacy Markdown file containing YAML frontmatter.
+    async fn parse_md_skill(path: &Path) -> Result<PolicyRecord> {
         let file_content = fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read {}", path.display()))?;
@@ -325,7 +333,7 @@ impl SteeringEngine {
         });
         let description = description.unwrap_or_else(|| "No description provided.".to_string());
 
-        Ok(Skill {
+        Ok(PolicyRecord {
             id: path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -341,7 +349,7 @@ impl SteeringEngine {
 
     // --- Public API ---
 
-    pub async fn activate(&self, skill_id: &str) -> Result<()> {
+    pub async fn activate_policy(&self, skill_id: &str) -> Result<()> {
         let key = skill_id.to_lowercase();
         let skills = self.skills.read().await;
 
@@ -393,14 +401,19 @@ impl SteeringEngine {
         Ok(())
     }
 
-    pub async fn deactivate(&self, skill_id: &str) {
+    pub async fn deactivate_policy(&self, skill_id: &str) {
         let key = skill_id.to_lowercase();
         let mut active = self.active.write().await;
         active.retain(|a| a != &key);
         info!("Skill '{}' deactivated", skill_id);
     }
 
-    pub async fn auto_activate(&self, task_input: &str, risk_tier: u8, domain: Option<&str>) {
+    pub async fn auto_activate_policies(
+        &self,
+        task_input: &str,
+        risk_tier: u8,
+        domain: Option<&str>,
+    ) {
         let input_lower = task_input.to_lowercase();
         let domain_lower = domain.map(|value| value.to_ascii_lowercase());
         let skills = self.skills.read().await;
@@ -497,7 +510,7 @@ impl SteeringEngine {
         let skills = self.skills.read().await;
         let task_input_lower = task_input.to_lowercase();
 
-        let mut active_skills: Vec<&Skill> =
+        let mut active_skills: Vec<&PolicyRecord> =
             active.iter().filter_map(|key| skills.get(key)).collect();
 
         active_skills.sort_by(|a, b| {
@@ -575,7 +588,7 @@ impl SteeringEngine {
         let active = self.active.read().await;
         let skills = self.skills.read().await;
 
-        let mut active_skills: Vec<&Skill> =
+        let mut active_skills: Vec<&PolicyRecord> =
             active.iter().filter_map(|key| skills.get(key)).collect();
 
         active_skills.sort_by(|a, b| {
@@ -654,23 +667,52 @@ impl SteeringEngine {
         matched
     }
 
-    pub async fn get_skill(&self, name: &str) -> Option<Skill> {
+    pub async fn get_policy(&self, name: &str) -> Option<PolicyRecord> {
         let skills = self.skills.read().await;
         skills.get(&name.to_lowercase()).cloned()
     }
 
-    pub async fn list_skills(&self) -> Vec<Skill> {
+    pub async fn list_policies(&self) -> Vec<PolicyRecord> {
         let skills = self.skills.read().await;
         skills.values().cloned().collect()
     }
 
-    pub async fn active_skills(&self) -> Vec<String> {
+    pub async fn active_policies(&self) -> Vec<String> {
         let active = self.active.read().await;
         active.clone()
     }
 
-    pub async fn is_active(&self, skill_id: &str) -> bool {
+    pub async fn is_policy_active(&self, skill_id: &str) -> bool {
         let active = self.active.read().await;
         active.contains(&skill_id.to_lowercase())
+    }
+
+    pub async fn activate(&self, skill_id: &str) -> Result<()> {
+        self.activate_policy(skill_id).await
+    }
+
+    pub async fn deactivate(&self, skill_id: &str) {
+        self.deactivate_policy(skill_id).await
+    }
+
+    pub async fn auto_activate(&self, task_input: &str, risk_tier: u8, domain: Option<&str>) {
+        self.auto_activate_policies(task_input, risk_tier, domain)
+            .await
+    }
+
+    pub async fn get_skill(&self, name: &str) -> Option<PolicyRecord> {
+        self.get_policy(name).await
+    }
+
+    pub async fn list_skills(&self) -> Vec<PolicyRecord> {
+        self.list_policies().await
+    }
+
+    pub async fn active_skills(&self) -> Vec<String> {
+        self.active_policies().await
+    }
+
+    pub async fn is_active(&self, skill_id: &str) -> bool {
+        self.is_policy_active(skill_id).await
     }
 }

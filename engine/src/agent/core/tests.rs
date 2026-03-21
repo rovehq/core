@@ -324,7 +324,7 @@ async fn test_medium_code_task_uses_dag_execution_path() {
 }
 
 #[tokio::test]
-async fn test_dag_write_steps_run_steering_after_write_commands() {
+async fn test_dag_write_steps_run_policy_after_write_commands() {
     let plan = r#"[
         {"id":"step_1","description":"Update the note file","role":"Executor","parallel_safe":false,"dependencies":[],"expected_outcome":"File updated"}
     ]"#;
@@ -346,7 +346,7 @@ async fn test_dag_write_steps_run_steering_after_write_commands() {
         .initialize_task_context(&task, RiskTier::Tier0)
         .await
         .expect("task context");
-    agent.steering_after_write_commands = vec!["rg --files".to_string()];
+    agent.policy_after_write_commands = vec!["rg --files".to_string()];
     agent
         .task_repo
         .create_task(&task.id, &task.input)

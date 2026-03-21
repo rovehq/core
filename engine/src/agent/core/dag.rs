@@ -32,7 +32,7 @@ struct AgentDagExecutor {
     domain: TaskDomain,
     complexity: Complexity,
     sensitive: bool,
-    steering_after_write_commands: Vec<String>,
+    policy_after_write_commands: Vec<String>,
     config: Arc<crate::config::Config>,
 }
 
@@ -68,7 +68,7 @@ impl DagNodeExecutor for AgentDagExecutor {
             self.memory_system.clone(),
             Arc::clone(&self.workspace_locks),
             if matches!(step.role, StepRole::Executor) {
-                self.steering_after_write_commands.clone()
+                self.policy_after_write_commands.clone()
             } else {
                 Vec::new()
             },
@@ -134,7 +134,7 @@ impl AgentDagExecutor {
         let prompt = build_remote_step_prompt(step, dependency_context);
         let manager = RemoteManager::new(self.config.as_ref().clone());
         let execution_plan = manager
-            .plan_execution_bundle(&prompt, &self.steering_after_write_commands)
+            .plan_execution_bundle(&prompt, &self.policy_after_write_commands)
             .await?;
         let result = match manager
             .send_with_options(
@@ -289,7 +289,7 @@ impl AgentCore {
             domain: context.domain,
             complexity: context.complexity,
             sensitive: context.sensitive,
-            steering_after_write_commands: self.steering_after_write_commands.clone(),
+            policy_after_write_commands: self.policy_after_write_commands.clone(),
             config: self.config.clone(),
         };
         let report = runner
@@ -748,7 +748,7 @@ mod tests {
             domain: TaskDomain::Code,
             complexity: Complexity::Medium,
             sensitive: false,
-            steering_after_write_commands: Vec::new(),
+            policy_after_write_commands: Vec::new(),
             config: Arc::new(config),
         };
         let step = PlanStep {

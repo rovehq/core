@@ -66,7 +66,7 @@ impl AgentCore {
         decide_execution_strategy(
             task,
             context,
-            &self.steering_after_write_commands,
+            &self.policy_after_write_commands,
             Some(&history),
         )
     }
@@ -75,7 +75,7 @@ impl AgentCore {
 pub(super) fn decide_execution_strategy(
     task: &Task,
     context: &TaskContext,
-    steering_after_write_commands: &[String],
+    policy_after_write_commands: &[String],
     history: Option<&OrchestrationHistory>,
 ) -> OrchestrationDecision {
     let lower = format!(" {} ", task.input.to_ascii_lowercase());
@@ -125,7 +125,7 @@ pub(super) fn decide_execution_strategy(
         + sequence_markers
         + gather_markers.min(2)
         + coordinated_outputs.min(1)
-        + usize::from(!steering_after_write_commands.is_empty()))
+        + usize::from(!policy_after_write_commands.is_empty()))
     .clamp(1, 6);
 
     let mut score = 0usize;
@@ -169,7 +169,7 @@ pub(super) fn decide_execution_strategy(
         reasons.push("workspace-aware execution".to_string());
     }
 
-    if !steering_after_write_commands.is_empty() {
+    if !policy_after_write_commands.is_empty() {
         score += 1;
         reasons.push("post-write verification".to_string());
     }

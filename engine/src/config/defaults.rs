@@ -140,12 +140,12 @@ pub fn default_max_session_tokens() -> usize {
     4096
 }
 
-/// Default steering directory
+/// Default policy directory.
 pub fn default_steering_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".rove")
-        .join("steering")
+        .join("policy")
 }
 
 /// Default episodic retention days

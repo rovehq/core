@@ -1356,8 +1356,8 @@ mod tests {
         config.core.workspace = temp.path().join("workspace");
         std::fs::create_dir_all(&config.core.workspace).expect("workspace");
         config.core.data_dir = temp.path().join("data");
-        config.steering.skill_dir = temp.path().join("policies");
-        std::fs::create_dir_all(&config.steering.skill_dir).expect("policy dir");
+        *config.steering.policy_dir_mut() = temp.path().join("policies");
+        std::fs::create_dir_all(config.steering.policy_dir()).expect("policy dir");
         config.ws_client.enabled = true;
         config.ws_client.auth_token = Some("remote-token".to_string());
         (temp, config)
@@ -1637,7 +1637,7 @@ mod tests {
         config.core.workspace = temp.path().join("office-workspace");
         std::fs::create_dir_all(&config.core.workspace).expect("workspace");
         std::fs::write(
-            config.steering.skill_dir.join("shell.toml"),
+            config.steering.policy_dir().join("shell.toml"),
             r#"[meta]
 id = "shell"
 name = "shell"
@@ -1674,7 +1674,7 @@ auto_tag = ["office-workspace"]
 "#,
         )
         .expect("write policy");
-        config.steering.default_skills = vec!["shell".to_string()];
+        *config.steering.default_policies_mut() = vec!["shell".to_string()];
 
         let office = MockServer::start().await;
         let fallback = MockServer::start().await;

@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::steering::loader::SteeringEngine;
+use crate::steering::loader::{PolicyEngine, PolicyRecord};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PolicySummary {
@@ -34,27 +34,31 @@ pub struct PolicyManager {
     config: Config,
     policy_dir: PathBuf,
     workspace_dir: PathBuf,
+    legacy_workspace_dir: PathBuf,
 }
 
 impl PolicyManager {
     pub fn new(config: Config, policy_dir_override: Option<PathBuf>) -> Self {
-        let policy_dir = policy_dir_override.unwrap_or_else(|| config.steering.skill_dir.clone());
-        let workspace_dir = config.core.workspace.join(".rove").join("steering");
+        let policy_dir =
+            policy_dir_override.unwrap_or_else(|| config.steering.policy_dir().clone());
+        let workspace_dir = config.core.workspace.join(".rove").join("policy");
+        let legacy_workspace_dir = config.core.workspace.join(".rove").join("steering");
         Self {
             config,
             policy_dir,
             workspace_dir,
+            legacy_workspace_dir,
         }
     }
 
     pub async fn list(&self) -> Result<Vec<PolicySummary>> {
         let engine = self.load_engine().await?;
         let mut policies = Vec::new();
-        for policy in engine.list_skills().await {
+        for policy in engine.list_policies().await {
             policies.push(PolicySummary {
                 id: policy.id.clone(),
                 path: policy.file_path.clone(),
-                active: engine.is_active(&policy.id).await,
+                active: engine.is_policy_active(&policy.id).await,
                 scope: self.scope_for(&policy.file_path),
             });
         }
@@ -65,14 +69,14 @@ impl PolicyManager {
     pub async fn active(&self) -> Result<Vec<String>> {
         let engine = self.load_engine().await?;
         let domain = infer_domain(&self.config.core.workspace).to_string();
-        engine.auto_activate("", 0, Some(&domain)).await;
-        Ok(engine.active_skills().await)
+        engine.auto_activate_policies("", 0, Some(&domain)).await;
+        Ok(engine.active_policies().await)
     }
 
-    pub async fn get(&self, name: &str) -> Result<crate::steering::loader::Skill> {
+    pub async fn get(&self, name: &str) -> Result<PolicyRecord> {
         let engine = self.load_engine().await?;
         engine
-            .get_skill(name)
+            .get_policy(name)
             .await
             .with_context(|| format!("Policy '{}' not found", name))
     }
@@ -81,11 +85,11 @@ impl PolicyManager {
         let mut config = self.config.clone();
         if !config
             .steering
-            .default_skills
+            .default_policies()
             .iter()
             .any(|policy| policy.eq_ignore_ascii_case(name))
         {
-            config.steering.default_skills.push(name.to_string());
+            config.steering.default_policies_mut().push(name.to_string());
             config.save()?;
         }
         Ok(())
@@ -95,7 +99,7 @@ impl PolicyManager {
         let mut config = self.config.clone();
         config
             .steering
-            .default_skills
+            .default_policies_mut()
             .retain(|policy| !policy.eq_ignore_ascii_case(name));
         config.save()?;
         Ok(())
@@ -109,12 +113,12 @@ impl PolicyManager {
     pub async fn explain(&self, task: &str) -> Result<PolicyExplainReport> {
         let engine = self.load_engine().await?;
         let domain = infer_domain(&self.config.core.workspace).to_string();
-        engine.auto_activate(task, 0, Some(&domain)).await;
-        let active_policies = engine.active_skills().await;
+        engine.auto_activate_policies(task, 0, Some(&domain)).await;
+        let active_policies = engine.active_policies().await;
         let matched_hints = engine.matched_hints(task).await;
         let directives = engine.get_directives_for_task(task).await;
         let routing = engine.get_routing_prefs().await;
-        let skills = engine.list_skills().await;
+        let skills = engine.list_policies().await;
         let mut preferred_tools = Vec::new();
         let mut verification_commands = Vec::new();
 
@@ -174,6 +178,7 @@ impl PolicyManager {
         let candidates = [
             self.policy_dir.join(format!("{name}.toml")),
             self.workspace_dir.join(format!("{name}.toml")),
+            self.legacy_workspace_dir.join(format!("{name}.toml")),
         ];
         for candidate in &candidates {
             if candidate.exists() {
@@ -187,19 +192,23 @@ impl PolicyManager {
         )
     }
 
-    async fn load_engine(&self) -> Result<SteeringEngine> {
-        let engine = SteeringEngine::new_with_workspace(&self.policy_dir, Some(&self.workspace_dir))
+    async fn load_engine(&self) -> Result<PolicyEngine> {
+        let workspace_dir = active_workspace_policy_dir(
+            &self.workspace_dir,
+            &self.legacy_workspace_dir,
+        );
+        let engine = PolicyEngine::new_with_workspace(&self.policy_dir, Some(&workspace_dir))
             .await
             .with_context(|| {
                 format!(
                     "Failed to load policy engine from '{}' and '{}'",
                     self.policy_dir.display(),
-                    self.workspace_dir.display()
+                    workspace_dir.display()
                 )
             })?;
 
-        for default_policy in &self.config.steering.default_skills {
-            if let Err(error) = engine.activate(default_policy).await {
+        for default_policy in self.config.steering.default_policies() {
+            if let Err(error) = engine.activate_policy(default_policy).await {
                 tracing::warn!(
                     "Failed to activate persisted policy '{}': {}",
                     default_policy,
@@ -212,13 +221,29 @@ impl PolicyManager {
     }
 
     fn scope_for(&self, path: &Path) -> String {
-        if path.starts_with(&self.workspace_dir) {
+        if path.starts_with(&self.workspace_dir) || path.starts_with(&self.legacy_workspace_dir) {
             "workspace".to_string()
         } else if path.starts_with(&self.policy_dir) {
             "user".to_string()
         } else {
             "external".to_string()
         }
+    }
+}
+
+pub fn policy_workspace_dir(workspace: &Path) -> PathBuf {
+    workspace.join(".rove").join("policy")
+}
+
+pub fn legacy_policy_workspace_dir(workspace: &Path) -> PathBuf {
+    workspace.join(".rove").join("steering")
+}
+
+pub fn active_workspace_policy_dir(primary: &Path, legacy: &Path) -> PathBuf {
+    if primary.exists() || !legacy.exists() {
+        primary.to_path_buf()
+    } else {
+        legacy.to_path_buf()
     }
 }
 

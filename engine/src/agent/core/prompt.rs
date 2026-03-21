@@ -4,6 +4,7 @@ use tracing::debug;
 
 use crate::gateway::Task;
 use crate::llm::Message;
+use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use crate::risk_assessor::RiskTier;
 use crate::steering::types::MergedDirectives;
 use sdk::{Complexity, Route, TaskDomain};
@@ -25,15 +26,15 @@ impl AgentCore {
         risk_tier: RiskTier,
     ) -> Result<TaskContext> {
         self.memory.clear();
-        self.steering_preflight_commands.clear();
-        self.steering_after_write_commands.clear();
-        self.steering_executed_commands.clear();
+        self.policy_preflight_commands.clear();
+        self.policy_after_write_commands.clear();
+        self.policy_executed_commands.clear();
         let mut system_prompt = self.tools.system_prompt_for_query(&task.input);
         let dispatch_result = self.dispatch_brain.classify(&task.input);
         let domain_name = dispatch_result.domain_label.to_lowercase();
         self.current_task_sensitive = dispatch_result.sensitive;
 
-        self.apply_steering(
+        self.apply_policy(
             &task.input,
             risk_tier,
             Some(&domain_name),
@@ -70,14 +71,14 @@ impl AgentCore {
         })
     }
 
-    async fn apply_steering(
+    async fn apply_policy(
         &mut self,
         task_input: &str,
         risk_tier: RiskTier,
         domain: Option<&str>,
         system_prompt: &mut String,
     ) {
-        let Some(steering) = self.steering.as_mut() else {
+        let Some(policy_engine) = self.policy_engine.as_mut() else {
             return;
         };
 
@@ -86,15 +87,15 @@ impl AgentCore {
             RiskTier::Tier1 => 1,
             RiskTier::Tier2 => 2,
         };
-        steering
-            .auto_activate(task_input, risk_tier_u8, domain)
+        policy_engine
+            .auto_activate_policies(task_input, risk_tier_u8, domain)
             .await;
-        let directives = steering.get_directives_for_task(task_input).await;
-        let active_skills = steering.active_skills().await;
-        let matched_hints = steering.matched_hints(task_input).await;
-        let _ = steering;
+        let directives = policy_engine.get_directives_for_task(task_input).await;
+        let active_policies = policy_engine.active_policies().await;
+        let matched_hints = policy_engine.matched_hints(task_input).await;
+        let _ = policy_engine;
 
-        self.configure_steering_commands(task_input, &directives, &matched_hints);
+        self.configure_policy_commands(task_input, &directives, &matched_hints);
         if !directives.system_prefix.is_empty() {
             *system_prompt = format!("{}\n\n{}", directives.system_prefix, system_prompt);
         }
@@ -102,17 +103,17 @@ impl AgentCore {
             *system_prompt = format!("{}\n\n{}", system_prompt, directives.system_suffix);
         }
 
-        debug!("Active steering directives: {:?}", active_skills);
+        debug!("Active policy directives: {:?}", active_policies);
     }
 
-    fn configure_steering_commands(
+    fn configure_policy_commands(
         &mut self,
         task_input: &str,
         directives: &MergedDirectives,
         matched_hints: &[String],
     ) {
         let task_input_lower = task_input.to_ascii_lowercase();
-        let steering_text = format!(
+        let policy_text = format!(
             "{}\n{}\n{}",
             directives.system_prefix,
             directives.system_suffix,
@@ -120,50 +121,50 @@ impl AgentCore {
         )
         .to_ascii_lowercase();
 
-        if task_input_lower.contains("commit") && steering_text.contains("git diff --stat") {
-            self.steering_preflight_commands
+        if task_input_lower.contains("commit") && policy_text.contains("git diff --stat") {
+            self.policy_preflight_commands
                 .push("git diff --stat".to_string());
         }
 
-        if task_input_lower.contains("refactor") && steering_text.contains("cargo clippy") {
-            self.steering_after_write_commands
+        if task_input_lower.contains("refactor") && policy_text.contains("cargo clippy") {
+            self.policy_after_write_commands
                 .push("cargo clippy".to_string());
         }
 
-        if task_input_lower.contains("test") && steering_text.contains("cargo test") {
-            self.steering_after_write_commands
+        if task_input_lower.contains("test") && policy_text.contains("cargo test") {
+            self.policy_after_write_commands
                 .push("cargo test".to_string());
         }
 
         if task_input_lower.contains("commit")
-            && self.steering_file_contains("git.toml", "git diff --stat")
+            && self.policy_file_contains("git.toml", "git diff --stat")
         {
-            self.steering_preflight_commands
+            self.policy_preflight_commands
                 .push("git diff --stat".to_string());
         }
 
         if task_input_lower.contains("refactor")
-            && self.steering_file_contains("code.toml", "cargo clippy")
+            && self.policy_file_contains("code.toml", "cargo clippy")
         {
-            self.steering_after_write_commands
+            self.policy_after_write_commands
                 .push("cargo clippy".to_string());
         }
 
         if task_input_lower.contains("test")
-            && self.steering_file_contains("code.toml", "cargo test")
+            && self.policy_file_contains("code.toml", "cargo test")
         {
-            self.steering_after_write_commands
+            self.policy_after_write_commands
                 .push("cargo test".to_string());
         }
 
-        self.steering_preflight_commands.sort();
-        self.steering_preflight_commands.dedup();
-        self.steering_after_write_commands.sort();
-        self.steering_after_write_commands.dedup();
+        self.policy_preflight_commands.sort();
+        self.policy_preflight_commands.dedup();
+        self.policy_after_write_commands.sort();
+        self.policy_after_write_commands.dedup();
     }
 
-    fn steering_file_contains(&self, file_name: &str, needle: &str) -> bool {
-        self.steering_file_paths(file_name).into_iter().any(|path| {
+    fn policy_file_contains(&self, file_name: &str, needle: &str) -> bool {
+        self.policy_file_paths(file_name).into_iter().any(|path| {
             std::fs::read_to_string(path)
                 .map(|content| {
                     content
@@ -174,14 +175,16 @@ impl AgentCore {
         })
     }
 
-    fn steering_file_paths(&self, file_name: &str) -> Vec<PathBuf> {
+    fn policy_file_paths(&self, file_name: &str) -> Vec<PathBuf> {
+        let workspace_policy_dir = policy_workspace_dir(&self.config.core.workspace);
+        let legacy_workspace_dir = legacy_policy_workspace_dir(&self.config.core.workspace);
+        let active_workspace_dir =
+            active_workspace_policy_dir(&workspace_policy_dir, &legacy_workspace_dir);
         vec![
-            self.config
-                .core
-                .workspace
-                .join(".rove/steering")
-                .join(file_name),
-            self.config.steering.skill_dir.join(file_name),
+            active_workspace_dir.join(file_name),
+            workspace_policy_dir.join(file_name),
+            legacy_workspace_dir.join(file_name),
+            self.config.steering.policy_dir().join(file_name),
         ]
     }
 

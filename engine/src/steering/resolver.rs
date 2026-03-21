@@ -1,16 +1,16 @@
-//! Skill Resolver
+//! Policy Resolver
 //!
-//! Handles complex inheritance (extends), conflict resolution, and topological
-//! sorting of Agent skills.
+//! Handles inheritance, conflict resolution, and topological sorting for
+//! policy files. Historical `Skill*` names remain supported for compatibility.
 
-use super::types::SkillFile;
+use super::types::PolicyFile;
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
-/// Resolves `extends` properties by merging a parent skill into a child skill.
+/// Resolves `extends` properties by merging a parent policy into a child policy.
 /// The child's properties override the parent's where there are conflicts.
-pub fn resolve_inheritance(child: &mut SkillFile, parent: &SkillFile) -> Result<()> {
+pub fn resolve_inheritance(child: &mut PolicyFile, parent: &PolicyFile) -> Result<()> {
     // Merge Tags
     for tag in &parent.meta.tags {
         if !child.meta.tags.contains(tag) {
@@ -237,8 +237,8 @@ mod tests {
     use super::*;
     use crate::steering::types::*;
 
-    fn create_test_skill(name: &str) -> SkillFile {
-        SkillFile {
+    fn create_test_skill(name: &str) -> PolicyFile {
+        PolicyFile {
             meta: SkillMeta {
                 id: name.to_string(),
                 name: name.to_string(),
