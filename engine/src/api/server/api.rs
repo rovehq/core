@@ -316,6 +316,8 @@ pub struct RemotePairRequest {
     pub executor_only: bool,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 pub async fn remote_pair(Json(payload): Json<RemotePairRequest>) -> impl IntoResponse {
@@ -327,6 +329,7 @@ pub async fn remote_pair(Json(payload): Json<RemotePairRequest>) -> impl IntoRes
                 payload.token.as_deref(),
                 payload.executor_only,
                 &payload.tags,
+                &payload.capabilities,
             )
             .await
         {
@@ -406,9 +409,17 @@ pub async fn remote_trust(Path(name): Path<String>) -> impl IntoResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct RemoteSendRequest {
-    pub node: String,
+    pub node: Option<String>,
     pub input: Option<String>,
     pub task: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub allow_executor_only: bool,
+    #[serde(default)]
+    pub prefer_executor_only: bool,
 }
 
 pub async fn remote_send(Json(payload): Json<RemoteSendRequest>) -> impl IntoResponse {
@@ -423,7 +434,19 @@ pub async fn remote_send(Json(payload): Json<RemoteSendRequest>) -> impl IntoRes
     };
 
     match Config::load_or_create() {
-        Ok(config) => match RemoteManager::new(config).send(&payload.node, &task).await {
+        Ok(config) => match RemoteManager::new(config)
+            .send_with_options(
+                &task,
+                crate::remote::RemoteSendOptions {
+                    node: payload.node,
+                    required_tags: payload.tags,
+                    required_capabilities: payload.capabilities,
+                    allow_executor_only: payload.allow_executor_only,
+                    prefer_executor_only: payload.prefer_executor_only,
+                },
+            )
+            .await
+        {
             Ok(result) => (StatusCode::OK, Json(result)).into_response(),
             Err(error) => (
                 StatusCode::BAD_REQUEST,

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use sdk::NodeExecutionRole;
 use tokio::sync::RwLock;
 
 use crate::agent::AgentCore;
@@ -19,7 +20,9 @@ use super::providers;
 pub async fn init_agent_with_db(database: Arc<Database>) -> Result<Arc<RwLock<AgentCore>>> {
     let config = Config::load_or_create()?;
     let memory_config = config.memory.clone();
-    let agent = build_task_agent(database.clone(), None).await?;
+    let execution_role =
+        crate::remote::local_execution_role_for_config(&config).unwrap_or(NodeExecutionRole::Full);
+    let agent = build_task_agent_with_role(database.clone(), None, execution_role).await?;
 
     if let Some(memory_system) = agent_memory_system(&agent) {
         tokio::spawn(async move {
@@ -39,6 +42,17 @@ pub async fn build_task_agent(
     workspace_override: Option<std::path::PathBuf>,
 ) -> Result<AgentCore> {
     let config = Config::load_or_create()?;
+    let execution_role =
+        crate::remote::local_execution_role_for_config(&config).unwrap_or(NodeExecutionRole::Full);
+    build_task_agent_with_role(database, workspace_override, execution_role).await
+}
+
+async fn build_task_agent_with_role(
+    database: Arc<Database>,
+    workspace_override: Option<std::path::PathBuf>,
+    execution_role: NodeExecutionRole,
+) -> Result<AgentCore> {
+    let config = Config::load_or_create()?;
     let mut config = config;
     if let Some(workspace) = workspace_override {
         config.core.workspace = workspace;
@@ -46,7 +60,7 @@ pub async fn build_task_agent(
 
     let db_pool = database.pool().clone();
 
-    let (providers, local_brain) = providers::build(&config).await?;
+    let (providers, local_brain) = providers::build_for_execution_role(&config, execution_role).await?;
     let router = Arc::new(LLMRouter::with_local_brain(
         providers,
         Arc::new(config.llm.clone()),

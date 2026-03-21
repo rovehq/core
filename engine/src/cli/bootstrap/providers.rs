@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use brain::reasoning::LocalBrain;
 use serde::Deserialize;
+use sdk::NodeExecutionRole;
 
 use crate::config::{metadata::SERVICE_NAME, AnthropicConfig, Config, GeminiConfig, OpenAIConfig};
 use crate::llm::anthropic::AnthropicProvider;
@@ -19,6 +20,23 @@ pub async fn build(
     Vec<Box<dyn crate::llm::LLMProvider>>,
     Option<Arc<LocalBrain>>,
 )> {
+    build_for_execution_role(config, NodeExecutionRole::Full).await
+}
+
+pub async fn build_for_execution_role(
+    config: &Config,
+    execution_role: NodeExecutionRole,
+) -> Result<(
+    Vec<Box<dyn crate::llm::LLMProvider>>,
+    Option<Arc<LocalBrain>>,
+)> {
+    if matches!(execution_role, NodeExecutionRole::ExecutorOnly) {
+        tracing::info!(
+            "Executor-only node profile detected; skipping provider discovery and local brain bootstrap"
+        );
+        return Ok((Vec::new(), None));
+    }
+
     let secret_manager = Arc::new(SecretManager::new(SERVICE_NAME));
     let secret_cache = Arc::new(SecretCache::new(secret_manager.clone()));
 
@@ -163,4 +181,23 @@ fn read_local_brain_metadata() -> Option<LocalBrainMetadata> {
     let path = LocalBrain::default_brain_dir()?.join("llama-server.json");
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Config;
+
+    use super::build_for_execution_role;
+
+    #[tokio::test]
+    async fn executor_only_profile_skips_provider_bootstrap() {
+        let config = Config::default();
+        let (providers, local_brain) =
+            build_for_execution_role(&config, sdk::NodeExecutionRole::ExecutorOnly)
+                .await
+                .expect("build providers");
+
+        assert!(providers.is_empty());
+        assert!(local_brain.is_none());
+    }
 }

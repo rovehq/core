@@ -54,6 +54,15 @@ pub struct RemoteSendResult {
     pub events: Vec<RemoteTaskEvent>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RemoteSendOptions {
+    pub node: Option<String>,
+    pub required_tags: Vec<String>,
+    pub required_capabilities: Vec<String>,
+    pub allow_executor_only: bool,
+    pub prefer_executor_only: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteTaskEvent {
     pub task_id: String,
@@ -116,6 +125,14 @@ impl RemoteManager {
         Ok(metadata.profile)
     }
 
+    pub fn replace_capabilities(&self, capabilities: &[String]) -> Result<NodeProfile> {
+        let path = self.remote_node_file();
+        let mut metadata = self.load_or_init_node_metadata()?;
+        metadata.profile.capabilities = normalize_capabilities(capabilities);
+        self.save_node_metadata(&path, &metadata)?;
+        Ok(metadata.profile)
+    }
+
     pub async fn pair(
         &self,
         target: &str,
@@ -123,6 +140,7 @@ impl RemoteManager {
         token: Option<&str>,
         executor_only: bool,
         tags: &[String],
+        capabilities: &[String],
     ) -> Result<RemotePeer> {
         let mut peers = self.load_peers()?;
         let (node_name, endpoint) = resolve_pair_target(target, url)?;
@@ -152,7 +170,7 @@ impl RemoteManager {
                 public_key: Uuid::new_v4().simple().to_string(),
             },
             profile: NodeProfile {
-                capabilities: vec!["remote-execution".to_string()],
+                capabilities: normalize_capabilities(capabilities),
                 tags: tags.to_vec(),
                 execution_role: if executor_only {
                     NodeExecutionRole::ExecutorOnly
@@ -212,17 +230,19 @@ impl RemoteManager {
     }
 
     pub fn send_preview(&self, node: &str, prompt: &str) -> Result<RemoteSendPreview> {
-        let peers = self.load_peers()?;
-        let Some(peer) = peers.iter().find(|peer| {
-            peer.identity.node_name == node || peer.target == node || peer.identity.node_id == node
-        }) else {
-            bail!("Remote node '{}' is not paired", node);
-        };
-
         if !self.config.ws_client.enabled {
             bail!("Remote service is disabled. Run `rove service enable remote` first.");
         }
 
+        let peers = self.load_peers()?;
+        let peer = self.resolve_peer(
+            &peers,
+            prompt,
+            &RemoteSendOptions {
+                node: Some(node.to_string()),
+                ..RemoteSendOptions::default()
+            },
+        )?;
         let coordinator = self.load_or_init_node_metadata()?;
         let envelope = RemoteEnvelope {
             origin_node: coordinator.identity.node_name.clone(),
@@ -241,18 +261,33 @@ impl RemoteManager {
     }
 
     pub async fn send(&self, node: &str, prompt: &str) -> Result<RemoteSendResult> {
+        self.send_with_options(
+            prompt,
+            RemoteSendOptions {
+                node: Some(node.to_string()),
+                ..RemoteSendOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn send_with_options(
+        &self,
+        prompt: &str,
+        options: RemoteSendOptions,
+    ) -> Result<RemoteSendResult> {
         if !self.config.ws_client.enabled {
             bail!("Remote service is disabled. Run `rove service enable remote` first.");
         }
 
         let peers = self.load_peers()?;
-        let Some(peer) = peers.iter().find(|peer| {
-            peer.identity.node_name == node || peer.target == node || peer.identity.node_id == node
-        }) else {
-            bail!("Remote node '{}' is not paired", node);
-        };
+        let peer = self.resolve_peer(&peers, prompt, &options)?;
         if !peer.trusted {
-            bail!("Remote node '{}' is paired but not trusted. Run `rove remote trust {}` first.", node, node);
+            bail!(
+                "Remote node '{}' is paired but not trusted. Run `rove remote trust {}` first.",
+                peer.identity.node_name,
+                peer.identity.node_name
+            );
         }
 
         let coordinator = self.load_or_init_node_metadata()?;
@@ -265,7 +300,7 @@ impl RemoteManager {
             stream_policy: "events+result".to_string(),
         };
 
-        let auth_token = self.auth_token_for_peer(peer).await?;
+        let auth_token = self.auth_token_for_peer(&peer).await?;
         let client = Client::new();
         let endpoint = format!("{}/api/v1/remote/execute", peer.target.trim_end_matches('/'));
         let request = RemoteExecuteRequest {
@@ -307,7 +342,7 @@ impl RemoteManager {
             .ok_or_else(|| anyhow::anyhow!("Remote daemon did not return a task id"))?;
 
         let (events, completion) = match self
-            .stream_remote_events(peer, &auth_token, &remote_task_id)
+            .stream_remote_events(&peer, &auth_token, &remote_task_id)
             .await
         {
             Ok((events, completion)) => (events, completion),
@@ -320,7 +355,7 @@ impl RemoteManager {
                 );
                 (
                     Vec::new(),
-                    self.poll_remote_completion(&client, peer, &auth_token, &remote_task_id)
+                    self.poll_remote_completion(&client, &peer, &auth_token, &remote_task_id)
                         .await?,
                 )
             }
@@ -337,6 +372,156 @@ impl RemoteManager {
             message: completion.message,
             events,
         })
+    }
+
+    fn resolve_peer(
+        &self,
+        peers: &[RemotePeer],
+        prompt: &str,
+        options: &RemoteSendOptions,
+    ) -> Result<RemotePeer> {
+        if let Some(node) = options
+            .node
+            .as_deref()
+            .filter(|node| !node.eq_ignore_ascii_case("auto"))
+        {
+            let Some(peer) = peers.iter().find(|peer| {
+                peer.identity.node_name.eq_ignore_ascii_case(node)
+                    || peer.target.eq_ignore_ascii_case(node)
+                    || peer.identity.node_id == node
+            }) else {
+                bail!("Remote node '{}' is not paired", node);
+            };
+            self.validate_peer_selection(peer, options)?;
+            return Ok(peer.clone());
+        }
+
+        self.select_peer(peers, prompt, options)
+    }
+
+    fn validate_peer_selection(&self, peer: &RemotePeer, options: &RemoteSendOptions) -> Result<()> {
+        if !peer.trusted {
+            bail!(
+                "Remote node '{}' is paired but not trusted. Run `rove remote trust {}` first.",
+                peer.identity.node_name,
+                peer.identity.node_name
+            );
+        }
+        if !options.allow_executor_only
+            && matches!(peer.profile.execution_role, NodeExecutionRole::ExecutorOnly)
+        {
+            bail!(
+                "Remote node '{}' is executor-only. Retry with `--allow-executor-only` or choose a full node.",
+                peer.identity.node_name
+            );
+        }
+        for tag in &options.required_tags {
+            if !peer.profile.tags.iter().any(|value| value.eq_ignore_ascii_case(tag)) {
+                bail!(
+                    "Remote node '{}' does not advertise required tag '{}'.",
+                    peer.identity.node_name,
+                    tag
+                );
+            }
+        }
+        for capability in &options.required_capabilities {
+            if !peer
+                .profile
+                .capabilities
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(capability))
+            {
+                bail!(
+                    "Remote node '{}' does not advertise required capability '{}'.",
+                    peer.identity.node_name,
+                    capability
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn select_peer(
+        &self,
+        peers: &[RemotePeer],
+        prompt: &str,
+        options: &RemoteSendOptions,
+    ) -> Result<RemotePeer> {
+        let prompt_lower = prompt.to_ascii_lowercase();
+        let mut candidates = peers
+            .iter()
+            .filter(|peer| peer.trusted)
+            .filter(|peer| {
+                options.allow_executor_only
+                    || !matches!(peer.profile.execution_role, NodeExecutionRole::ExecutorOnly)
+            })
+            .filter(|peer| {
+                options.required_tags.iter().all(|tag| {
+                    peer.profile
+                        .tags
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(tag))
+                })
+            })
+            .filter(|peer| {
+                options.required_capabilities.iter().all(|capability| {
+                    peer.profile
+                        .capabilities
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(capability))
+                })
+            })
+            .map(|peer| {
+                let mut score = 0_i64;
+                if prompt_lower.contains(&peer.identity.node_name.to_ascii_lowercase()) {
+                    score += 100;
+                }
+                for tag in &peer.profile.tags {
+                    if prompt_lower.contains(&tag.to_ascii_lowercase()) {
+                        score += 20;
+                    }
+                }
+                if options.prefer_executor_only {
+                    score += match peer.profile.execution_role {
+                        NodeExecutionRole::ExecutorOnly => 25,
+                        NodeExecutionRole::Full => 5,
+                    };
+                } else {
+                    score += match peer.profile.execution_role {
+                        NodeExecutionRole::Full => 25,
+                        NodeExecutionRole::ExecutorOnly => 5,
+                    };
+                }
+                score += peer.profile.capabilities.len() as i64;
+                (score, peer.clone())
+            })
+            .collect::<Vec<_>>();
+
+        candidates.sort_by(|left, right| right.0.cmp(&left.0));
+
+        candidates
+            .into_iter()
+            .map(|(_, peer)| peer)
+            .next()
+            .ok_or_else(|| {
+                let mut message =
+                    "No trusted remote node matches the requested selection.".to_string();
+                if !options.required_tags.is_empty() {
+                    message.push_str(&format!(" tags={}", options.required_tags.join(",")));
+                }
+                if !options.required_capabilities.is_empty() {
+                    message.push_str(&format!(
+                        " capabilities={}",
+                        options.required_capabilities.join(",")
+                    ));
+                }
+                if !options.allow_executor_only {
+                    message.push_str(
+                        " Executor-only nodes are excluded by default; retry with `--allow-executor-only` if that is intentional.",
+                    );
+                }
+                anyhow::anyhow!(message)
+            })
     }
 
     async fn stream_remote_events(
@@ -536,7 +721,11 @@ impl RemoteManager {
                 public_key: Uuid::new_v4().simple().to_string(),
             },
             profile: NodeProfile {
-                capabilities: vec!["task-routing".to_string(), "remote-execution".to_string()],
+                capabilities: vec![
+                    "task-routing".to_string(),
+                    "remote-execution".to_string(),
+                    "system-execution".to_string(),
+                ],
                 tags: vec![std::env::consts::OS.to_string()],
                 execution_role: NodeExecutionRole::Full,
             },
@@ -746,6 +935,32 @@ fn secret_key_fragment(node_name: &str) -> String {
         .collect()
 }
 
+fn normalize_capabilities(capabilities: &[String]) -> Vec<String> {
+    let mut values = capabilities
+        .iter()
+        .filter_map(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .collect::<Vec<_>>();
+    if !values
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case("remote-execution"))
+    {
+        values.push("remote-execution".to_string());
+    }
+    values.sort();
+    values.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    values
+}
+
+pub fn local_execution_role_for_config(config: &Config) -> Result<NodeExecutionRole> {
+    Ok(RemoteManager::new(config.clone())
+        .load_or_init_node_metadata()?
+        .profile
+        .execution_role)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -812,7 +1027,7 @@ mod tests {
 
         let manager = RemoteManager::new(config);
         manager
-            .pair("office-mac", Some(&server.uri()), None, false, &[])
+            .pair("office-mac", Some(&server.uri()), None, false, &[], &[])
             .await
             .expect("pair");
         manager.trust("office-mac").expect("trust");
@@ -914,6 +1129,7 @@ mod tests {
                 None,
                 false,
                 &[],
+                &[],
             )
             .await
             .expect("pair");
@@ -938,7 +1154,7 @@ mod tests {
         let server = MockServer::start().await;
         let manager = RemoteManager::new(config);
         manager
-            .pair("office-mac", Some(&server.uri()), None, false, &[])
+            .pair("office-mac", Some(&server.uri()), None, false, &[], &[])
             .await
             .expect("pair");
 
@@ -956,7 +1172,14 @@ mod tests {
         let manager = RemoteManager::new(config);
 
         manager
-            .pair("office-mac", Some(&server.uri()), None, true, &["office".to_string()])
+            .pair(
+                "office-mac",
+                Some(&server.uri()),
+                None,
+                true,
+                &["office".to_string()],
+                &["system-execution".to_string()],
+            )
             .await
             .expect("pair");
 
@@ -965,5 +1188,73 @@ mod tests {
         assert_eq!(nodes[0].identity.node_name, "office-mac");
         assert_eq!(nodes[0].profile.execution_role, NodeExecutionRole::ExecutorOnly);
         assert_eq!(nodes[0].profile.tags, vec!["office".to_string()]);
+        assert!(
+            nodes[0]
+                .profile
+                .capabilities
+                .contains(&"system-execution".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_selection_prefers_matching_tagged_full_node() {
+        let (_temp, config) = test_config();
+        let office = MockServer::start().await;
+        let lab = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/remote/execute"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "task_id": "office-task",
+                "status": "completed",
+                "answer": "office result",
+                "provider": "ollama",
+                "duration_ms": 10,
+                "message": null
+            })))
+            .mount(&office)
+            .await;
+
+        let manager = RemoteManager::new(config);
+        manager
+            .pair(
+                "office-mac",
+                Some(&office.uri()),
+                None,
+                false,
+                &["office".to_string()],
+                &["system-execution".to_string()],
+            )
+            .await
+            .expect("pair office");
+        manager.trust("office-mac").expect("trust office");
+        manager
+            .pair(
+                "lab-mac",
+                Some(&lab.uri()),
+                None,
+                true,
+                &["lab".to_string()],
+                &["system-execution".to_string()],
+            )
+            .await
+            .expect("pair lab");
+        manager.trust("lab-mac").expect("trust lab");
+
+        let result = manager
+            .send_with_options(
+                "find test.txt on the office machine",
+                RemoteSendOptions {
+                    node: Some("auto".to_string()),
+                    required_capabilities: vec!["system-execution".to_string()],
+                    ..RemoteSendOptions::default()
+                },
+            )
+            .await
+            .expect("send");
+
+        assert_eq!(result.envelope.target_node, "office-mac");
+        assert_eq!(result.answer.as_deref(), Some("office result"));
     }
 }

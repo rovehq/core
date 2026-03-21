@@ -726,12 +726,14 @@ async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Confi
                 token,
                 executor_only,
                 tags,
+                capabilities,
             } => rove_engine::cli::remote::RemoteAction::Pair {
                 target,
                 url,
                 token,
                 executor_only,
                 tags,
+                capabilities,
             },
             RemoteNodeAction::Unpair { name } => {
                 rove_engine::cli::remote::RemoteAction::Unpair(name)
@@ -749,6 +751,9 @@ async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Confi
             RemoteProfileAction::Tags { tags } => {
                 rove_engine::cli::remote::RemoteAction::ProfileTags(tags)
             }
+            RemoteProfileAction::Capabilities { capabilities } => {
+                rove_engine::cli::remote::RemoteAction::ProfileCapabilities(capabilities)
+            }
         },
         RemoteAction::Nodes => rove_engine::cli::remote::RemoteAction::Nodes,
         RemoteAction::Rename { name } => rove_engine::cli::remote::RemoteAction::Rename(name),
@@ -758,17 +763,30 @@ async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Confi
             token,
             executor_only,
             tags,
+            capabilities,
         } => rove_engine::cli::remote::RemoteAction::Pair {
             target,
             url,
             token,
             executor_only,
             tags,
+            capabilities,
         },
         RemoteAction::Unpair { name } => rove_engine::cli::remote::RemoteAction::Unpair(name),
         RemoteAction::Trust { name } => rove_engine::cli::remote::RemoteAction::Trust(name),
-        RemoteAction::Send { node, prompt } => rove_engine::cli::remote::RemoteAction::Send {
+        RemoteAction::Send {
             node,
+            tags,
+            capabilities,
+            allow_executor_only,
+            prefer_executor_only,
+            prompt,
+        } => rove_engine::cli::remote::RemoteAction::Send {
+            node,
+            tags,
+            capabilities,
+            allow_executor_only,
+            prefer_executor_only,
             prompt: prompt.join(" "),
         },
     };

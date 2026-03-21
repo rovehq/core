@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::config::Config;
-use crate::remote::RemoteManager;
+use crate::remote::{RemoteManager, RemoteSendOptions};
 
 pub enum RemoteAction {
     Status,
@@ -11,16 +11,25 @@ pub enum RemoteAction {
     ProfileExecutorOnly,
     ProfileFull,
     ProfileTags(Vec<String>),
+    ProfileCapabilities(Vec<String>),
     Pair {
         target: String,
         url: Option<String>,
         token: Option<String>,
         executor_only: bool,
         tags: Vec<String>,
+        capabilities: Vec<String>,
     },
     Unpair(String),
     Trust(String),
-    Send { node: String, prompt: String },
+    Send {
+        node: String,
+        prompt: String,
+        tags: Vec<String>,
+        capabilities: Vec<String>,
+        allow_executor_only: bool,
+        prefer_executor_only: bool,
+    },
 }
 
 pub async fn handle(action: RemoteAction, config: &Config) -> Result<()> {
@@ -35,16 +44,49 @@ pub async fn handle(action: RemoteAction, config: &Config) -> Result<()> {
         }
         RemoteAction::ProfileFull => profile_set_role(&manager, sdk::NodeExecutionRole::Full),
         RemoteAction::ProfileTags(tags) => profile_tags(&manager, &tags),
+        RemoteAction::ProfileCapabilities(capabilities) => {
+            profile_capabilities(&manager, &capabilities)
+        }
         RemoteAction::Pair {
             target,
             url,
             token,
             executor_only,
             tags,
-        } => pair(&manager, &target, url.as_deref(), token.as_deref(), executor_only, &tags).await,
+            capabilities,
+        } => {
+            pair(
+                &manager,
+                &target,
+                url.as_deref(),
+                token.as_deref(),
+                executor_only,
+                &tags,
+                &capabilities,
+            )
+            .await
+        }
         RemoteAction::Unpair(name) => unpair(&manager, &name).await,
         RemoteAction::Trust(name) => trust(&manager, &name),
-        RemoteAction::Send { node, prompt } => send(&manager, &node, &prompt).await,
+        RemoteAction::Send {
+            node,
+            prompt,
+            tags,
+            capabilities,
+            allow_executor_only,
+            prefer_executor_only,
+        } => {
+            send(
+                &manager,
+                &node,
+                &prompt,
+                &tags,
+                &capabilities,
+                allow_executor_only,
+                prefer_executor_only,
+            )
+            .await
+        }
     }
 }
 
@@ -115,6 +157,16 @@ fn profile_tags(manager: &RemoteManager, tags: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn profile_capabilities(manager: &RemoteManager, capabilities: &[String]) -> Result<()> {
+    let profile = manager.replace_capabilities(capabilities)?;
+    if profile.capabilities.is_empty() {
+        println!("Cleared local node capabilities.");
+    } else {
+        println!("Local node capabilities: {}", profile.capabilities.join(", "));
+    }
+    Ok(())
+}
+
 async fn pair(
     manager: &RemoteManager,
     target: &str,
@@ -122,9 +174,10 @@ async fn pair(
     token: Option<&str>,
     executor_only: bool,
     tags: &[String],
+    capabilities: &[String],
 ) -> Result<()> {
     let peer = manager
-        .pair(target, url, token, executor_only, tags)
+        .pair(target, url, token, executor_only, tags, capabilities)
         .await?;
     println!(
         "Paired remote node '{}' at {}.",
@@ -153,8 +206,27 @@ fn trust(manager: &RemoteManager, name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn send(manager: &RemoteManager, node: &str, prompt: &str) -> Result<()> {
-    let result = manager.send(node, prompt).await?;
+async fn send(
+    manager: &RemoteManager,
+    node: &str,
+    prompt: &str,
+    tags: &[String],
+    capabilities: &[String],
+    allow_executor_only: bool,
+    prefer_executor_only: bool,
+) -> Result<()> {
+    let result = manager
+        .send_with_options(
+            prompt,
+            RemoteSendOptions {
+                node: Some(node.to_string()),
+                required_tags: tags.to_vec(),
+                required_capabilities: capabilities.to_vec(),
+                allow_executor_only,
+                prefer_executor_only,
+            },
+        )
+        .await?;
     println!(
         "Remote send: coordinator='{}' target='{}' remote_task_id='{}' status='{}'",
         result.envelope.coordinator_node,

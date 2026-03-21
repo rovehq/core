@@ -792,8 +792,24 @@ pub enum RemoteAction {
     },
     /// Send a task to a specific remote node.
     Send {
-        /// Remote node name.
+        /// Remote node name, or `auto` to pick the best trusted node.
         node: String,
+
+        /// Require one or more node tags when selecting `auto`.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+
+        /// Require one or more node capabilities when selecting `auto`.
+        #[arg(long = "capability")]
+        capabilities: Vec<String>,
+
+        /// Allow executor-only nodes to be selected.
+        #[arg(long)]
+        allow_executor_only: bool,
+
+        /// Prefer executor-only nodes when using `auto`.
+        #[arg(long)]
+        prefer_executor_only: bool,
 
         /// Task prompt to forward.
         prompt: Vec<String>,
@@ -825,6 +841,10 @@ pub enum RemoteAction {
         /// Optional capability tags for this node.
         #[arg(long = "tag")]
         tags: Vec<String>,
+
+        /// Optional advertised capabilities for this node.
+        #[arg(long = "capability")]
+        capabilities: Vec<String>,
     },
     /// Compatibility alias for `rove remote node unpair`.
     #[command(hide = true)]
@@ -860,6 +880,10 @@ pub enum RemoteNodeAction {
         /// Optional capability tags for this node.
         #[arg(long = "tag")]
         tags: Vec<String>,
+
+        /// Optional advertised capabilities for this node.
+        #[arg(long = "capability")]
+        capabilities: Vec<String>,
     },
     /// Remove a paired node.
     Unpair { name: String },
@@ -880,6 +904,12 @@ pub enum RemoteProfileAction {
         /// Repeated tag value.
         #[arg(long = "tag")]
         tags: Vec<String>,
+    },
+    /// Replace this node's advertised capabilities.
+    Capabilities {
+        /// Repeated capability value.
+        #[arg(long = "capability")]
+        capabilities: Vec<String>,
     },
 }
 
