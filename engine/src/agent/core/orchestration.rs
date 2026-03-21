@@ -1,4 +1,5 @@
 use crate::gateway::Task;
+use crate::storage::tasks::DagHistorySummary;
 use sdk::{Complexity, TaskDomain};
 
 use super::prompt::TaskContext;
@@ -39,13 +40,35 @@ impl OrchestrationDecision {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct OrchestrationHistory {
+    pub(super) sampled_tasks: usize,
+    pub(super) dag_tasks: usize,
+    pub(super) linear_tasks: usize,
+    pub(super) failed_tasks: usize,
+    pub(super) average_dag_steps: usize,
+}
+
 impl AgentCore {
-    pub(super) fn select_execution_strategy(
+    pub(super) async fn select_execution_strategy(
         &self,
         task: &Task,
         context: &TaskContext,
     ) -> OrchestrationDecision {
-        decide_execution_strategy(task, context, &self.steering_after_write_commands)
+        let history = self
+            .task_repo
+            .get_recent_dag_history(&context.domain_str, 12)
+            .await
+            .ok()
+            .map(|summaries| summarize_history(&summaries))
+            .unwrap_or_default();
+
+        decide_execution_strategy(
+            task,
+            context,
+            &self.steering_after_write_commands,
+            Some(&history),
+        )
     }
 }
 
@@ -53,6 +76,7 @@ pub(super) fn decide_execution_strategy(
     task: &Task,
     context: &TaskContext,
     steering_after_write_commands: &[String],
+    history: Option<&OrchestrationHistory>,
 ) -> OrchestrationDecision {
     let lower = format!(" {} ", task.input.to_ascii_lowercase());
     let sequence_markers = count_mentions(
@@ -165,6 +189,26 @@ pub(super) fn decide_execution_strategy(
         reasons.push("long multi-part prompt".to_string());
     }
 
+    if let Some(history) = history {
+        if history.sampled_tasks >= 2 && history.dag_tasks >= history.linear_tasks.max(1) {
+            score += 1;
+            reasons.push("recent domain work was multi-step".to_string());
+        }
+
+        if history.failed_tasks > 0 {
+            score += 1;
+            reasons.push("recent domain failures suggest verification".to_string());
+        }
+
+        if history.average_dag_steps >= 3 {
+            score += 1;
+            reasons.push(format!(
+                "recent domain tasks averaged {} DAG steps",
+                history.average_dag_steps
+            ));
+        }
+    }
+
     let strategy = if score >= 3 {
         ExecutionStrategy::Dag
     } else {
@@ -175,6 +219,38 @@ pub(super) fn decide_execution_strategy(
         strategy,
         estimated_steps,
         reasons,
+    }
+}
+
+fn summarize_history(summaries: &[DagHistorySummary]) -> OrchestrationHistory {
+    if summaries.is_empty() {
+        return OrchestrationHistory::default();
+    }
+
+    let dag_tasks = summaries
+        .iter()
+        .filter(|summary| summary.dag_step_successes > 0 || summary.dag_step_failures > 0)
+        .count();
+    let failed_tasks = summaries
+        .iter()
+        .filter(|summary| matches!(summary.status, crate::storage::TaskStatus::Failed))
+        .count();
+    let dag_step_total: i64 = summaries
+        .iter()
+        .map(|summary| summary.dag_step_successes + summary.dag_step_failures)
+        .sum();
+    let average_dag_steps = if dag_tasks == 0 {
+        0
+    } else {
+        ((dag_step_total as f64) / (dag_tasks as f64)).round() as usize
+    };
+
+    OrchestrationHistory {
+        sampled_tasks: summaries.len(),
+        dag_tasks,
+        linear_tasks: summaries.len().saturating_sub(dag_tasks),
+        failed_tasks,
+        average_dag_steps,
     }
 }
 

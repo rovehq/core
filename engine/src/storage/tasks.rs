@@ -10,7 +10,7 @@ use sqlx::{Row, SqlitePool};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Task status enum
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
     Pending,
@@ -91,6 +91,17 @@ pub struct AgentEvent {
     pub step_num: i64,
     pub domain: Option<String>,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DagHistorySummary {
+    pub task_id: String,
+    pub status: TaskStatus,
+    pub duration_ms: Option<i64>,
+    pub dag_waves: i64,
+    pub dag_step_successes: i64,
+    pub dag_step_failures: i64,
+    pub last_event_at: i64,
 }
 
 /// Task repository for database operations
@@ -445,6 +456,53 @@ impl TaskRepository {
                 step_num: r.get("step_num"),
                 domain: r.get("domain"),
                 created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    pub async fn get_recent_dag_history(
+        &self,
+        domain: &str,
+        limit: i64,
+    ) -> Result<Vec<DagHistorySummary>> {
+        let rows = sqlx::query(
+            r#"SELECT
+                   ae.task_id AS task_id,
+                   t.status AS status,
+                   t.duration_ms AS duration_ms,
+                   SUM(CASE WHEN ae.event_type = 'dag_wave_started' THEN 1 ELSE 0 END) AS dag_waves,
+                   SUM(CASE WHEN ae.event_type = 'dag_step_succeeded' THEN 1 ELSE 0 END) AS dag_step_successes,
+                   SUM(CASE WHEN ae.event_type = 'dag_step_failed' THEN 1 ELSE 0 END) AS dag_step_failures,
+                   MAX(ae.created_at) AS last_event_at
+               FROM agent_events ae
+               JOIN tasks t ON t.id = ae.task_id
+               WHERE ae.domain = ?
+               GROUP BY ae.task_id, t.status, t.duration_ms
+               ORDER BY last_event_at DESC
+               LIMIT ?"#,
+        )
+        .bind(domain)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch recent DAG history")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| DagHistorySummary {
+                task_id: r.get("task_id"),
+                status: match r.get::<String, _>("status").as_str() {
+                    "pending" => TaskStatus::Pending,
+                    "running" => TaskStatus::Running,
+                    "completed" => TaskStatus::Completed,
+                    "failed" => TaskStatus::Failed,
+                    _ => TaskStatus::Failed,
+                },
+                duration_ms: r.get("duration_ms"),
+                dag_waves: r.get("dag_waves"),
+                dag_step_successes: r.get("dag_step_successes"),
+                dag_step_failures: r.get("dag_step_failures"),
+                last_event_at: r.get("last_event_at"),
             })
             .collect())
     }

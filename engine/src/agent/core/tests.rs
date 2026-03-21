@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use std::time::Instant;
 use tempfile::TempDir;
 
-use super::orchestration::{decide_execution_strategy, ExecutionStrategy};
+use super::orchestration::{decide_execution_strategy, ExecutionStrategy, OrchestrationHistory};
 use super::prompt::TaskContext;
 use super::{AgentCore, TaskResult};
 use crate::builtin_tools::{FilesystemTool, TerminalTool, ToolRegistry};
@@ -160,7 +160,7 @@ fn simple_general_task_stays_linear() {
         sensitive: false,
     };
 
-    let decision = decide_execution_strategy(&task, &context, &[]);
+    let decision = decide_execution_strategy(&task, &context, &[], None);
 
     assert_eq!(decision.strategy, ExecutionStrategy::Linear);
     assert_eq!(decision.estimated_steps, 1);
@@ -179,7 +179,18 @@ fn multi_stage_medium_task_fans_out() {
         sensitive: false,
     };
 
-    let decision = decide_execution_strategy(&task, &context, &["cargo test".to_string()]);
+    let decision = decide_execution_strategy(
+        &task,
+        &context,
+        &["cargo test".to_string()],
+        Some(&OrchestrationHistory {
+            sampled_tasks: 3,
+            dag_tasks: 2,
+            linear_tasks: 1,
+            failed_tasks: 1,
+            average_dag_steps: 3,
+        }),
+    );
 
     assert_eq!(decision.strategy, ExecutionStrategy::Dag);
     assert!(decision.estimated_steps >= 3);
@@ -293,7 +304,7 @@ async fn test_dag_write_steps_run_steering_after_write_commands() {
         .await
         .expect("mark running");
 
-    let orchestration = agent.select_execution_strategy(&task, &context);
+    let orchestration = agent.select_execution_strategy(&task, &context).await;
     let result = agent
         .execute_dag_task(&task.id, &task, &context, &orchestration, Instant::now())
         .await

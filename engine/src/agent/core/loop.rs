@@ -67,7 +67,7 @@ impl AgentCore {
             return Ok(result);
         }
 
-        let orchestration = self.select_execution_strategy(&task, &context);
+        let orchestration = self.select_execution_strategy(&task, &context).await;
         self.insert_thought_event(
             task_id,
             &format!("Execution strategy: {}", orchestration.summary()),
