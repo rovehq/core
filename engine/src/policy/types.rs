@@ -3,12 +3,12 @@
 //! Maps directly to the TOML and Markdown schema specifications
 //! for policy files.
 //!
-//! Historical names like `SkillFile` remain as aliases for compatibility.
+//! Historical `Skill*` names remain as aliases for compatibility.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Full skill configuration definition from a file
+/// Full policy configuration definition from a file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillFile {
     pub meta: SkillMeta,

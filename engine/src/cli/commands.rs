@@ -91,13 +91,13 @@ pub enum Command {
         action: PluginAction,
     },
 
-    /// Steering management.
+    /// Legacy steering management alias.
     #[command(hide = true)]
     Steer {
         #[command(subcommand)]
         action: SteeringAction,
 
-        /// Optional steering directory override.
+        /// Optional legacy steering directory override.
         #[arg(long, value_name = "DIR")]
         dir: Option<PathBuf>,
     },

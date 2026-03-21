@@ -15,7 +15,7 @@ use rove_engine::cli::{
 };
 use rove_engine::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use rove_engine::server;
-use rove_engine::steering::loader::PolicyEngine;
+use rove_engine::policy::PolicyEngine;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -269,7 +269,7 @@ async fn run_daemon(port: u16) -> Result<()> {
 
 async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>) -> Result<()> {
     let config = rove_engine::config::Config::load_or_create()?;
-    let policy_dir = dir.unwrap_or_else(|| config.steering.policy_dir().clone());
+    let policy_dir = dir.unwrap_or_else(|| config.policy.policy_dir().clone());
     let cwd = std::env::current_dir().unwrap_or_else(|_| config.core.workspace.clone());
     let primary_workspace_dir = policy_workspace_dir(&cwd);
     let legacy_workspace_dir = legacy_policy_workspace_dir(&cwd);
@@ -330,7 +330,7 @@ async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>
             }
         }
         SteeringAction::Default => {
-            rove_engine::steering::bootstrap_builtins(&policy_dir).await?;
+            rove_engine::policy::bootstrap_builtins(&policy_dir).await?;
             println!(
                 "Built-in policy files ready in {}",
                 policy_dir.display()

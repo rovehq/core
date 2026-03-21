@@ -1,4 +1,4 @@
-//! Policy Engine & Hot-Reload Loader
+//! Policy engine and hot-reload loader.
 //!
 //! Loads and manages policy files from TOML and Markdown files.
 //! Integrates `notify` watcher for real-time hot-reloading.
@@ -24,27 +24,23 @@ pub struct PolicyRecord {
     pub description: String,
     pub content: String,
     pub file_path: PathBuf,
-    /// Full TOML config (None for legacy .md skills)
+    /// Full TOML config (None for legacy markdown policies)
     pub config: Option<PolicyFile>,
 }
 
-pub type Skill = PolicyRecord;
-
 /// The Policy Engine manages the library of available policies.
 pub struct PolicyEngine {
-    skills_dirs: Vec<PathBuf>,
-    skills: Arc<RwLock<HashMap<String, PolicyRecord>>>,
+    policy_dirs: Vec<PathBuf>,
+    policies: Arc<RwLock<HashMap<String, PolicyRecord>>>,
     active: Arc<RwLock<Vec<String>>>,
     // Channel for the watcher to notify the main engine tasks to perform a reload
     _watcher_tx: Option<mpsc::Sender<()>>,
 }
 
-pub type SteeringEngine = PolicyEngine;
-
 impl PolicyEngine {
     /// Create a new Policy Engine and load policies, spawning a hot-reload watcher.
-    pub async fn new(skills_dir: &Path) -> Result<Self> {
-        Self::new_with_workspace(skills_dir, Option::<&Path>::None).await
+    pub async fn new(policy_dir: &Path) -> Result<Self> {
+        Self::new_with_workspace(policy_dir, Option::<&Path>::None).await
     }
 
     pub async fn new_with_workspace(
@@ -56,20 +52,20 @@ impl PolicyEngine {
             tracing::warn!("Failed to bootstrap built-in policies: {}", e);
         }
 
-        let skills = Arc::new(RwLock::new(HashMap::new()));
+        let policies = Arc::new(RwLock::new(HashMap::new()));
         let active = Arc::new(RwLock::new(Vec::new()));
 
-        let mut skills_dirs = vec![global_dir.to_path_buf()];
+        let mut policy_dirs = vec![global_dir.to_path_buf()];
         if let Some(workspace_dir) = workspace_dir {
             let workspace_dir = workspace_dir.to_path_buf();
             if workspace_dir != global_dir {
-                skills_dirs.push(workspace_dir);
+                policy_dirs.push(workspace_dir);
             }
         }
 
-        for dir in &skills_dirs {
+        for dir in &policy_dirs {
             if !dir.exists() || !dir.is_dir() {
-                info!("Steering directory {} does not exist yet.", dir.display());
+                info!("Policy directory {} does not exist yet.", dir.display());
                 fs::create_dir_all(dir).await.ok();
             }
         }
@@ -77,8 +73,8 @@ impl PolicyEngine {
         let (tx, mut rx) = mpsc::channel(100);
 
         let mut engine = Self {
-            skills_dirs: skills_dirs.clone(),
-            skills: skills.clone(),
+            policy_dirs: policy_dirs.clone(),
+            policies: policies.clone(),
             active: active.clone(),
             _watcher_tx: Some(tx.clone()),
         };
@@ -87,8 +83,8 @@ impl PolicyEngine {
         engine.load_all_policies().await?;
 
         // Spawn a background task to listen for file system events and trigger reloads
-        let dirs_clone = skills_dirs.clone();
-        let skills_clone = skills.clone();
+        let dirs_clone = policy_dirs.clone();
+        let policies_clone = policies.clone();
         let active_clone = active.clone();
 
         tokio::spawn(async move {
@@ -113,7 +109,7 @@ impl PolicyEngine {
             let mut watcher = match watcher_res {
                 Ok(w) => w,
                 Err(e) => {
-                    error!("Failed to initialize file watcher for steering: {}", e);
+                    error!("Failed to initialize file watcher for policy files: {}", e);
                     return;
                 }
             };
@@ -121,12 +117,12 @@ impl PolicyEngine {
             for dir in &dirs_clone {
                 if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
                     error!(
-                        "Failed to watch steering directory {}: {}",
+                        "Failed to watch policy directory {}: {}",
                         dir.display(),
                         e
                     );
                 } else {
-                    info!("Watching for steering changes in {}", dir.display());
+                    info!("Watching for policy changes in {}", dir.display());
                 }
             }
 
@@ -141,7 +137,7 @@ impl PolicyEngine {
 
                         info!("Detected changes in policy files. Reloading...");
                         // Perform the reload
-                        if let Err(e) = Self::perform_reload(&dirs_clone, &skills_clone, &active_clone).await {
+                        if let Err(e) = Self::perform_reload(&dirs_clone, &policies_clone, &active_clone).await {
                             error!("Failed to hot-reload policies: {:?}", e);
                         } else {
                             // Let the engine know if we need to manually trigger via tx (reserved for manual hooks)
@@ -162,10 +158,10 @@ impl PolicyEngine {
     /// Load all `.toml` and `.md` files in the policy directories (internal).
     async fn perform_reload(
         dirs: &[PathBuf],
-        skills_lock: &Arc<RwLock<HashMap<String, PolicyRecord>>>,
+        policies_lock: &Arc<RwLock<HashMap<String, PolicyRecord>>>,
         active_lock: &Arc<RwLock<Vec<String>>>,
     ) -> Result<()> {
-        let mut new_skills = HashMap::new();
+        let mut new_policies = HashMap::new();
 
         for dir in dirs {
             if !dir.exists() {
@@ -174,7 +170,7 @@ impl PolicyEngine {
 
             let mut entries = fs::read_dir(dir)
                 .await
-                .with_context(|| format!("Failed to read steering directory {}", dir.display()))?;
+                .with_context(|| format!("Failed to read policy directory {}", dir.display()))?;
 
             while let Some(entry) = entries.next_entry().await? {
                 let path = entry.path();
@@ -184,14 +180,14 @@ impl PolicyEngine {
 
                 let ext = path.extension().and_then(|s| s.to_str());
                 let result = match ext {
-                    Some("toml") => Self::parse_toml_skill(&path).await,
-                    Some("md") => Self::parse_md_skill(&path).await,
+                    Some("toml") => Self::parse_toml_policy(&path).await,
+                    Some("md") => Self::parse_markdown_policy(&path).await,
                     _ => continue,
                 };
 
                 match result {
-                    Ok(skill) => {
-                        new_skills.insert(skill.id.clone(), skill);
+                    Ok(policy) => {
+                        new_policies.insert(policy.id.clone(), policy);
                     }
                     Err(e) => {
                         warn!("Failed to parse policy file {}: {}", path.display(), e);
@@ -201,22 +197,22 @@ impl PolicyEngine {
         }
 
         // Apply topological inheritance based on extends mapping
-        if let Err(e) = super::resolver::build_inheritance_graph(&mut new_skills) {
+        if let Err(e) = super::resolver::build_inheritance_graph(&mut new_policies) {
             error!("Policy inheritance conflict detected during reload: {}", e);
             // We still keep the mapping even if some dependencies are broken,
             // to prevent complete engine failure.
         }
 
         // Swap the maps
-        let mut s_write = skills_lock.write().await;
-        *s_write = new_skills;
+        let mut p_write = policies_lock.write().await;
+        *p_write = new_policies;
 
-        // Re-validate active skills
+        // Re-validate active policies
         let mut a_write = active_lock.write().await;
         let previously_active = a_write.clone();
         a_write.clear();
         for id in previously_active {
-            if s_write.contains_key(&id) {
+            if p_write.contains_key(&id) {
                 a_write.push(id);
             }
         }
@@ -226,24 +222,20 @@ impl PolicyEngine {
 
     /// Primary manual load hook (used on startup).
     pub async fn load_all_policies(&mut self) -> Result<()> {
-        Self::perform_reload(&self.skills_dirs, &self.skills, &self.active).await
-    }
-
-    pub async fn load_all_skills(&mut self) -> Result<()> {
-        self.load_all_policies().await
+        Self::perform_reload(&self.policy_dirs, &self.policies, &self.active).await
     }
 
     /// Parse a TOML policy file.
-    async fn parse_toml_skill(path: &Path) -> Result<PolicyRecord> {
+    async fn parse_toml_policy(path: &Path) -> Result<PolicyRecord> {
         let content = fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read {}", path.display()))?;
 
-        let mut skill_file: PolicyFile = toml::from_str(&content)
+        let mut policy_file: PolicyFile = toml::from_str(&content)
             .with_context(|| format!("Failed to parse TOML policy {}", path.display()))?;
 
-        // Enforce max priority for non-built-in skills
-        if skill_file.activation.priority > MAX_USER_PRIORITY {
+        // Enforce max priority for non-built-in policies.
+        if policy_file.activation.priority > MAX_USER_PRIORITY {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let builtin = [
                 "general",
@@ -261,46 +253,46 @@ impl PolicyEngine {
             ];
             if !builtin.contains(&stem) {
                 warn!(
-                    "Skill {} has priority {} > {}, capping to {}",
-                    skill_file.meta.id,
-                    skill_file.activation.priority,
+                    "Policy {} has priority {} > {}, capping to {}",
+                    policy_file.meta.id,
+                    policy_file.activation.priority,
                     MAX_USER_PRIORITY,
                     MAX_USER_PRIORITY
                 );
-                skill_file.activation.priority = MAX_USER_PRIORITY;
+                policy_file.activation.priority = MAX_USER_PRIORITY;
             }
         }
 
         // Build system prompt content from directives
         let mut display_content = String::new();
-        if !skill_file.directives.system_prefix.is_empty() {
-            display_content.push_str(&skill_file.directives.system_prefix);
+        if !policy_file.directives.system_prefix.is_empty() {
+            display_content.push_str(&policy_file.directives.system_prefix);
         }
-        if !skill_file.directives.system_suffix.is_empty() {
+        if !policy_file.directives.system_suffix.is_empty() {
             if !display_content.is_empty() {
                 display_content.push_str("\n\n");
             }
-            display_content.push_str(&skill_file.directives.system_suffix);
+            display_content.push_str(&policy_file.directives.system_suffix);
         }
 
         Ok(PolicyRecord {
-            id: skill_file.meta.id.to_lowercase(),
-            name: skill_file.meta.name.clone(),
-            description: skill_file.meta.description.clone(),
+            id: policy_file.meta.id.to_lowercase(),
+            name: policy_file.meta.name.clone(),
+            description: policy_file.meta.description.clone(),
             content: display_content,
             file_path: path.to_path_buf(),
-            config: Some(skill_file),
+            config: Some(policy_file),
         })
     }
 
     /// Parse a legacy Markdown file containing YAML frontmatter.
-    async fn parse_md_skill(path: &Path) -> Result<PolicyRecord> {
+    async fn parse_markdown_policy(path: &Path) -> Result<PolicyRecord> {
         let file_content = fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read {}", path.display()))?;
 
         if !file_content.starts_with("---\n") && !file_content.starts_with("---\r\n") {
-            return Err(anyhow::anyhow!("Missing YAML frontmatter in skill"));
+            return Err(anyhow::anyhow!("Missing YAML frontmatter in policy"));
         }
 
         let parts: Vec<&str> = file_content.splitn(3, "---").collect();
@@ -351,10 +343,10 @@ impl PolicyEngine {
 
     pub async fn activate_policy(&self, skill_id: &str) -> Result<()> {
         let key = skill_id.to_lowercase();
-        let skills = self.skills.read().await;
+        let skills = self.policies.read().await;
 
         if !skills.contains_key(&key) {
-            return Err(anyhow::anyhow!("Skill '{}' not found", skill_id));
+            return Err(anyhow::anyhow!("Policy '{}' not found", skill_id));
         }
 
         let mut active = self.active.write().await;
@@ -379,7 +371,7 @@ impl PolicyEngine {
 
                         if new_priority >= conflict_priority {
                             info!(
-                                "Skill '{}' deactivated: conflicts with '{}'",
+                                "Policy '{}' deactivated: conflicts with '{}'",
                                 conflict, skill_id
                             );
                             to_deactivate.push(conflict_key);
@@ -397,7 +389,7 @@ impl PolicyEngine {
         }
 
         active.push(key);
-        info!("Skill '{}' activated", skill_id);
+        info!("Policy '{}' activated", skill_id);
         Ok(())
     }
 
@@ -405,7 +397,7 @@ impl PolicyEngine {
         let key = skill_id.to_lowercase();
         let mut active = self.active.write().await;
         active.retain(|a| a != &key);
-        info!("Skill '{}' deactivated", skill_id);
+        info!("Policy '{}' deactivated", skill_id);
     }
 
     pub async fn auto_activate_policies(
@@ -416,7 +408,7 @@ impl PolicyEngine {
     ) {
         let input_lower = task_input.to_lowercase();
         let domain_lower = domain.map(|value| value.to_ascii_lowercase());
-        let skills = self.skills.read().await;
+        let skills = self.policies.read().await;
         let mut active = self.active.write().await;
 
         for (key, skill) in skills.iter() {
@@ -453,7 +445,7 @@ impl PolicyEngine {
                     .unwrap_or(false);
 
                 if domain_activates || should_activate || risk_activates {
-                    debug!("Auto-activating skill '{}'", skill.name);
+                    debug!("Auto-activating policy '{}'", skill.name);
                     let key_clone = key.clone();
                     if !active.contains(&key_clone) {
                         active.push(key_clone);
@@ -463,7 +455,7 @@ impl PolicyEngine {
             }
 
             if domain_activates && !active.contains(key) {
-                debug!("Auto-activating steering file '{}' for domain", skill.name);
+                debug!("Auto-activating policy '{}' for domain", skill.name);
                 active.push(key.clone());
             }
         }
@@ -507,13 +499,13 @@ impl PolicyEngine {
     pub async fn get_directives_for_task(&self, task_input: &str) -> MergedDirectives {
         let mut directives = MergedDirectives::default();
         let active = self.active.read().await;
-        let skills = self.skills.read().await;
+        let skills = self.policies.read().await;
         let task_input_lower = task_input.to_lowercase();
 
-        let mut active_skills: Vec<&PolicyRecord> =
+        let mut active_policies: Vec<&PolicyRecord> =
             active.iter().filter_map(|key| skills.get(key)).collect();
 
-        active_skills.sort_by(|a, b| {
+        active_policies.sort_by(|a, b| {
             let pa = a
                 .config
                 .as_ref()
@@ -527,7 +519,7 @@ impl PolicyEngine {
             pb.cmp(&pa)
         });
 
-        for skill in &active_skills {
+        for skill in &active_policies {
             if let Some(ref cfg) = skill.config {
                 if !cfg.directives.system_prefix.is_empty() {
                     if !directives.system_prefix.is_empty() {
@@ -586,12 +578,12 @@ impl PolicyEngine {
         };
 
         let active = self.active.read().await;
-        let skills = self.skills.read().await;
+        let skills = self.policies.read().await;
 
-        let mut active_skills: Vec<&PolicyRecord> =
+        let mut active_policies: Vec<&PolicyRecord> =
             active.iter().filter_map(|key| skills.get(key)).collect();
 
-        active_skills.sort_by(|a, b| {
+        active_policies.sort_by(|a, b| {
             let pa = a
                 .config
                 .as_ref()
@@ -608,7 +600,7 @@ impl PolicyEngine {
         let mut got_providers = false;
         let mut got_mode = false;
 
-        for skill in &active_skills {
+        for skill in &active_policies {
             if let Some(ref cfg) = skill.config {
                 if !got_providers && !cfg.routing.preferred_providers.is_empty() {
                     prefs.preferred_providers = cfg.routing.preferred_providers.clone();
@@ -646,11 +638,11 @@ impl PolicyEngine {
     pub async fn matched_hints(&self, task_input: &str) -> Vec<String> {
         let task_input_lower = task_input.to_ascii_lowercase();
         let active = self.active.read().await;
-        let skills = self.skills.read().await;
+        let policies = self.policies.read().await;
         let mut matched = Vec::new();
 
         for skill_id in active.iter() {
-            let Some(skill) = skills.get(skill_id) else {
+            let Some(skill) = policies.get(skill_id) else {
                 continue;
             };
             let Some(cfg) = &skill.config else {
@@ -668,13 +660,13 @@ impl PolicyEngine {
     }
 
     pub async fn get_policy(&self, name: &str) -> Option<PolicyRecord> {
-        let skills = self.skills.read().await;
-        skills.get(&name.to_lowercase()).cloned()
+        let policies = self.policies.read().await;
+        policies.get(&name.to_lowercase()).cloned()
     }
 
     pub async fn list_policies(&self) -> Vec<PolicyRecord> {
-        let skills = self.skills.read().await;
-        skills.values().cloned().collect()
+        let policies = self.policies.read().await;
+        policies.values().cloned().collect()
     }
 
     pub async fn active_policies(&self) -> Vec<String> {
@@ -698,18 +690,6 @@ impl PolicyEngine {
     pub async fn auto_activate(&self, task_input: &str, risk_tier: u8, domain: Option<&str>) {
         self.auto_activate_policies(task_input, risk_tier, domain)
             .await
-    }
-
-    pub async fn get_skill(&self, name: &str) -> Option<PolicyRecord> {
-        self.get_policy(name).await
-    }
-
-    pub async fn list_skills(&self) -> Vec<PolicyRecord> {
-        self.list_policies().await
-    }
-
-    pub async fn active_skills(&self) -> Vec<String> {
-        self.active_policies().await
     }
 
     pub async fn is_active(&self, skill_id: &str) -> bool {

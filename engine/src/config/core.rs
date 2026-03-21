@@ -9,7 +9,7 @@ use super::gateway::GatewayFileConfig;
 use super::llm::LLMConfig;
 use super::memory::MemoryConfig;
 use super::security::SecurityConfig;
-use super::steering::SteeringConfig;
+use super::policy::PolicyConfig;
 use super::telegram::TelegramConfig;
 use super::tools::{PluginsConfig, ToolsConfig};
 use super::transport::{McpConfig, WsClientConfig};
@@ -34,8 +34,8 @@ pub struct Config {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub brains: BrainsConfig,
-    #[serde(default)]
-    pub steering: SteeringConfig,
+    #[serde(default, alias = "steering")]
+    pub policy: PolicyConfig,
     #[serde(default)]
     pub ws_client: WsClientConfig,
     #[serde(default)]

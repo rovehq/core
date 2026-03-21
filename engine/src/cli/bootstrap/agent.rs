@@ -12,7 +12,7 @@ use crate::memory::conductor::MemorySystem;
 use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use crate::security::rate_limiter::RateLimiter;
 use crate::security::risk_assessor::RiskAssessor;
-use crate::steering::loader::PolicyEngine;
+use crate::policy::PolicyEngine;
 use crate::storage::{Database, TaskRepository};
 
 use super::plugins;
@@ -96,7 +96,7 @@ async fn build_task_agent_with_role(
 }
 
 async fn load_policy_engine(config: &Config) -> Result<PolicyEngine> {
-    let policy_dir = config.steering.policy_dir().clone();
+    let policy_dir = config.policy.policy_dir().clone();
     let primary_workspace_dir = policy_workspace_dir(&config.core.workspace);
     let legacy_workspace_dir = legacy_policy_workspace_dir(&config.core.workspace);
     let workspace_dir = active_workspace_policy_dir(&primary_workspace_dir, &legacy_workspace_dir);

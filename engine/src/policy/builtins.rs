@@ -100,9 +100,9 @@ auto_tag = ["sensitive", "do-not-share"]
 
 /// Writes the default built-in policy files to the specified directory if they
 /// do not already exist.
-pub async fn bootstrap_builtins(skills_dir: &Path) -> anyhow::Result<()> {
-    if !skills_dir.exists() {
-        fs::create_dir_all(skills_dir).await?;
+pub async fn bootstrap_builtins(policy_dir: &Path) -> anyhow::Result<()> {
+    if !policy_dir.exists() {
+        fs::create_dir_all(policy_dir).await?;
     }
 
     let builtins = vec![
@@ -114,7 +114,7 @@ pub async fn bootstrap_builtins(skills_dir: &Path) -> anyhow::Result<()> {
     ];
 
     for (filename, content) in builtins {
-        let path = skills_dir.join(filename);
+        let path = policy_dir.join(filename);
         if !path.exists() {
             fs::write(&path, content.trim()).await?;
             info!("Bootstrapped built-in policy file: {}", filename);

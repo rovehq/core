@@ -30,7 +30,7 @@ use crate::llm::router::LLMRouter;
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::{OperationSource, RiskAssessor};
 use crate::security::secrets::scrub_text;
-use crate::steering::loader::PolicyEngine;
+use crate::policy::PolicyEngine;
 use sdk::{RemoteExecutionPlan, TaskDomain};
 
 use super::{preferences::PreferencesManager, WorkingMemory};

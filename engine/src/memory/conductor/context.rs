@@ -8,7 +8,7 @@ use crate::conductor::memory::{MemorySystem, SessionMemory};
 use crate::conductor::project::ProjectMemory;
 use crate::conductor::types::{MemoryBudget, TaskDomain};
 use crate::llm::Message;
-use crate::steering::loader::PolicyEngine;
+use crate::policy::PolicyEngine;
 use anyhow::Result;
 
 pub struct ContextAssembler {

@@ -6,7 +6,7 @@ use crate::gateway::Task;
 use crate::llm::Message;
 use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use crate::risk_assessor::RiskTier;
-use crate::steering::types::MergedDirectives;
+use crate::policy::types::MergedDirectives;
 use sdk::{Complexity, Route, TaskDomain};
 
 use super::AgentCore;
@@ -184,7 +184,7 @@ impl AgentCore {
             active_workspace_dir.join(file_name),
             workspace_policy_dir.join(file_name),
             legacy_workspace_dir.join(file_name),
-            self.config.steering.policy_dir().join(file_name),
+            self.config.policy.policy_dir().join(file_name),
         ]
     }
 

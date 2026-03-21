@@ -1,9 +1,9 @@
 //! Policy Resolver
 //!
 //! Handles inheritance, conflict resolution, and topological sorting for
-//! policy files. Historical `Skill*` names remain supported for compatibility.
+//! policy files.
 
-use super::types::PolicyFile;
+use super::{loader::PolicyRecord, types::PolicyFile};
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
@@ -149,14 +149,14 @@ fn extend_unique(target: &mut Vec<String>, source: &[String]) {
 }
 
 /// Topologically sorts skills to resolve `extends` inheritance in the right order.
-pub fn build_inheritance_graph(skills: &mut HashMap<String, super::loader::Skill>) -> Result<()> {
+pub fn build_inheritance_graph(policies: &mut HashMap<String, PolicyRecord>) -> Result<()> {
     // 1. Build adjacency list child -> parent
     let mut dependencies: HashMap<String, String> = HashMap::new();
     let mut all_nodes: HashSet<String> = HashSet::new();
 
-    for (id, skill) in skills.iter() {
+    for (id, policy) in policies.iter() {
         all_nodes.insert(id.clone());
-        if let Some(cfg) = &skill.config {
+        if let Some(cfg) = &policy.config {
             if let Some(parent_id) = &cfg.meta.extends {
                 let pid_lower = parent_id.to_lowercase();
                 dependencies.insert(id.clone(), pid_lower.clone());
@@ -192,15 +192,15 @@ pub fn build_inheritance_graph(skills: &mut HashMap<String, super::loader::Skill
         }
 
         if !made_progress {
-            warn!("Circular dependency or missing parent detected in skill inheritance");
+            warn!("Circular dependency or missing parent detected in policy inheritance");
             return Err(anyhow!(
-                "Steering engine abort: Circular inheritance detected in extends fields"
+                "Policy engine abort: circular inheritance detected in extends fields"
             ));
         }
 
         iteration += 1;
         if iteration > 100 {
-            return Err(anyhow!("Steering engine abort: Inheritance depth exceeded"));
+            return Err(anyhow!("Policy engine abort: inheritance depth exceeded"));
         }
     }
 
@@ -212,17 +212,17 @@ pub fn build_inheritance_graph(skills: &mut HashMap<String, super::loader::Skill
             // we need to merge pid -> node_id
 
             // first grab a clone of the parent config
-            let parent_cfg = skills.get(&pid).and_then(|s| s.config.clone());
+            let parent_cfg = policies.get(&pid).and_then(|s| s.config.clone());
 
             if let Some(p_cfg) = parent_cfg {
-                if let Some(child_skill) = skills.get_mut(&node_id) {
-                    if let Some(c_cfg) = &mut child_skill.config {
+                if let Some(child_policy) = policies.get_mut(&node_id) {
+                    if let Some(c_cfg) = &mut child_policy.config {
                         resolve_inheritance(c_cfg, &p_cfg)?;
                     }
                 }
             } else {
                 warn!(
-                    "Skill {} extends {} which was not found or is missing config",
+                    "Policy {} extends {} which was not found or is missing config",
                     node_id, pid
                 );
             }
@@ -235,7 +235,7 @@ pub fn build_inheritance_graph(skills: &mut HashMap<String, super::loader::Skill
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::steering::types::*;
+    use crate::policy::types::*;
 
     fn create_test_skill(name: &str) -> PolicyFile {
         PolicyFile {
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn test_build_inheritance_graph_detects_circular_dependency() {
-        use crate::steering::loader::Skill;
+        use crate::policy::PolicyRecord;
         use std::path::PathBuf;
 
         let mut skills = HashMap::new();
@@ -328,10 +328,10 @@ mod tests {
         skill_a.meta.extends = Some("b".to_string());
         skills.insert(
             "a".to_string(),
-            Skill {
+            PolicyRecord {
                 id: "a".to_string(),
                 name: "a".to_string(),
-                description: "Skill A".to_string(),
+                description: "Policy A".to_string(),
                 content: String::new(),
                 file_path: PathBuf::from("a.toml"),
                 config: Some(skill_a),
@@ -343,10 +343,10 @@ mod tests {
         skill_b.meta.extends = Some("a".to_string());
         skills.insert(
             "b".to_string(),
-            Skill {
+            PolicyRecord {
                 id: "b".to_string(),
                 name: "b".to_string(),
-                description: "Skill B".to_string(),
+                description: "Policy B".to_string(),
                 content: String::new(),
                 file_path: PathBuf::from("b.toml"),
                 config: Some(skill_b),
@@ -355,6 +355,6 @@ mod tests {
 
         let result = build_inheritance_graph(&mut skills);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Circular"));
+        assert!(result.unwrap_err().to_string().contains("circular"));
     }
 }

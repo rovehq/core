@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::steering::loader::{PolicyEngine, PolicyRecord};
+use super::{bootstrap_builtins, PolicyEngine, PolicyRecord};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PolicySummary {
@@ -40,7 +40,7 @@ pub struct PolicyManager {
 impl PolicyManager {
     pub fn new(config: Config, policy_dir_override: Option<PathBuf>) -> Self {
         let policy_dir =
-            policy_dir_override.unwrap_or_else(|| config.steering.policy_dir().clone());
+            policy_dir_override.unwrap_or_else(|| config.policy.policy_dir().clone());
         let workspace_dir = config.core.workspace.join(".rove").join("policy");
         let legacy_workspace_dir = config.core.workspace.join(".rove").join("steering");
         Self {
@@ -84,12 +84,12 @@ impl PolicyManager {
     pub async fn enable(&self, name: &str) -> Result<()> {
         let mut config = self.config.clone();
         if !config
-            .steering
+            .policy
             .default_policies()
             .iter()
             .any(|policy| policy.eq_ignore_ascii_case(name))
         {
-            config.steering.default_policies_mut().push(name.to_string());
+            config.policy.default_policies_mut().push(name.to_string());
             config.save()?;
         }
         Ok(())
@@ -98,7 +98,7 @@ impl PolicyManager {
     pub async fn disable(&self, name: &str) -> Result<()> {
         let mut config = self.config.clone();
         config
-            .steering
+            .policy
             .default_policies_mut()
             .retain(|policy| !policy.eq_ignore_ascii_case(name));
         config.save()?;
@@ -106,7 +106,7 @@ impl PolicyManager {
     }
 
     pub async fn bootstrap_defaults(&self) -> Result<()> {
-        crate::steering::bootstrap_builtins(&self.policy_dir).await?;
+        bootstrap_builtins(&self.policy_dir).await?;
         Ok(())
     }
 
@@ -207,7 +207,7 @@ impl PolicyManager {
                 )
             })?;
 
-        for default_policy in self.config.steering.default_policies() {
+        for default_policy in self.config.policy.default_policies() {
             if let Err(error) = engine.activate_policy(default_policy).await {
                 tracing::warn!(
                     "Failed to activate persisted policy '{}': {}",

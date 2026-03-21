@@ -11,6 +11,7 @@
 //! - **plugins**: Plugin enablement flags
 //! - **security**: Risk tier and confirmation settings
 //! - **brains**: Brains configuration (optional)
+//! - **policy**: Policy files and activation behavior
 //!
 //! # Path Expansion
 //!
@@ -52,6 +53,7 @@ pub mod gateway;
 pub mod llm;
 pub mod memory;
 pub mod metadata;
+pub mod policy;
 pub mod security;
 pub mod steering;
 pub mod telegram;
@@ -67,8 +69,8 @@ pub use gateway::*;
 pub use llm::*;
 pub use memory::*;
 pub use metadata::*;
+pub use policy::*;
 pub use security::*;
-pub use steering::*;
 pub use telegram::*;
 pub use tools::*;
 pub use transport::*;
@@ -298,8 +300,10 @@ fn config_to_toml(config: &Config) -> Result<String, toml::ser::Error> {
         table.insert("kernel".to_string(), core);
     }
 
-    if let Some(steering) = table.get("steering").cloned() {
-        table.insert("policy".to_string(), policy_alias_value(steering));
+    if let Some(policy) = table.get("policy").cloned() {
+        table.insert("policy".to_string(), canonical_policy_value(policy));
+    } else if let Some(steering) = table.get("steering").cloned() {
+        table.insert("policy".to_string(), canonical_policy_value(steering));
     }
 
     table.insert("services".to_string(), Value::Table(public_services_table(config)));
@@ -317,12 +321,6 @@ fn normalize_public_aliases(value: &mut Value) -> Result<(), EngineError> {
     if !table.contains_key("core") {
         if let Some(kernel) = table.get("kernel").cloned() {
             table.insert("core".to_string(), kernel);
-        }
-    }
-
-    if !table.contains_key("steering") {
-        if let Some(policy) = table.get("policy").cloned() {
-            table.insert("steering".to_string(), steering_from_policy_value(policy));
         }
     }
 
@@ -389,27 +387,14 @@ fn ensure_table<'a>(table: &'a mut Map<String, Value>, key: &str) -> &'a mut Map
         .expect("table entry must be a TOML table")
 }
 
-fn policy_alias_value(steering: Value) -> Value {
-    let mut steering = steering;
-    if let Some(table) = steering.as_table_mut() {
+fn canonical_policy_value(policy: Value) -> Value {
+    let mut policy = policy;
+    if let Some(table) = policy.as_table_mut() {
         if let Some(skill_dir) = table.remove("skill_dir") {
             table.insert("policy_dir".to_string(), skill_dir);
         }
         if let Some(default_skills) = table.remove("default_skills") {
             table.insert("default_policies".to_string(), default_skills);
-        }
-    }
-    steering
-}
-
-fn steering_from_policy_value(policy: Value) -> Value {
-    let mut policy = policy;
-    if let Some(table) = policy.as_table_mut() {
-        if let Some(policy_dir) = table.remove("policy_dir") {
-            table.insert("skill_dir".to_string(), policy_dir);
-        }
-        if let Some(default_policies) = table.remove("default_policies") {
-            table.insert("default_skills".to_string(), default_policies);
         }
     }
     policy
@@ -552,7 +537,7 @@ auto_unload = true
         assert!(config.webui.enabled);
         assert!(config.ws_client.enabled);
         assert!(config.telegram.enabled);
-        assert_eq!(config.steering.default_skills, vec!["rust-safe".to_string()]);
+        assert_eq!(config.policy.default_policies, vec!["rust-safe".to_string()]);
         assert!(config.brains.enabled);
     }
 
@@ -570,7 +555,7 @@ auto_unload = true
         config.webui.enabled = true;
         config.ws_client.enabled = true;
         config.telegram.enabled = true;
-        config.steering.default_skills = vec!["rust-safe".to_string()];
+        config.policy.default_policies = vec!["rust-safe".to_string()];
         config.brains.enabled = true;
 
         config.save_to_path(&config_path).expect("save config");

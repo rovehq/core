@@ -239,12 +239,6 @@ pub async fn task_status(
     completion_response(&task_id, completion::load_completion(&state, &task_id).await)
 }
 
-pub async fn active_skills(State(state): State<AppState>) -> impl IntoResponse {
-    let agent = state.agent.read().await;
-    let active = agent.active_policies().await;
-    (StatusCode::OK, Json(active))
-}
-
 pub async fn list_services() -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => {

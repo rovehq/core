@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use crate::platform::llama_search_paths;
 use crate::security::crypto::CryptoModule;
-use crate::steering::PolicyEngine;
+use crate::policy::PolicyEngine;
 use crate::storage::Database;
 use crate::system::daemon::DaemonManager;
 
@@ -82,7 +82,7 @@ pub async fn handle_doctor(config: &Config, format: OutputFormat) -> Result<()> 
         },
     ));
 
-    checks.push(("Steering files", steering_summary(config).await));
+    checks.push(("Policy files", policy_summary(config).await));
 
     match DaemonManager::status(config) {
         Ok(status) => {
@@ -277,9 +277,9 @@ fn detect_llama_server_path() -> Option<PathBuf> {
         .or_else(|| llama_search_paths().into_iter().find(|path| path.exists()))
 }
 
-async fn steering_summary(config: &Config) -> String {
+async fn policy_summary(config: &Config) -> String {
     let mut parts = Vec::new();
-    let global_dir = config.steering.policy_dir().clone();
+    let global_dir = config.policy.policy_dir().clone();
     let primary_workspace_dir = policy_workspace_dir(&config.core.workspace);
     let legacy_workspace_dir = legacy_policy_workspace_dir(&config.core.workspace);
     let workspace_dir = active_workspace_policy_dir(&primary_workspace_dir, &legacy_workspace_dir);

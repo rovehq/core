@@ -21,7 +21,7 @@ use crate::memory::conductor::MemorySystem;
 use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use crate::security::rate_limiter::RateLimiter;
 use crate::security::risk_assessor::RiskAssessor;
-use crate::steering::loader::PolicyEngine;
+use crate::policy::PolicyEngine;
 use crate::storage::{Database, PendingTaskStatus, TaskRepository};
 
 use super::output::{OutputFormat, TaskView};
@@ -415,11 +415,11 @@ async fn handle_daemon_run(
 }
 
 async fn load_policy_engine(config: &Config) -> Option<PolicyEngine> {
-    if !config.steering.auto_detect {
+    if !config.policy.auto_detect {
         return None;
     }
 
-    let policy_dir = expand_policy_dir(config.steering.policy_dir());
+    let policy_dir = expand_policy_dir(config.policy.policy_dir());
     let primary_workspace_dir = policy_workspace_dir(&config.core.workspace);
     let legacy_workspace_dir = legacy_policy_workspace_dir(&config.core.workspace);
     let workspace_dir = active_workspace_policy_dir(&primary_workspace_dir, &legacy_workspace_dir);
