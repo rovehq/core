@@ -189,6 +189,32 @@ pub enum PluginAction {
         #[arg(long)]
         no_build: bool,
     },
+    /// Create a normalized distribution bundle directory.
+    Pack {
+        /// Plugin package directory. Defaults to the current directory.
+        source: Option<String>,
+
+        /// Optional output directory for the generated bundle.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+
+        /// Skip cargo test/build before packing.
+        #[arg(long)]
+        no_build: bool,
+    },
+    /// Publish a bundled plugin into a registry directory structure.
+    Publish {
+        /// Plugin package directory. Defaults to the current directory.
+        source: Option<String>,
+
+        /// Registry directory that will receive id/version bundles.
+        #[arg(long = "registry-dir", value_name = "DIR")]
+        registry_dir: PathBuf,
+
+        /// Skip cargo test/build before publishing.
+        #[arg(long)]
+        no_build: bool,
+    },
     /// Install a plugin.
     Install { source: String },
     /// Upgrade or replace an installed plugin from a package directory.

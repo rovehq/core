@@ -298,6 +298,22 @@ async fn handle_plugin(action: PluginAction) -> Result<()> {
             )
             .await?;
         }
+        PluginAction::Pack {
+            source,
+            out,
+            no_build,
+        } => {
+            rove_engine::cli::plugins::handle_pack(source.as_deref(), out.as_deref(), no_build)
+                .await?;
+        }
+        PluginAction::Publish {
+            source,
+            registry_dir,
+            no_build,
+        } => {
+            rove_engine::cli::plugins::handle_publish(source.as_deref(), &registry_dir, no_build)
+                .await?;
+        }
         PluginAction::List => {
             rove_engine::cli::plugins::handle_list(&config, OutputFormat::Text).await?;
         }

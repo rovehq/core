@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use serde::Serialize;
 
 use crate::runtime::{Manifest, McpServerConfig, PluginType, ToolCatalog, TrustTier};
 
@@ -65,7 +66,7 @@ pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> 
     Ok(())
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PermissionReview {
     pub summary_lines: Vec<String>,
     pub warnings: Vec<String>,

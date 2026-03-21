@@ -82,7 +82,7 @@ pub async fn handle_test(
     Ok(())
 }
 
-fn run_cargo(package_root: &Path, args: &[&str]) -> Result<()> {
+pub(crate) fn run_cargo(package_root: &Path, args: &[&str]) -> Result<()> {
     let output = Command::new("cargo")
         .args(args)
         .current_dir(package_root)
@@ -110,7 +110,7 @@ fn run_cargo(package_root: &Path, args: &[&str]) -> Result<()> {
     )
 }
 
-fn ensure_wasm_target_installed() -> Result<()> {
+pub(crate) fn ensure_wasm_target_installed() -> Result<()> {
     let output = Command::new("rustup")
         .args(["target", "list", "--installed"])
         .output();
