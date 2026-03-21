@@ -422,11 +422,16 @@ mod tests {
     async fn fixture_example_package_packs() {
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugins/echo-skill");
+        let temp_dir = TempDir::new().expect("temp dir");
+        let bundle_dir = temp_dir.path().join("bundle");
 
-        let bundle =
-            prepare_distribution_bundle(Some(fixture.to_str().expect("fixture path")), None, true)
-                .await
-                .expect("bundle fixture package");
+        let bundle = prepare_distribution_bundle(
+            Some(fixture.to_str().expect("fixture path")),
+            Some(&bundle_dir),
+            true,
+        )
+        .await
+        .expect("bundle fixture package");
 
         assert!(bundle.bundle_dir.join("manifest.json").exists());
         assert!(bundle.bundle_dir.join("plugin-package.json").exists());
