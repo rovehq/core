@@ -6,6 +6,7 @@
 mod dag;
 mod events;
 mod r#loop;
+mod orchestration;
 mod prompt;
 mod result;
 mod shortcuts;

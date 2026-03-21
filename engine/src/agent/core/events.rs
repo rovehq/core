@@ -37,6 +37,20 @@ impl AgentCore {
             .map(|_| ())
     }
 
+    pub(super) async fn insert_thought_event(
+        &self,
+        task_id: &Uuid,
+        thought: &str,
+        domain_str: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({ "content": scrub_text(thought) }).to_string();
+        self.task_repo
+            .insert_agent_event(task_id, "thought", &payload, 0, Some(domain_str))
+            .await
+            .context("Failed to persist thought to agent_events")
+            .map(|_| ())
+    }
+
     pub(super) async fn insert_tool_call_event(
         &self,
         task_id: &Uuid,

@@ -15,6 +15,7 @@ use crate::gateway::Task;
 use crate::llm::{Message, MessageRole};
 use crate::security::secrets::scrub_text;
 
+use super::orchestration::OrchestrationDecision;
 use super::prompt::TaskContext;
 use super::{AgentCore, TaskResult};
 
@@ -109,30 +110,16 @@ impl AgentDagExecutor {
 }
 
 impl AgentCore {
-    pub(super) fn should_use_dag_execution(&self, context: &TaskContext) -> bool {
-        match context.complexity {
-            sdk::Complexity::Complex => true,
-            sdk::Complexity::Medium => matches!(
-                context.domain,
-                sdk::TaskDomain::Code
-                    | sdk::TaskDomain::Git
-                    | sdk::TaskDomain::Shell
-                    | sdk::TaskDomain::Browser
-                    | sdk::TaskDomain::Data
-            ),
-            sdk::Complexity::Simple => false,
-        }
-    }
-
     pub(super) async fn execute_dag_task(
         &self,
         task_id: &Uuid,
         task: &Task,
         context: &TaskContext,
+        orchestration: &OrchestrationDecision,
         start_time: Instant,
     ) -> Result<TaskResult> {
         let planner = HybridExecutor::new(self.router.clone(), self.router.local_brain());
-        let planning_context = self.dag_planning_context(task);
+        let planning_context = self.dag_planning_context(task, orchestration);
         let plan = planner
             .plan_with_cloud(&task.input, &planning_context)
             .await
@@ -153,7 +140,7 @@ impl AgentCore {
             *task_id,
             context.domain_str.clone(),
         )
-        .with_scheduling_policy(scheduling_policy_for(context));
+        .with_scheduling_policy(scheduling_policy_for(context, orchestration));
         let executor = AgentDagExecutor {
             router: self.router.clone(),
             task_repo: self.task_repo.clone(),
@@ -201,11 +188,15 @@ impl AgentCore {
         ))
     }
 
-    fn dag_planning_context(&self, task: &Task) -> String {
+    fn dag_planning_context(&self, task: &Task, orchestration: &OrchestrationDecision) -> String {
         let mut lines = Vec::new();
         if let Some(workspace) = &task.workspace {
             lines.push(format!("Workspace: {}", workspace.display()));
         }
+        lines.push(format!(
+            "Orchestration strategy: {}",
+            orchestration.summary()
+        ));
 
         for message in self.memory.messages() {
             lines.push(format!(
@@ -325,8 +316,11 @@ fn memory_budget_for_step(step: &PlanStep, complexity: Complexity) -> usize {
     }
 }
 
-fn scheduling_policy_for(context: &TaskContext) -> DagSchedulingPolicy {
-    match (context.domain, context.complexity) {
+fn scheduling_policy_for(
+    context: &TaskContext,
+    orchestration: &OrchestrationDecision,
+) -> DagSchedulingPolicy {
+    let mut policy = match (context.domain, context.complexity) {
         (TaskDomain::Browser | TaskDomain::Data, Complexity::Complex) => DagSchedulingPolicy {
             max_parallel_total: 4,
             max_parallel_researchers: 3,
@@ -345,7 +339,22 @@ fn scheduling_policy_for(context: &TaskContext) -> DagSchedulingPolicy {
             max_parallel_verifiers: 1,
             max_parallel_executors: 1,
         },
+    };
+
+    if orchestration.estimated_steps >= 4 {
+        policy.max_parallel_total = policy.max_parallel_total.max(4);
+        policy.max_parallel_researchers = policy.max_parallel_researchers.max(2);
     }
+
+    if orchestration
+        .reasons
+        .iter()
+        .any(|reason| reason == "post-write verification")
+    {
+        policy.max_parallel_executors = 1;
+    }
+
+    policy
 }
 
 async fn tools_allowed_for_step(

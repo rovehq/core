@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use std::time::Instant;
 use tempfile::TempDir;
 
+use super::orchestration::{decide_execution_strategy, ExecutionStrategy};
+use super::prompt::TaskContext;
 use super::{AgentCore, TaskResult};
 use crate::builtin_tools::{FilesystemTool, TerminalTool, ToolRegistry};
 use crate::config::LLMConfig;
@@ -17,6 +19,7 @@ use crate::llm::{FinalAnswer, LLMProvider, LLMResponse, Message};
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::RiskAssessor;
 use crate::risk_assessor::RiskTier;
+use sdk::{Complexity, Route, TaskDomain};
 
 async fn setup_test_agent() -> (TempDir, AgentCore) {
     setup_test_agent_with_providers(vec![], false).await
@@ -146,6 +149,46 @@ async fn test_agent_core_creation() {
     assert_eq!(agent.memory.messages().len(), 0);
 }
 
+#[test]
+fn simple_general_task_stays_linear() {
+    let task = Task::build_from_cli("what does this error mean?");
+    let context = TaskContext {
+        domain_str: "general".to_string(),
+        domain: TaskDomain::General,
+        complexity: Complexity::Simple,
+        route: Route::Cloud,
+        sensitive: false,
+    };
+
+    let decision = decide_execution_strategy(&task, &context, &[]);
+
+    assert_eq!(decision.strategy, ExecutionStrategy::Linear);
+    assert_eq!(decision.estimated_steps, 1);
+}
+
+#[test]
+fn multi_stage_medium_task_fans_out() {
+    let task = Task::build_from_cli(
+        "First inspect the release notes, then update the rollout summary, and finally verify the checklist.",
+    );
+    let context = TaskContext {
+        domain_str: "general".to_string(),
+        domain: TaskDomain::General,
+        complexity: Complexity::Medium,
+        route: Route::Cloud,
+        sensitive: false,
+    };
+
+    let decision = decide_execution_strategy(&task, &context, &["cargo test".to_string()]);
+
+    assert_eq!(decision.strategy, ExecutionStrategy::Dag);
+    assert!(decision.estimated_steps >= 3);
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|reason| reason == "post-write verification"));
+}
+
 #[tokio::test]
 async fn test_complex_task_uses_dag_execution_path() {
     let plan = r#"[
@@ -250,8 +293,9 @@ async fn test_dag_write_steps_run_steering_after_write_commands() {
         .await
         .expect("mark running");
 
+    let orchestration = agent.select_execution_strategy(&task, &context);
     let result = agent
-        .execute_dag_task(&task.id, &task, &context, Instant::now())
+        .execute_dag_task(&task.id, &task, &context, &orchestration, Instant::now())
         .await
         .expect("DAG write task should succeed");
     assert_eq!(result.answer, "file updated and checked");

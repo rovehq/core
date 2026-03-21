@@ -67,9 +67,17 @@ impl AgentCore {
             return Ok(result);
         }
 
-        if self.should_use_dag_execution(&context) {
+        let orchestration = self.select_execution_strategy(&task, &context);
+        self.insert_thought_event(
+            task_id,
+            &format!("Execution strategy: {}", orchestration.summary()),
+            &context.domain_str,
+        )
+        .await?;
+
+        if orchestration.use_dag() {
             return self
-                .execute_dag_task(task_id, &task, &context, start_time)
+                .execute_dag_task(task_id, &task, &context, &orchestration, start_time)
                 .await;
         }
 
