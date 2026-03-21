@@ -1,0 +1,17 @@
+{
+  "name": "Echo Skill",
+  "version": "0.1.0",
+  "sdk_version": "0.1.0",
+  "plugin_type": "Skill",
+  "permissions": {
+    "filesystem": [],
+    "network": [],
+    "memory_read": false,
+    "memory_write": false,
+    "tools": []
+  },
+  "trust_tier": "Community",
+  "min_model": null,
+  "description": "Reference skill package for registry and authoring docs",
+  "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
+}

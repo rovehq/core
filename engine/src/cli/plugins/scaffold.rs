@@ -312,7 +312,11 @@ This is a generated {plugin_type} plugin scaffold for Rove.\n\n\
 2. `cargo test`\n\
 3. `cargo build --target wasm32-wasip1 --release`\n\
 4. `rove plugin test {dir_display} --input \"hello\"`\n\n\
-## Before install\n\n\
+## Packaging and registry flow\n\n\
+1. `rove plugin pack {dir_display}`\n\
+2. `rove plugin publish {dir_display} --registry-dir ./registry`\n\
+3. `rove plugin install {{install_id}} --registry ./registry --version 0.1.0`\n\n\
+## Before install or publish\n\n\
 1. Build the wasm artifact at `{artifact}`\n\
 2. Replace the placeholder permissions in `manifest.json`\n\
 3. Compute the SHA256 of the built artifact and place it in `plugin-package.json`\n\
@@ -320,6 +324,7 @@ This is a generated {plugin_type} plugin scaffold for Rove.\n\n\
 5. Sign `manifest.json` and replace `signature`\n\
 6. Install with `rove plugin install {dir_display}`\n"
     )
+    .replace("{install_id}", &default_plugin_id(package_name))
 }
 
 #[cfg(test)]

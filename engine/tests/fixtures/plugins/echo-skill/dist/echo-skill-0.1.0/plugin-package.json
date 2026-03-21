@@ -1,0 +1,8 @@
+{
+  "artifact": "echo_skill.wasm",
+  "enabled": true,
+  "id": "echo-skill",
+  "payload_hash": "LOCAL_DEV_PAYLOAD_HASH",
+  "payload_signature": "LOCAL_DEV_PAYLOAD_SIGNATURE",
+  "runtime_config": "runtime.json"
+}
