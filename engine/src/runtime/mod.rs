@@ -103,12 +103,21 @@ impl RuntimeManager {
             mcp.clone(),
         );
 
-        builtin::register_selected(
-            &mut registry,
-            config.core.workspace.clone(),
-            builtin::BuiltinSelection::from_config(config),
-        )
-        .await?;
+        let mut builtin_selection = builtin::BuiltinSelection::from_config(config);
+        for plugin in &installed_plugins {
+            if !plugin.enabled || plugin.plugin_type != PluginType::Workspace.as_str() {
+                continue;
+            }
+            match plugin.id.as_str() {
+                "filesystem" => builtin_selection.filesystem = false,
+                "terminal" => builtin_selection.terminal = false,
+                "vision" => builtin_selection.vision = false,
+                _ => {}
+            }
+        }
+
+        builtin::register_selected(&mut registry, config.core.workspace.clone(), builtin_selection)
+            .await?;
 
         register_installed_plugin_schemas(&mut registry, native.as_ref(), &installed_plugins).await;
 
@@ -434,6 +443,93 @@ mod tests {
         let schemas = runtime.registry.schemas_for("general").await;
 
         assert!(schemas.iter().any(|schema| schema.name == "echo_text"));
+    }
+
+    #[tokio::test]
+    async fn runtime_build_prefers_installed_official_system_over_legacy_builtin() {
+        let workspace = TempDir::new().expect("workspace");
+        let data = TempDir::new().expect("data");
+        let database = Database::new(&data.path().join("runtime-system.db"))
+            .await
+            .expect("database");
+
+        let plugin = InstalledPlugin {
+            id: "terminal".to_string(),
+            name: "terminal".to_string(),
+            version: "0.1.0".to_string(),
+            plugin_type: "Workspace".to_string(),
+            trust_tier: 0,
+            manifest: r#"{
+                "name": "terminal",
+                "version": "0.1.0",
+                "sdk_version": "0.1.0",
+                "plugin_type": "Workspace",
+                "permissions": {
+                    "filesystem": ["workspace/**"],
+                    "network": [],
+                    "memory_read": false,
+                    "memory_write": false,
+                    "tools": []
+                },
+                "trust_tier": "Official",
+                "min_model": null,
+                "description": "Official terminal system"
+            }"#
+            .to_string(),
+            binary_path: Some("terminal.dylib".to_string()),
+            binary_hash: "abc123".to_string(),
+            signature: "LOCAL_DEV_PAYLOAD_SIGNATURE".to_string(),
+            enabled: true,
+            installed_at: 1_710_000_000,
+            last_used: None,
+            config: Some(
+                r#"{
+                    "tools": [
+                        {
+                            "name": "run_command",
+                            "description": "Execute an allowed terminal command.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "command": {"type": "string"}
+                                },
+                                "required": ["command"]
+                            },
+                            "domains": ["shell", "git", "code", "all"]
+                        }
+                    ]
+                }"#
+                .to_string(),
+            ),
+        };
+
+        database
+            .installed_plugins()
+            .upsert_plugin(&plugin)
+            .await
+            .expect("insert plugin");
+
+        let mut config = Config::default();
+        config.core.workspace = workspace.path().to_path_buf();
+        config.mcp.servers.clear();
+        config.plugins.terminal = true;
+
+        let runtime = RuntimeManager::build(&database, &config)
+            .await
+            .expect("runtime manager");
+        assert!(runtime.registry.terminal.is_none());
+
+        let schema = runtime
+            .registry
+            .schemas_for("shell")
+            .await
+            .into_iter()
+            .find(|schema| schema.name == "run_command")
+            .expect("run_command schema");
+        assert!(matches!(
+            schema.source,
+            crate::runtime::registry::ToolSource::Native { .. }
+        ));
     }
 
     #[tokio::test]
