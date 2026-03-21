@@ -51,6 +51,10 @@ impl Database {
     async fn run_schema(&self) -> Result<()> {
         info!("Running database schema");
 
+        self.ensure_agent_events_parent_task_id_compat()
+            .await
+            .context("Failed to apply pre-schema agent_events compatibility patch")?;
+
         sqlx::raw_sql(include_str!("../../schemas/base.sql"))
             .execute(&self.pool)
             .await
@@ -64,14 +68,26 @@ impl Database {
         Ok(())
     }
 
-    async fn ensure_agent_events_parent_task_id(&self) -> Result<()> {
-        let columns: Vec<String> = sqlx::query("PRAGMA table_info(agent_events)")
-            .fetch_all(&self.pool)
+    async fn ensure_agent_events_parent_task_id_compat(&self) -> Result<()> {
+        if !self.table_exists("agent_events").await? {
+            return Ok(());
+        }
+
+        let columns = self.table_columns("agent_events").await?;
+        if columns.iter().any(|column| column == "parent_task_id") {
+            return Ok(());
+        }
+
+        sqlx::query("ALTER TABLE agent_events ADD COLUMN parent_task_id TEXT")
+            .execute(&self.pool)
             .await
-            .context("Failed to inspect agent_events columns")?
-            .into_iter()
-            .map(|row| row.get("name"))
-            .collect();
+            .context("Failed to add agent_events.parent_task_id during compatibility patch")?;
+
+        Ok(())
+    }
+
+    async fn ensure_agent_events_parent_task_id(&self) -> Result<()> {
+        let columns = self.table_columns("agent_events").await?;
 
         if !columns.iter().any(|column| column == "parent_task_id") {
             sqlx::query("ALTER TABLE agent_events ADD COLUMN parent_task_id TEXT")
@@ -88,6 +104,24 @@ impl Database {
         .context("Failed to create agent_events parent index")?;
 
         Ok(())
+    }
+
+    async fn table_exists(&self, table: &str) -> Result<bool> {
+        let row = sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
+            .bind(table)
+            .fetch_optional(&self.pool)
+            .await
+            .with_context(|| format!("Failed to inspect sqlite_master for table '{table}'"))?;
+        Ok(row.is_some())
+    }
+
+    async fn table_columns(&self, table: &str) -> Result<Vec<String>> {
+        let pragma = format!("PRAGMA table_info({table})");
+        sqlx::query(&pragma)
+            .fetch_all(&self.pool)
+            .await
+            .with_context(|| format!("Failed to inspect columns for table '{table}'"))
+            .map(|rows| rows.into_iter().map(|row| row.get("name")).collect())
     }
 
     pub fn pool(&self) -> &SqlitePool {

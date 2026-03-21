@@ -6,6 +6,10 @@ edition.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+native-tool-entry = []
+
 [dependencies]
 sdk = { path = "../../sdk" }
 anyhow.workspace = true

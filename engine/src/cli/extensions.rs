@@ -579,7 +579,14 @@ fn build_official_system_artifact(system: &OfficialSystem) -> Result<PathBuf> {
         .context("Engine manifest has no workspace parent")?
         .to_path_buf();
     let status = Command::new("cargo")
-        .args(["build", "-p", system.crate_name, "--release"])
+        .args([
+            "build",
+            "-p",
+            system.crate_name,
+            "--release",
+            "--features",
+            "native-tool-entry",
+        ])
         .current_dir(&workspace_root)
         .status()
         .with_context(|| {
