@@ -215,10 +215,32 @@ pub enum PluginAction {
         #[arg(long)]
         no_build: bool,
     },
-    /// Install a plugin.
-    Install { source: String },
-    /// Upgrade or replace an installed plugin from a package directory.
-    Upgrade { source: String },
+    /// Install a plugin from a local package directory or a registry.
+    Install {
+        /// Package directory, or plugin id when --registry is set.
+        source: String,
+
+        /// Static registry directory or base URL.
+        #[arg(long, value_name = "REGISTRY")]
+        registry: Option<String>,
+
+        /// Specific version to install from the registry.
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// Upgrade or replace an installed plugin from a package directory or registry.
+    Upgrade {
+        /// Package directory, or plugin id when --registry is set.
+        source: String,
+
+        /// Static registry directory or base URL.
+        #[arg(long, value_name = "REGISTRY")]
+        registry: Option<String>,
+
+        /// Specific version to upgrade to from the registry.
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// List installed plugins.
     List,
     /// Show one installed plugin.

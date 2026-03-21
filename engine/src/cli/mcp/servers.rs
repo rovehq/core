@@ -196,7 +196,7 @@ pub(super) async fn add_server(config: &Config, request: AddServerRequest) -> Re
 }
 
 pub(super) async fn install_package(config: &Config, source: &str) -> Result<()> {
-    let installed = install_checked(config, source, Some(PluginType::Mcp)).await?;
+    let installed = install_checked(config, source, None, None, Some(PluginType::Mcp)).await?;
     println!(
         "Installed MCP package '{}' [{}] version={}",
         installed.name, installed.id, installed.version
@@ -206,7 +206,7 @@ pub(super) async fn install_package(config: &Config, source: &str) -> Result<()>
 }
 
 pub(super) async fn upgrade_package(config: &Config, source: &str) -> Result<()> {
-    let installed = upgrade_checked(config, source, Some(PluginType::Mcp)).await?;
+    let installed = upgrade_checked(config, source, None, None, Some(PluginType::Mcp)).await?;
     println!(
         "Upgraded MCP package '{}' [{}] to version {}",
         installed.name, installed.id, installed.version

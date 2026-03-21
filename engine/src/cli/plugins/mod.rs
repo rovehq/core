@@ -2,6 +2,7 @@ mod distribute;
 mod install;
 mod inventory;
 mod package;
+mod registry;
 mod scaffold;
 mod stage;
 mod test;

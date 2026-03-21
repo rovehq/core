@@ -13,11 +13,17 @@ use super::package::{
     default_plugin_id, default_runtime_file, load_package, load_runtime_config,
     manifest_from_signed_json, read_required_file, resolve_package_root, MANIFEST_FILE,
 };
+use super::registry::materialize_registry_bundle;
 use super::stage::{install_directory, perform_install, verify_and_store};
 use super::validate::{print_permission_review, resolve_payload_source, validate_plugin_shape};
 
-pub async fn handle_install(config: &Config, source: &str) -> Result<()> {
-    let installed = install_checked(config, source, None).await?;
+pub async fn handle_install(
+    config: &Config,
+    source: &str,
+    registry: Option<&str>,
+    version: Option<&str>,
+) -> Result<()> {
+    let installed = install_checked(config, source, registry, version, None).await?;
 
     println!(
         "Installed plugin '{}' [{}] type={} version={}",
@@ -31,8 +37,13 @@ pub async fn handle_install(config: &Config, source: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_upgrade(config: &Config, source: &str) -> Result<()> {
-    let installed = upgrade_checked(config, source, None).await?;
+pub async fn handle_upgrade(
+    config: &Config,
+    source: &str,
+    registry: Option<&str>,
+    version: Option<&str>,
+) -> Result<()> {
+    let installed = upgrade_checked(config, source, registry, version, None).await?;
 
     println!(
         "Upgraded plugin '{}' [{}] to version {}",
@@ -45,10 +56,25 @@ pub async fn handle_upgrade(config: &Config, source: &str) -> Result<()> {
 pub(crate) async fn install_checked(
     config: &Config,
     source: &str,
+    registry: Option<&str>,
+    version: Option<&str>,
     expected_type: Option<PluginType>,
 ) -> Result<InstalledPlugin> {
     let database = open_database(config).await?;
     let crypto = CryptoModule::new().context("Failed to initialize plugin verifier")?;
+    if let Some(registry) = registry {
+        return install_from_registry(
+            config,
+            &database,
+            &crypto,
+            registry,
+            source,
+            version,
+            expected_type.as_ref(),
+        )
+        .await;
+    }
+
     validate_expected_type(Path::new(source), &crypto, expected_type.as_ref())?;
     install_from_directory(config, &database, &crypto, Path::new(source)).await
 }
@@ -56,10 +82,25 @@ pub(crate) async fn install_checked(
 pub(crate) async fn upgrade_checked(
     config: &Config,
     source: &str,
+    registry: Option<&str>,
+    version: Option<&str>,
     expected_type: Option<PluginType>,
 ) -> Result<InstalledPlugin> {
     let database = open_database(config).await?;
     let crypto = CryptoModule::new().context("Failed to initialize plugin verifier")?;
+    if let Some(registry) = registry {
+        return upgrade_from_registry(
+            config,
+            &database,
+            &crypto,
+            registry,
+            source,
+            version,
+            expected_type.as_ref(),
+        )
+        .await;
+    }
+
     validate_expected_type(Path::new(source), &crypto, expected_type.as_ref())?;
     upgrade_from_directory(config, &database, &crypto, Path::new(source)).await
 }
@@ -80,6 +121,34 @@ async fn upgrade_from_directory(
     source: &Path,
 ) -> Result<crate::storage::InstalledPlugin> {
     install_with_mode(config, database, crypto, source, true).await
+}
+
+async fn install_from_registry(
+    config: &Config,
+    database: &Database,
+    crypto: &CryptoModule,
+    registry: &str,
+    plugin_id: &str,
+    version: Option<&str>,
+    expected_type: Option<&PluginType>,
+) -> Result<crate::storage::InstalledPlugin> {
+    let bundle = materialize_registry_bundle(registry, plugin_id, version).await?;
+    validate_expected_type(bundle.path(), crypto, expected_type)?;
+    install_from_directory(config, database, crypto, bundle.path()).await
+}
+
+async fn upgrade_from_registry(
+    config: &Config,
+    database: &Database,
+    crypto: &CryptoModule,
+    registry: &str,
+    plugin_id: &str,
+    version: Option<&str>,
+    expected_type: Option<&PluginType>,
+) -> Result<crate::storage::InstalledPlugin> {
+    let bundle = materialize_registry_bundle(registry, plugin_id, version).await?;
+    validate_expected_type(bundle.path(), crypto, expected_type)?;
+    upgrade_from_directory(config, database, crypto, bundle.path()).await
 }
 
 async fn install_with_mode(
@@ -266,7 +335,11 @@ mod tests {
     use crate::security::crypto::CryptoModule;
     use crate::storage::Database;
 
-    use super::{install_from_directory, upgrade_from_directory, validate_expected_type};
+    use super::{
+        install_from_directory, install_from_registry, upgrade_from_directory,
+        validate_expected_type,
+    };
+    use crate::cli::plugins::handle_publish;
     use crate::cli::plugins::package::{
         default_plugin_id, MANIFEST_FILE, PACKAGE_FILE, RUNTIME_FILE,
     };
@@ -493,6 +566,72 @@ mod tests {
             .expect("stored upgraded plugin");
 
         assert_eq!(stored.binary_hash, second_hash);
+    }
+
+    #[tokio::test]
+    async fn install_checked_loads_plugin_from_local_registry() {
+        let signing_key = SigningKey::from_bytes(&[21u8; 32]);
+        let package_dir = TempDir::new().expect("package dir");
+        let (_db_dir, database) = test_database().await;
+        let data_dir = TempDir::new().expect("data dir");
+        let workspace = TempDir::new().expect("workspace dir");
+        let registry_dir = TempDir::new().expect("registry dir");
+        let crypto = CryptoModule::with_key(signing_key.verifying_key());
+
+        let artifact_bytes = b"registry wasm bytes";
+        fs::write(package_dir.path().join("echo.wasm"), artifact_bytes).expect("write wasm");
+        fs::write(package_dir.path().join(RUNTIME_FILE), r#"{"tools":[]}"#)
+            .expect("write runtime config");
+
+        let payload_hash = CryptoModule::compute_hash(artifact_bytes);
+        let payload_signature = hex::encode(signing_key.sign(payload_hash.as_bytes()).to_bytes());
+        write_signed_manifest(
+            package_dir.path(),
+            &signing_key,
+            "Echo Skill",
+            "Skill",
+            "Reviewed",
+            "0.1.0",
+        );
+        write_package(
+            package_dir.path(),
+            "echo.wasm",
+            &payload_hash,
+            &payload_signature,
+        );
+
+        handle_publish(
+            Some(package_dir.path().to_str().expect("package path")),
+            registry_dir.path(),
+            true,
+        )
+        .await
+        .expect("publish registry bundle");
+
+        let mut config = Config::default();
+        config.core.data_dir = data_dir.path().to_path_buf();
+        config.core.workspace = workspace.path().to_path_buf();
+
+        let installed = install_from_registry(
+            &config,
+            &database,
+            &crypto,
+            registry_dir.path().to_str().expect("registry path"),
+            "echo-skill",
+            Some("0.1.0"),
+            None,
+        )
+        .await
+        .expect("install from registry");
+
+        assert_eq!(installed.id, "echo-skill");
+        assert_eq!(installed.version, "0.1.0");
+        assert!(data_dir
+            .path()
+            .join("plugins")
+            .join("echo-skill")
+            .join("echo.wasm")
+            .exists());
     }
 
     #[test]

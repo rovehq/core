@@ -12,6 +12,7 @@ use super::package::{
     manifest_from_signed_json, read_required_file, resolve_package_root, MANIFEST_FILE,
     PACKAGE_FILE, RUNTIME_FILE,
 };
+use super::registry::{update_registry_metadata, PublishedBundle};
 use super::test::{ensure_wasm_target_installed, run_cargo};
 use super::validate::{resolve_payload_source, review_manifest_permissions, validate_plugin_shape};
 
@@ -29,7 +30,7 @@ struct ReleaseManifest {
     permission_review: super::validate::PermissionReview,
 }
 
-struct BundleOutput {
+pub(super) struct BundleOutput {
     bundle_dir: PathBuf,
     plugin_id: String,
     manifest: Manifest,
@@ -75,16 +76,50 @@ pub async fn handle_publish(
     )
     .with_context(|| format!("Failed to create '{}'", registry_dir.display()))?;
     copy_tree(&bundle.bundle_dir, &destination)?;
+    let published_at = unix_now()?;
+    let bundle_rel = PathBuf::from(&bundle.plugin_id).join(&bundle.manifest.version);
+    let runtime_path = destination
+        .join(RUNTIME_FILE)
+        .exists()
+        .then(|| bundle_rel.join(RUNTIME_FILE).display().to_string());
+    let artifact_path =
+        release_artifact_name(&destination).map(|name| bundle_rel.join(name).display().to_string());
+    let readme_path = destination
+        .join("README.md")
+        .exists()
+        .then(|| bundle_rel.join("README.md").display().to_string());
+    update_registry_metadata(
+        registry_dir,
+        &bundle.plugin_id,
+        &bundle.manifest,
+        PublishedBundle {
+            version: bundle.manifest.version.clone(),
+            published_at,
+            bundle_path: bundle_rel.display().to_string(),
+            manifest_path: bundle_rel.join(MANIFEST_FILE).display().to_string(),
+            package_path: bundle_rel.join(PACKAGE_FILE).display().to_string(),
+            runtime_path,
+            artifact_path,
+            readme_path,
+            release_path: bundle_rel.join("release.json").display().to_string(),
+        },
+    )?;
 
     println!("Published plugin bundle:");
     println!("id: {}", bundle.plugin_id);
     println!("version: {}", bundle.manifest.version);
     println!("registry path: {}", destination.display());
+    println!(
+        "Install with: rove plugin install {} --registry {} --version {}",
+        bundle.plugin_id,
+        registry_dir.display(),
+        bundle.manifest.version
+    );
 
     Ok(())
 }
 
-async fn prepare_distribution_bundle(
+pub(super) async fn prepare_distribution_bundle(
     source: Option<&str>,
     out: Option<&Path>,
     no_build: bool,
@@ -282,10 +317,20 @@ fn unix_now() -> Result<i64> {
         .as_secs() as i64)
 }
 
+fn release_artifact_name(bundle_dir: &Path) -> Option<String> {
+    let package_json = fs::read_to_string(bundle_dir.join(PACKAGE_FILE)).ok()?;
+    let package = serde_json::from_str::<serde_json::Value>(&package_json).ok()?;
+    package
+        .get("artifact")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::path::PathBuf;
 
     use serde_json::Value;
     use tempfile::TempDir;
@@ -371,6 +416,22 @@ mod tests {
         )
         .expect("package json");
         assert_eq!(package_json["artifact"], "sample.wasm");
+    }
+
+    #[tokio::test]
+    async fn fixture_example_package_packs() {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugins/echo-skill");
+
+        let bundle =
+            prepare_distribution_bundle(Some(fixture.to_str().expect("fixture path")), None, true)
+                .await
+                .expect("bundle fixture package");
+
+        assert!(bundle.bundle_dir.join("manifest.json").exists());
+        assert!(bundle.bundle_dir.join("plugin-package.json").exists());
+        assert!(bundle.bundle_dir.join("runtime.json").exists());
+        assert!(bundle.bundle_dir.join("echo_skill.wasm").exists());
     }
 
     #[test]

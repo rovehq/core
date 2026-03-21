@@ -326,11 +326,31 @@ async fn handle_plugin(action: PluginAction) -> Result<()> {
         PluginAction::Disable { name } => {
             rove_engine::cli::plugins::handle_set_enabled(&config, &name, false).await?;
         }
-        PluginAction::Install { source } => {
-            rove_engine::cli::plugins::handle_install(&config, &source).await?;
+        PluginAction::Install {
+            source,
+            registry,
+            version,
+        } => {
+            rove_engine::cli::plugins::handle_install(
+                &config,
+                &source,
+                registry.as_deref(),
+                version.as_deref(),
+            )
+            .await?;
         }
-        PluginAction::Upgrade { source } => {
-            rove_engine::cli::plugins::handle_upgrade(&config, &source).await?;
+        PluginAction::Upgrade {
+            source,
+            registry,
+            version,
+        } => {
+            rove_engine::cli::plugins::handle_upgrade(
+                &config,
+                &source,
+                registry.as_deref(),
+                version.as_deref(),
+            )
+            .await?;
         }
         PluginAction::Remove { name } => {
             rove_engine::cli::plugins::handle_remove(&config, &name).await?;
