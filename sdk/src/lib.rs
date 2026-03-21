@@ -40,7 +40,7 @@ pub use bus_handle::{BusHandle, BusHandleImpl};
 pub use config_handle::{ConfigHandle, ConfigHandleImpl};
 pub use control::{
     BrainFamily, ExtensionKind, NodeExecutionRole, NodeIdentity, NodeProfile, PolicyScope,
-    RemoteEnvelope, RunContextId, RunIsolation, RunMode, ServiceKind,
+    RemoteEnvelope, RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, ServiceKind,
 };
 pub use core_tool::{CoreContext, CoreTool};
 pub use crypto_handle::{CryptoHandle, CryptoHandleImpl};

@@ -14,8 +14,9 @@ use uuid::Uuid;
 
 use crate::config::metadata::SERVICE_NAME;
 use crate::config::Config;
+use crate::policy::{infer_domain, PolicyExplainReport, PolicyManager};
 use crate::secrets::SecretManager;
-use sdk::{NodeExecutionRole, NodeIdentity, NodeProfile, RemoteEnvelope};
+use sdk::{NodeExecutionRole, NodeIdentity, NodeProfile, RemoteEnvelope, RemoteExecutionPlan};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemotePeer {
@@ -61,6 +62,16 @@ pub struct RemoteSendOptions {
     pub required_capabilities: Vec<String>,
     pub allow_executor_only: bool,
     pub prefer_executor_only: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SelectionContext {
+    workspace_name: Option<String>,
+    domain_tag: Option<String>,
+    policy_tags: Vec<String>,
+    preferred_tools: Vec<String>,
+    preferred_capabilities: Vec<String>,
+    direct_executor_candidate: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,14 +246,23 @@ impl RemoteManager {
         }
 
         let peers = self.load_peers()?;
+        let selection = self.derive_selection_context(prompt);
         let peer = self.resolve_peer(
             &peers,
             prompt,
+            &selection,
             &RemoteSendOptions {
                 node: Some(node.to_string()),
                 ..RemoteSendOptions::default()
             },
         )?;
+        let execution_plan = if matches!(peer.profile.execution_role, NodeExecutionRole::ExecutorOnly)
+        {
+            self.build_executor_plan(prompt, &selection)?
+        } else {
+            None
+        };
+        let has_execution_plan = execution_plan.is_some();
         let coordinator = self.load_or_init_node_metadata()?;
         let envelope = RemoteEnvelope {
             origin_node: coordinator.identity.node_name.clone(),
@@ -251,12 +271,19 @@ impl RemoteManager {
             task_id: Uuid::new_v4().to_string(),
             task_input: prompt.to_string(),
             stream_policy: "events+result".to_string(),
+            execution_plan,
         };
 
         Ok(RemoteSendPreview {
             envelope,
             trusted: peer.trusted,
-            message: "Remote transport ready. The coordinator will submit to the target daemon and stream task events before the final result.".to_string(),
+            message: if matches!(peer.profile.execution_role, NodeExecutionRole::ExecutorOnly)
+                && has_execution_plan
+            {
+                "Remote transport ready. The coordinator will attach a direct execution plan for the executor-only target and stream task events before the final result.".to_string()
+            } else {
+                "Remote transport ready. The coordinator will submit to the target daemon and stream task events before the final result.".to_string()
+            },
         })
     }
 
@@ -281,7 +308,10 @@ impl RemoteManager {
         }
 
         let peers = self.load_peers()?;
-        let peer = self.resolve_peer(&peers, prompt, &options)?;
+        let mut selection = self.derive_selection_context(prompt);
+        self.enrich_selection_context_with_policy(prompt, &mut selection)
+            .await;
+        let peer = self.resolve_peer(&peers, prompt, &selection, &options)?;
         if !peer.trusted {
             bail!(
                 "Remote node '{}' is paired but not trusted. Run `rove remote trust {}` first.",
@@ -289,6 +319,17 @@ impl RemoteManager {
                 peer.identity.node_name
             );
         }
+        let execution_plan = if matches!(peer.profile.execution_role, NodeExecutionRole::ExecutorOnly)
+        {
+            Some(self.build_executor_plan(prompt, &selection)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Remote node '{}' is executor-only, but this task could not be decomposed into a safe direct execution plan. Choose a full node or use an explicit read-only system action.",
+                    peer.identity.node_name
+                )
+            })?)
+        } else {
+            None
+        };
 
         let coordinator = self.load_or_init_node_metadata()?;
         let envelope = RemoteEnvelope {
@@ -298,12 +339,14 @@ impl RemoteManager {
             task_id: Uuid::new_v4().to_string(),
             task_input: prompt.to_string(),
             stream_policy: "events+result".to_string(),
+            execution_plan: execution_plan.clone(),
         };
 
         let auth_token = self.auth_token_for_peer(&peer).await?;
         let client = Client::new();
         let endpoint = format!("{}/api/v1/remote/execute", peer.target.trim_end_matches('/'));
         let request = RemoteExecuteRequest {
+            task_id: Some(envelope.task_id.clone()),
             input: Some(prompt.to_string()),
             task: None,
             origin_node: Some(envelope.origin_node.clone()),
@@ -311,6 +354,7 @@ impl RemoteManager {
             workspace: None,
             team_id: None,
             wait_seconds: Some(1),
+            plan: execution_plan,
         };
 
         let execute = client
@@ -378,6 +422,7 @@ impl RemoteManager {
         &self,
         peers: &[RemotePeer],
         prompt: &str,
+        selection: &SelectionContext,
         options: &RemoteSendOptions,
     ) -> Result<RemotePeer> {
         if let Some(node) = options
@@ -396,7 +441,7 @@ impl RemoteManager {
             return Ok(peer.clone());
         }
 
-        self.select_peer(peers, prompt, options)
+        self.select_peer(peers, prompt, selection, options)
     }
 
     fn validate_peer_selection(&self, peer: &RemotePeer, options: &RemoteSendOptions) -> Result<()> {
@@ -445,6 +490,7 @@ impl RemoteManager {
         &self,
         peers: &[RemotePeer],
         prompt: &str,
+        selection: &SelectionContext,
         options: &RemoteSendOptions,
     ) -> Result<RemotePeer> {
         let prompt_lower = prompt.to_ascii_lowercase();
@@ -481,7 +527,49 @@ impl RemoteManager {
                         score += 20;
                     }
                 }
-                if options.prefer_executor_only {
+                if let Some(workspace_name) = &selection.workspace_name {
+                    if peer
+                        .profile
+                        .tags
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(workspace_name))
+                    {
+                        score += 35;
+                    }
+                }
+                if let Some(domain_tag) = &selection.domain_tag {
+                    if peer
+                        .profile
+                        .tags
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(domain_tag))
+                    {
+                        score += 15;
+                    }
+                }
+                for tag in &selection.policy_tags {
+                    if peer
+                        .profile
+                        .tags
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(tag))
+                    {
+                        score += 10;
+                    }
+                }
+                for capability in &selection.preferred_capabilities {
+                    if peer
+                        .profile
+                        .capabilities
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(capability))
+                    {
+                        score += 18;
+                    }
+                }
+                let prefer_executor_only =
+                    options.prefer_executor_only || selection.direct_executor_candidate;
+                if prefer_executor_only {
                     score += match peer.profile.execution_role {
                         NodeExecutionRole::ExecutorOnly => 25,
                         NodeExecutionRole::Full => 5,
@@ -786,6 +874,126 @@ impl RemoteManager {
             .unwrap_or("local-node")
             .to_string()
     }
+
+    fn derive_selection_context(&self, prompt: &str) -> SelectionContext {
+        let workspace_name = self
+            .config
+            .core
+            .workspace
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_string())
+            .filter(|name| !name.trim().is_empty());
+        let domain_tag = Some(infer_domain(&self.config.core.workspace).to_string());
+
+        SelectionContext {
+            workspace_name,
+            domain_tag,
+            policy_tags: Vec::new(),
+            preferred_tools: Vec::new(),
+            preferred_capabilities: Vec::new(),
+            direct_executor_candidate: looks_like_direct_executor_task(prompt),
+        }
+    }
+
+    async fn enrich_selection_context_with_policy(
+        &self,
+        prompt: &str,
+        selection: &mut SelectionContext,
+    ) {
+        let Ok(report) = PolicyManager::new(self.config.clone(), None).explain(prompt).await else {
+            return;
+        };
+        let (policy_tags, preferred_tools, preferred_capabilities) =
+            policy_report_to_hints(Some(&report));
+        selection.policy_tags = policy_tags;
+        selection.preferred_tools = preferred_tools;
+        selection.preferred_capabilities = preferred_capabilities;
+    }
+
+    fn build_executor_plan(
+        &self,
+        prompt: &str,
+        selection: &SelectionContext,
+    ) -> Result<Option<RemoteExecutionPlan>> {
+        let prompt_trimmed = prompt.trim();
+        let prompt_lower = prompt_trimmed.to_ascii_lowercase();
+        let extracted = extract_quoted_or_path_token(prompt_trimmed);
+        let domain_hint = selection.domain_tag.clone();
+
+        if prompt_lower.contains("screenshot") || prompt_lower.contains("capture screen") {
+            return Ok(Some(RemoteExecutionPlan {
+                summary: "capture screenshot".to_string(),
+                tool_name: "capture_screen".to_string(),
+                tool_args: serde_json::json!({"output_file":"remote-screenshot.png"}),
+                domain_hint,
+            }));
+        }
+
+        if contains_any(&prompt_lower, &["read ", "show ", "open ", "cat "]) {
+            if let Some(path) = extracted.clone() {
+                return Ok(Some(RemoteExecutionPlan {
+                    summary: format!("read file {}", path),
+                    tool_name: "read_file".to_string(),
+                    tool_args: serde_json::json!({ "path": path }),
+                    domain_hint,
+                }));
+            }
+        }
+
+        if contains_any(&prompt_lower, &["does ", "exist", "file exists"]) {
+            if let Some(path) = extracted.clone() {
+                return Ok(Some(RemoteExecutionPlan {
+                    summary: format!("check whether {} exists", path),
+                    tool_name: "file_exists".to_string(),
+                    tool_args: serde_json::json!({ "path": path }),
+                    domain_hint,
+                }));
+            }
+        }
+
+        if contains_any(&prompt_lower, &["list ", "directory", "folder", "files in"]) {
+            let path = extracted.clone().unwrap_or_else(|| ".".to_string());
+            return Ok(Some(RemoteExecutionPlan {
+                summary: format!("list directory {}", path),
+                tool_name: "list_dir".to_string(),
+                tool_args: serde_json::json!({ "path": path }),
+                domain_hint,
+            }));
+        }
+
+        if prompt_lower.contains("find ") || prompt_lower.contains("locate ") {
+            if let Some(name) = extracted {
+                let command = format!("fd -a {} .", shlex::try_quote(&name)?);
+                return Ok(Some(RemoteExecutionPlan {
+                    summary: format!("find {}", name),
+                    tool_name: "run_command".to_string(),
+                    tool_args: serde_json::json!({ "command": command }),
+                    domain_hint,
+                }));
+            }
+        }
+
+        if prompt_lower.contains("search ")
+            && prompt_lower.contains(" in ")
+            && selection
+                .preferred_tools
+                .iter()
+                .any(|tool| tool.eq_ignore_ascii_case("run_command"))
+        {
+            if let Some(term) = extract_search_term(prompt_trimmed) {
+                let command = format!("rg --line-number {} .", shlex::try_quote(&term)?);
+                return Ok(Some(RemoteExecutionPlan {
+                    summary: format!("search for {}", term),
+                    tool_name: "run_command".to_string(),
+                    tool_args: serde_json::json!({ "command": command }),
+                    domain_hint,
+                }));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -801,6 +1009,7 @@ struct RemotePeersFile {
 
 #[derive(Debug, Clone, Serialize)]
 struct RemoteExecuteRequest {
+    task_id: Option<String>,
     input: Option<String>,
     task: Option<String>,
     origin_node: Option<String>,
@@ -808,6 +1017,7 @@ struct RemoteExecuteRequest {
     workspace: Option<String>,
     team_id: Option<String>,
     wait_seconds: Option<u64>,
+    plan: Option<RemoteExecutionPlan>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -954,6 +1164,114 @@ fn normalize_capabilities(capabilities: &[String]) -> Vec<String> {
     values
 }
 
+fn policy_report_to_hints(
+    report: Option<&PolicyExplainReport>,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let Some(report) = report else {
+        return (Vec::new(), Vec::new(), Vec::new());
+    };
+
+    let mut policy_tags = report.active_policies.clone();
+    policy_tags.extend(report.memory_tags.clone());
+    policy_tags.sort();
+    policy_tags.dedup();
+
+    let preferred_tools = report.preferred_tools.clone();
+    let mut preferred_capabilities = Vec::new();
+    for tool in &preferred_tools {
+        for capability in tool_capabilities(tool) {
+            if !preferred_capabilities
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(capability))
+            {
+                preferred_capabilities.push(capability.to_string());
+            }
+        }
+    }
+
+    (policy_tags, preferred_tools, preferred_capabilities)
+}
+
+fn tool_capabilities(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "run_command" => &["shell-execution", "system-execution"],
+        "read_file" | "write_file" | "list_dir" | "file_exists" => {
+            &["filesystem-access", "system-execution"]
+        }
+        "capture_screen" => &["vision-capture", "system-execution"],
+        _ => &[],
+    }
+}
+
+fn looks_like_direct_executor_task(prompt: &str) -> bool {
+    let prompt_lower = prompt.to_ascii_lowercase();
+    contains_any(
+        &prompt_lower,
+        &[
+            "find ",
+            "locate ",
+            "read ",
+            "show ",
+            "open ",
+            "list ",
+            "directory",
+            "folder",
+            "file exists",
+            "does ",
+            "screenshot",
+            "capture screen",
+            "search ",
+        ],
+    )
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn extract_quoted_or_path_token(prompt: &str) -> Option<String> {
+    for delimiter in ['`', '"', '\''] {
+        let mut parts = prompt.split(delimiter);
+        let _ = parts.next();
+        if let Some(segment) = parts.next() {
+            let trimmed = segment.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    prompt
+        .split_whitespace()
+        .map(|token| token.trim_matches(|ch: char| ",.:;!?()[]{}".contains(ch)))
+        .find(|token| {
+            token.contains('/')
+                || token.contains('\\')
+                || token.contains('.')
+                || token.ends_with(".txt")
+                || token.ends_with(".md")
+                || token.ends_with(".rs")
+        })
+        .map(|token| token.to_string())
+}
+
+fn extract_search_term(prompt: &str) -> Option<String> {
+    if let Some(term) = extract_quoted_or_path_token(prompt) {
+        return Some(term);
+    }
+
+    let lowered = prompt.to_ascii_lowercase();
+    let start = lowered.find("search ")?;
+    let tail = prompt[start + "search ".len()..].trim();
+    let term = tail
+        .split(" in ")
+        .next()
+        .unwrap_or(tail)
+        .trim_matches(|ch: char| ",.:;!?".contains(ch))
+        .trim();
+    (!term.is_empty()).then(|| term.to_string())
+}
+
 pub fn local_execution_role_for_config(config: &Config) -> Result<NodeExecutionRole> {
     Ok(RemoteManager::new(config.clone())
         .load_or_init_node_metadata()?
@@ -985,6 +1303,8 @@ mod tests {
         config.core.workspace = temp.path().join("workspace");
         std::fs::create_dir_all(&config.core.workspace).expect("workspace");
         config.core.data_dir = temp.path().join("data");
+        config.steering.skill_dir = temp.path().join("policies");
+        std::fs::create_dir_all(&config.steering.skill_dir).expect("policy dir");
         config.ws_client.enabled = true;
         config.ws_client.auth_token = Some("remote-token".to_string());
         (temp, config)
@@ -1256,5 +1576,197 @@ mod tests {
 
         assert_eq!(result.envelope.target_node, "office-mac");
         assert_eq!(result.answer.as_deref(), Some("office result"));
+    }
+
+    #[tokio::test]
+    async fn auto_selection_uses_workspace_and_policy_hints() {
+        let (temp, mut config) = test_config();
+        config.core.workspace = temp.path().join("office-workspace");
+        std::fs::create_dir_all(&config.core.workspace).expect("workspace");
+        std::fs::write(
+            config.steering.skill_dir.join("shell.toml"),
+            r#"[meta]
+id = "shell"
+name = "shell"
+version = "0.1.0"
+description = "shell policy"
+author = "test"
+tags = []
+domains = ["general"]
+
+[activation]
+manual = true
+auto_when = []
+conflicts_with = []
+apply_only_to = []
+auto_when_file_type = []
+
+[directives]
+system_prefix = ""
+system_suffix = ""
+
+[routing]
+preferred_providers = []
+avoid_providers = []
+always_verify = false
+
+[tools]
+prefer = ["run_command"]
+suggest_after_code = []
+
+[memory]
+auto_tag = ["office-workspace"]
+
+[hints]
+"#,
+        )
+        .expect("write policy");
+        config.steering.default_skills = vec!["shell".to_string()];
+
+        let office = MockServer::start().await;
+        let fallback = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/remote/execute"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "task_id": "office-task",
+                "status": "completed",
+                "answer": "office result",
+                "provider": "ollama",
+                "duration_ms": 10,
+                "message": null
+            })))
+            .mount(&office)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/remote/execute"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "task_id": "fallback-task",
+                "status": "completed",
+                "answer": "fallback result",
+                "provider": "ollama",
+                "duration_ms": 10,
+                "message": null
+            })))
+            .mount(&fallback)
+            .await;
+
+        let manager = RemoteManager::new(config);
+        manager
+            .pair(
+                "office-mac",
+                Some(&office.uri()),
+                None,
+                false,
+                &["office-workspace".to_string()],
+                &["shell-execution".to_string()],
+            )
+            .await
+            .expect("pair office");
+        manager.trust("office-mac").expect("trust office");
+        manager
+            .pair("fallback-mac", Some(&fallback.uri()), None, false, &[], &[])
+            .await
+            .expect("pair fallback");
+        manager.trust("fallback-mac").expect("trust fallback");
+
+        let result = manager
+            .send_with_options("search TODO in the repo", RemoteSendOptions::default())
+            .await
+            .expect("send");
+
+        assert_eq!(result.envelope.target_node, "office-mac");
+        assert_eq!(result.answer.as_deref(), Some("office result"));
+    }
+
+    #[tokio::test]
+    async fn executor_only_send_attaches_direct_execution_plan() {
+        use axum::{extract::State, response::IntoResponse};
+        use serde_json::Value;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct CaptureState(Arc<Mutex<Option<Value>>>);
+
+        async fn execute_remote(
+            State(state): State<CaptureState>,
+            Json(payload): Json<Value>,
+        ) -> impl IntoResponse {
+            *state.0.lock().expect("capture lock") = Some(payload);
+            Json(serde_json::json!({
+                "success": true,
+                "task_id": "direct-plan-task",
+                "status": "completed",
+                "answer": "found file",
+                "provider": "executor-plan",
+                "duration_ms": 4,
+                "message": null
+            }))
+        }
+
+        let (_temp, config) = test_config();
+        let captured = Arc::new(Mutex::new(None));
+        let state = CaptureState(Arc::clone(&captured));
+        let app = Router::new()
+            .route("/api/v1/remote/execute", post(execute_remote))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let manager = RemoteManager::new(config);
+        manager
+            .pair(
+                "office-mac",
+                Some(&format!("http://{}", addr)),
+                None,
+                true,
+                &["office".to_string()],
+                &["shell-execution".to_string(), "system-execution".to_string()],
+            )
+            .await
+            .expect("pair");
+        manager.trust("office-mac").expect("trust");
+
+        let result = manager
+            .send_with_options(
+                "find test.txt in the repo",
+                RemoteSendOptions {
+                    node: Some("office-mac".to_string()),
+                    allow_executor_only: true,
+                    ..RemoteSendOptions::default()
+                },
+            )
+            .await
+            .expect("send");
+
+        let request = captured
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("captured request");
+        assert_eq!(
+            request
+                .get("plan")
+                .and_then(|value| value.get("tool_name"))
+                .and_then(|value| value.as_str()),
+            Some("run_command")
+        );
+        assert!(request
+            .get("plan")
+            .and_then(|value| value.get("tool_args"))
+            .and_then(|value| value.get("command"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .contains("fd -a"));
+        assert!(result.envelope.execution_plan.is_some());
+        assert_eq!(result.answer.as_deref(), Some("found file"));
+
+        server.abort();
     }
 }

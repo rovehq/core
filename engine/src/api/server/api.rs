@@ -4,14 +4,18 @@ use axum::{
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::time::Duration;
+use uuid::Uuid;
 
 use super::{completion, AppState};
 use crate::channels::manager::ChannelManager;
 use crate::config::Config;
+use crate::gateway::Task;
 use crate::policy::PolicyManager;
 use crate::remote::RemoteManager;
 use crate::services::{ManagedService, ServiceManager};
+use sdk::{RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, TaskSource};
 
 #[derive(Serialize)]
 pub struct HealthResponse {
@@ -36,6 +40,7 @@ pub struct ExecuteRequest {
 
 #[derive(Deserialize)]
 pub struct RemoteExecuteRequest {
+    pub task_id: Option<String>,
     pub input: Option<String>,
     pub task: Option<String>,
     pub origin_node: Option<String>,
@@ -43,6 +48,7 @@ pub struct RemoteExecuteRequest {
     pub workspace: Option<String>,
     pub team_id: Option<String>,
     pub wait_seconds: Option<u64>,
+    pub plan: Option<RemoteExecutionPlan>,
 }
 
 #[derive(Serialize)]
@@ -79,9 +85,13 @@ pub async fn execute_remote_task(
     State(state): State<AppState>,
     Json(payload): Json<RemoteExecuteRequest>,
 ) -> impl IntoResponse {
-    let Some(input) = parse_task_input(payload.input, payload.task) else {
+    let Some(input) = parse_task_input(payload.input.clone(), payload.task.clone()) else {
         return invalid_request("Request must include a non-empty `input` or `task` field");
     };
+
+    if let Some(plan) = payload.plan.clone() {
+        return accept_remote_planned_task(state, payload, input, plan).await;
+    }
 
     let task_id = match state
         .gateway
@@ -103,6 +113,123 @@ pub async fn execute_remote_task(
         &task_id,
         completion::wait_for_completion(&state, &task_id, wait).await,
     )
+}
+
+async fn accept_remote_planned_task(
+    state: AppState,
+    payload: RemoteExecuteRequest,
+    input: String,
+    plan: RemoteExecutionPlan,
+) -> axum::response::Response {
+    let task_id = match payload.task_id.as_deref() {
+        Some(raw) => match Uuid::parse_str(raw) {
+            Ok(value) => value,
+            Err(_) => return invalid_request("`task_id` must be a valid UUID when provided"),
+        },
+        None => Uuid::new_v4(),
+    };
+    let task_id_str = task_id.to_string();
+    let source = TaskSource::Remote(payload.origin_node.clone().unwrap_or_default());
+    let workspace_override = payload.workspace.clone().map(PathBuf::from);
+    let domain = plan
+        .domain_hint
+        .clone()
+        .unwrap_or_else(|| "general".to_string());
+
+    if let Err(error) = state
+        .db
+        .pending_tasks()
+        .create_task_with_dispatch(
+            &task_id_str,
+            &input,
+            source.clone(),
+            &domain,
+            "simple",
+            false,
+            None,
+            payload.workspace.as_deref(),
+            payload.team_id.as_deref(),
+        )
+        .await
+    {
+        return internal_submission_error(error);
+    }
+    if let Err(error) = state.db.pending_tasks().mark_running(&task_id_str).await {
+        return internal_submission_error(error);
+    }
+
+    let state_clone = state.clone();
+    let task_id_for_spawn = task_id_str.clone();
+    tokio::spawn(async move {
+        let result = run_remote_planned_task(
+            state_clone.clone(),
+            task_id,
+            input,
+            source,
+            workspace_override,
+            plan,
+        )
+        .await;
+
+        let pending_repo = state_clone.db.pending_tasks();
+        match result {
+            Ok(_) => {
+                let _ = pending_repo.mark_done(&task_id_for_spawn).await;
+            }
+            Err(error) => {
+                let _ = pending_repo
+                    .mark_failed(&task_id_for_spawn, &error.to_string())
+                    .await;
+            }
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(ExecuteResponse {
+            success: true,
+            task_id: Some(task_id_str),
+            status: "running".to_string(),
+            answer: None,
+            provider: None,
+            duration_ms: None,
+            message: Some("Accepted direct remote execution plan".to_string()),
+        }),
+    )
+        .into_response()
+}
+
+async fn run_remote_planned_task(
+    state: AppState,
+    task_id: Uuid,
+    input: String,
+    source: TaskSource,
+    workspace_override: Option<PathBuf>,
+    plan: RemoteExecutionPlan,
+) -> anyhow::Result<()> {
+    let task = Task {
+        id: task_id,
+        input,
+        source,
+        risk_tier_override: None,
+        run_context_id: RunContextId(Uuid::new_v4().to_string()),
+        run_mode: RunMode::Serial,
+        run_isolation: RunIsolation::None,
+        session_id: None,
+        workspace: workspace_override.clone(),
+        created_at: chrono::Utc::now().timestamp(),
+    };
+
+    if let Some(workspace) = workspace_override {
+        let mut agent =
+            crate::cli::bootstrap::build_task_agent(state.db.clone(), Some(workspace)).await?;
+        agent.process_planned_task(task, plan).await?;
+        return Ok(());
+    }
+
+    let mut agent = state.agent.write().await;
+    agent.process_planned_task(task, plan).await?;
+    Ok(())
 }
 
 pub async fn task_status(

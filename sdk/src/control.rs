@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Public kind for installable Rove capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +124,7 @@ pub struct NodeProfile {
 }
 
 /// Envelope sent between remote daemons for coordinated execution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteEnvelope {
     pub origin_node: String,
     pub target_node: String,
@@ -131,4 +132,14 @@ pub struct RemoteEnvelope {
     pub task_id: String,
     pub task_input: String,
     pub stream_policy: String,
+    pub execution_plan: Option<RemoteExecutionPlan>,
+}
+
+/// Coordinator-computed direct execution plan for executor-oriented remote nodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteExecutionPlan {
+    pub summary: String,
+    pub tool_name: String,
+    pub tool_args: Value,
+    pub domain_hint: Option<String>,
 }

@@ -19,7 +19,7 @@ use crate::llm::{FinalAnswer, LLMProvider, LLMResponse, Message};
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::RiskAssessor;
 use crate::risk_assessor::RiskTier;
-use sdk::{Complexity, Route, TaskDomain};
+use sdk::{Complexity, RemoteExecutionPlan, Route, TaskDomain};
 
 async fn setup_test_agent() -> (TempDir, AgentCore) {
     setup_test_agent_with_providers(vec![], false).await
@@ -147,6 +147,31 @@ fn test_task_result_creation() {
 async fn test_agent_core_creation() {
     let (_temp_dir, agent) = setup_test_agent().await;
     assert_eq!(agent.memory.messages().len(), 0);
+}
+
+#[tokio::test]
+async fn test_planned_task_executes_direct_tool_without_provider() {
+    let (temp_dir, mut agent) = setup_test_agent_with_providers(vec![], true).await;
+    let file_path = temp_dir.path().join("note.txt");
+    std::fs::write(&file_path, "executor payload").expect("write fixture");
+
+    let task = Task::build_from_cli("read note.txt on the remote executor");
+    let result = agent
+        .process_planned_task(
+            task,
+            RemoteExecutionPlan {
+                summary: "read fixture note".to_string(),
+                tool_name: "read_file".to_string(),
+                tool_args: serde_json::json!({ "path": file_path }),
+                domain_hint: Some("general".to_string()),
+            },
+        )
+        .await
+        .expect("planned task should succeed");
+
+    assert!(result.answer.contains("executor payload"));
+    assert_eq!(result.provider_used, "executor-plan");
+    assert_eq!(result.iterations, 1);
 }
 
 #[test]

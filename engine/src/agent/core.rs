@@ -17,6 +17,7 @@ mod tools;
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
@@ -24,12 +25,13 @@ use crate::builtin_tools::ToolRegistry;
 use crate::conductor::MemorySystem;
 use crate::db::tasks::{TaskRepository, TaskStatus};
 use crate::gateway::{Task, WorkspaceLocks};
+use crate::llm::ToolCall;
 use crate::llm::router::LLMRouter;
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::{OperationSource, RiskAssessor};
 use crate::security::secrets::scrub_text;
 use crate::steering::loader::SteeringEngine;
-use sdk::TaskDomain;
+use sdk::{RemoteExecutionPlan, TaskDomain};
 
 use super::{preferences::PreferencesManager, WorkingMemory};
 
@@ -186,6 +188,93 @@ impl AgentCore {
         }
     }
 
+    /// Execute a coordinator-provided direct tool plan without entering the LLM loop.
+    pub async fn process_planned_task(
+        &mut self,
+        task: Task,
+        plan: RemoteExecutionPlan,
+    ) -> Result<TaskResult> {
+        self.prune_finished_background_jobs();
+
+        let task_id = task.id;
+        let task_id_str = task_id.to_string();
+        let task_input = task.input.clone();
+
+        info!(
+            task_id = %task_id,
+            tool = %plan.tool_name,
+            "Starting planned task {}: {}",
+            task_id,
+            scrub_text(&task.input)
+        );
+
+        self.task_repo
+            .create_task(&task_id, &task.input)
+            .await
+            .context("Failed to create planned task in database")?;
+        self.task_repo
+            .update_task_status(&task_id, TaskStatus::Running)
+            .await
+            .context("Failed to update planned task status")?;
+
+        let result = self.execute_planned_task_body(&task, &plan).await;
+
+        match result {
+            Ok(task_result) => {
+                self.task_repo
+                    .complete_task(
+                        &task_id,
+                        &task_result.provider_used,
+                        task_result.duration_ms,
+                    )
+                    .await
+                    .context("Failed to complete planned task in database")?;
+
+                self.spawn_post_task_jobs(
+                    task_input,
+                    task_result.answer.clone(),
+                    task_id_str.clone(),
+                    task_result.domain,
+                    task_result.sensitive,
+                );
+
+                info!(
+                    task_id = %task_id,
+                    duration_ms = task_result.duration_ms,
+                    tool = %plan.tool_name,
+                    "Planned task completed"
+                );
+
+                Ok(task_result)
+            }
+            Err(error) => {
+                self.task_repo
+                    .fail_task(&task_id)
+                    .await
+                    .context("Failed to mark planned task as failed")?;
+                let _ = self
+                    .task_repo
+                    .insert_agent_event(
+                        &task_id,
+                        "error",
+                        &serde_json::json!({ "error": scrub_text(&error.to_string()) }).to_string(),
+                        -1,
+                        None,
+                    )
+                    .await;
+
+                error!(
+                    task_id = %task_id,
+                    tool = %plan.tool_name,
+                    "Planned task {} failed: {}",
+                    task_id,
+                    scrub_text(&error.to_string())
+                );
+                Err(error)
+            }
+        }
+    }
+
     pub async fn drain_background_jobs(&mut self) {
         let pending = std::mem::take(&mut self.background_jobs);
         for job in pending {
@@ -200,6 +289,85 @@ impl AgentCore {
             Some(steering) => steering.active_skills().await,
             None => Vec::new(),
         }
+    }
+
+    async fn execute_planned_task_body(
+        &mut self,
+        task: &Task,
+        plan: &RemoteExecutionPlan,
+    ) -> Result<TaskResult> {
+        let start_time = Instant::now();
+        let task_id = task.id;
+        let task_id_str = task_id.to_string();
+
+        self.current_source = task.source.clone().into();
+
+        let operation = crate::risk_assessor::Operation::new(
+            "execute_task",
+            vec![],
+            task.source.clone().into(),
+        );
+        let mut risk_tier = self
+            .risk_assessor
+            .assess(&operation)
+            .context("Failed to assess risk tier")?;
+        if let Some(override_tier) = task.risk_tier_override {
+            risk_tier = override_tier;
+        }
+
+        self.rate_limiter
+            .check_limit(&task_id_str, risk_tier)
+            .await
+            .context("Rate limit exceeded")?;
+        self.rate_limiter
+            .record_operation(&task_id_str, risk_tier)
+            .await
+            .context("Failed to record operation")?;
+
+        let context = self.initialize_task_context(task, risk_tier).await?;
+        self.insert_user_event(&task_id, &task.input, &context.domain_str)
+            .await?;
+        self.insert_thought_event(
+            &task_id,
+            &format!("Execution strategy: direct remote plan ({})", plan.summary),
+            &context.domain_str,
+        )
+        .await?;
+        self.run_steering_preflight(&task_id, &context.domain_str)
+            .await?;
+
+        let tool_call = ToolCall::new(
+            format!("remote-plan-{}", task_id),
+            &plan.tool_name,
+            serde_json::to_string(&plan.tool_args).context("Failed to serialize plan tool args")?,
+        );
+        self.memory
+            .add_message(self.assistant_tool_message(&task_id, &tool_call));
+        self.insert_tool_call_event(&task_id, &tool_call, 1, &context.domain_str)
+            .await?;
+
+        let execution = self.execute_tool_call(&task_id_str, &tool_call).await?;
+        self.memory.add_message(crate::llm::Message::tool_result(
+            &execution.safe_result,
+            &tool_call.id,
+        ));
+        self.insert_observation_event(&task_id, &execution.safe_result, 1, &context.domain_str)
+            .await?;
+        self.run_steering_after_write(&task_id, 1, &tool_call.name, &context.domain_str)
+            .await?;
+
+        self.insert_answer_event(&task_id, &execution.safe_result, 1, &context.domain_str)
+            .await?;
+
+        Ok(TaskResult::success(
+            task_id.to_string(),
+            execution.safe_result,
+            "executor-plan".to_string(),
+            start_time.elapsed().as_millis() as i64,
+            1,
+            context.domain,
+            context.sensitive,
+        ))
     }
 
     fn spawn_post_task_jobs(
