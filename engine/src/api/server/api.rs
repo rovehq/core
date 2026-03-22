@@ -10,15 +10,17 @@ use uuid::Uuid;
 
 use super::{auth::AuthManager, completion, AppState};
 use crate::cli::extensions;
+use crate::cli::brain::dispatch_family;
 use crate::channels::manager::ChannelManager;
 use crate::config::Config;
 use crate::gateway::Task;
 use crate::policy::PolicyManager;
 use crate::remote::RemoteManager;
+use crate::security::approvals;
 use crate::services::{ManagedService, ServiceManager};
 use sdk::{
-    AuthState, DaemonCapabilities, DaemonHello, NodeSummary, RemoteExecutionPlan, RunContextId,
-    RunIsolation, RunMode, TaskSource,
+    AuthState, DaemonCapabilities, DaemonHello, NodeLoadSnapshot, NodeSummary,
+    PolicyScope, RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, TaskSource,
 };
 
 #[derive(Serialize)]
@@ -75,6 +77,11 @@ pub struct UpdateDaemonConfigRequest {
     pub absolute_timeout_secs: Option<u64>,
     pub reauth_window_secs: Option<u64>,
     pub session_persist_on_restart: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DispatchBrainUseRequest {
+    pub model: String,
 }
 
 pub async fn hello(
@@ -275,6 +282,28 @@ pub async fn list_extensions() -> impl IntoResponse {
             Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_brains() -> impl IntoResponse {
+    match dispatch_family::status_view() {
+        Ok(dispatch) => (StatusCode::OK, Json(serde_json::json!({
+            "dispatch": dispatch,
+        })))
+        .into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn use_dispatch_brain(
+    Json(payload): Json<DispatchBrainUseRequest>,
+) -> impl IntoResponse {
+    match dispatch_family::use_model(payload.model.trim()) {
+        Ok(()) => match dispatch_family::status_view() {
+            Ok(dispatch) => (StatusCode::OK, Json(dispatch)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
     }
 }
 
@@ -729,6 +758,17 @@ pub struct PolicyExplainRequest {
     pub task: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PolicyAddRequest {
+    pub name: String,
+    pub scope: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PolicyResolveRequest {
+    pub approved: bool,
+}
+
 pub async fn explain_policy(Json(payload): Json<PolicyExplainRequest>) -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => {
@@ -750,10 +790,103 @@ pub async fn explain_policy(Json(payload): Json<PolicyExplainRequest>) -> impl I
     }
 }
 
-pub async fn remote_status() -> impl IntoResponse {
+pub async fn enable_policy(Path(name): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = PolicyManager::new(config, None);
+            match manager.enable(&name).await {
+                Ok(()) => StatusCode::NO_CONTENT.into_response(),
+                Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+            }
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn disable_policy(Path(name): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = PolicyManager::new(config, None);
+            match manager.disable(&name).await {
+                Ok(()) => StatusCode::NO_CONTENT.into_response(),
+                Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+            }
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn add_policy(Json(payload): Json<PolicyAddRequest>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = PolicyManager::new(config, None);
+            let scope = match payload.scope.trim().to_ascii_lowercase().as_str() {
+                "user" => PolicyScope::User,
+                "workspace" => PolicyScope::Workspace,
+                "project" => PolicyScope::Project,
+                _ => {
+                    return json_error_response(
+                        StatusCode::BAD_REQUEST,
+                        "scope must be user, workspace, or project",
+                    );
+                }
+            };
+            match manager.add(payload.name.trim(), scope).await {
+                Ok(path) => (StatusCode::CREATED, Json(serde_json::json!({
+                    "name": payload.name.trim(),
+                    "scope": payload.scope.trim(),
+                    "path": path,
+                })))
+                .into_response(),
+                Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+            }
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn remove_policy(Path(name): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = PolicyManager::new(config, None);
+            match manager.remove(&name).await {
+                Ok(path) => (StatusCode::OK, Json(serde_json::json!({
+                    "name": name,
+                    "path": path,
+                })))
+                .into_response(),
+                Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+            }
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_approvals() -> impl IntoResponse {
+    (StatusCode::OK, Json(approvals::list_pending())).into_response()
+}
+
+pub async fn resolve_approval(
+    Path(id): Path<String>,
+    Json(payload): Json<PolicyResolveRequest>,
+) -> impl IntoResponse {
+    if approvals::resolve(&id, payload.approved) {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        json_error_response(StatusCode::NOT_FOUND, "Approval not found")
+    }
+}
+
+pub async fn remote_status(State(state): State<AppState>) -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => match RemoteManager::new(config).status() {
-            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Ok(mut status) => match current_node_load(&state).await {
+                Ok(load) => {
+                    status.load = Some(load);
+                    (StatusCode::OK, Json(status)).into_response()
+                }
+                Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+            },
             Err(error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": error.to_string() })),
@@ -766,6 +899,18 @@ pub async fn remote_status() -> impl IntoResponse {
         )
             .into_response(),
     }
+}
+
+async fn current_node_load(state: &AppState) -> anyhow::Result<NodeLoadSnapshot> {
+    let queue = state.db.pending_tasks().queue_stats().await?;
+    let outcomes = state.db.tasks().recent_outcome_stats(25).await?;
+    Ok(NodeLoadSnapshot {
+        pending_tasks: queue.pending,
+        running_tasks: queue.running,
+        recent_failures: outcomes.recent_failures,
+        recent_successes: outcomes.recent_successes,
+        recent_avg_duration_ms: outcomes.recent_avg_duration_ms,
+    })
 }
 
 pub async fn remote_nodes() -> impl IntoResponse {

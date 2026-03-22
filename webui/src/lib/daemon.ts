@@ -48,6 +48,45 @@ export interface ServiceStatus {
   details: Record<string, string>;
 }
 
+export interface NodeLoadSnapshot {
+  pending_tasks: number;
+  running_tasks: number;
+  recent_failures: number;
+  recent_successes: number;
+  recent_avg_duration_ms?: number | null;
+}
+
+export interface RemoteStatus {
+  enabled: boolean;
+  node: {
+    node_id: string;
+    node_name: string;
+    public_key: string;
+  };
+  profile: {
+    capabilities: string[];
+    tags: string[];
+    execution_role: NodeRole;
+  };
+  paired_nodes: number;
+  load?: NodeLoadSnapshot | null;
+}
+
+export interface RemotePeer {
+  identity: {
+    node_id: string;
+    node_name: string;
+    public_key: string;
+  };
+  profile: {
+    capabilities: string[];
+    tags: string[];
+    execution_role: NodeRole;
+  };
+  target: string;
+  trusted: boolean;
+}
+
 export interface ExtensionRecord {
   id: string;
   name: string;
@@ -70,6 +109,43 @@ export interface DaemonConfig {
   tls_enabled: boolean;
   tls_cert_path: string;
   tls_key_path: string;
+}
+
+export interface PolicySummary {
+  id: string;
+  path: string;
+  active: boolean;
+  scope: string;
+}
+
+export interface PolicyExplainReport {
+  task: string;
+  domain: string;
+  active_policies: string[];
+  matched_hints: string[];
+  system_prefix: string;
+  system_suffix: string;
+  verification_commands: string[];
+  preferred_providers: string[];
+  preferred_tools: string[];
+  memory_tags: string[];
+}
+
+export interface ApprovalRequest {
+  id: string;
+  task_id: string;
+  tool_name: string;
+  risk_tier: number;
+  summary: string;
+  created_at: number;
+  auto_resolve_after_secs?: number | null;
+}
+
+export interface DispatchBrainView {
+  root: string;
+  active?: string | null;
+  installed: string[];
+  source?: string | null;
 }
 
 export interface CreateTaskResponse {
@@ -205,6 +281,17 @@ export class RoveDaemonClient {
     return this.request<ServiceStatus[]>('/v1/services');
   }
 
+  async listBrains(): Promise<{ dispatch: DispatchBrainView }> {
+    return this.request<{ dispatch: DispatchBrainView }>('/v1/brains');
+  }
+
+  async useDispatchBrain(model: string): Promise<DispatchBrainView> {
+    return this.request<DispatchBrainView>('/v1/brains/dispatch/use', {
+      method: 'POST',
+      body: JSON.stringify({ model }),
+    });
+  }
+
   async setServiceEnabled(name: string, enabled: boolean): Promise<ServiceStatus> {
     return this.request<ServiceStatus>(`/v1/services/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
       method: 'POST',
@@ -225,6 +312,67 @@ export class RoveDaemonClient {
   async removeExtension(kind: string, name: string): Promise<void> {
     await this.request<void>(`/v1/extensions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`, {
       method: 'DELETE',
+    });
+  }
+
+  async listPolicies(): Promise<PolicySummary[]> {
+    return this.request<PolicySummary[]>('/v1/policies');
+  }
+
+  async explainPolicy(task: string): Promise<PolicyExplainReport> {
+    return this.request<PolicyExplainReport>('/v1/policies/explain', {
+      method: 'POST',
+      body: JSON.stringify({ task }),
+    });
+  }
+
+  async setPolicyEnabled(name: string, enabled: boolean): Promise<void> {
+    await this.request<void>(`/v1/policies/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
+      method: 'POST',
+    });
+  }
+
+  async addPolicy(name: string, scope: 'user' | 'workspace' | 'project'): Promise<{ path: string }> {
+    return this.request<{ path: string }>('/v1/policies', {
+      method: 'POST',
+      body: JSON.stringify({ name, scope }),
+    });
+  }
+
+  async removePolicy(name: string): Promise<void> {
+    await this.request<void>(`/v1/policies/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async listRemoteNodes(): Promise<RemotePeer[]> {
+    return this.request<RemotePeer[]>('/v1/remote/nodes');
+  }
+
+  async remoteStatus(): Promise<RemoteStatus> {
+    return this.request<RemoteStatus>('/v1/remote/status');
+  }
+
+  async trustRemoteNode(name: string): Promise<void> {
+    await this.request<void>(`/v1/remote/nodes/${encodeURIComponent(name)}/trust`, {
+      method: 'POST',
+    });
+  }
+
+  async unpairRemoteNode(name: string): Promise<void> {
+    await this.request<void>(`/v1/remote/nodes/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async listApprovals(): Promise<ApprovalRequest[]> {
+    return this.request<ApprovalRequest[]>('/v1/approvals');
+  }
+
+  async resolveApproval(id: string, approved: boolean): Promise<void> {
+    await this.request<void>(`/v1/approvals/${encodeURIComponent(id)}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ approved }),
     });
   }
 

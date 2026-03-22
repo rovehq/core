@@ -157,6 +157,7 @@ pub struct NodeIdentity {
 
 /// Execution profile for a remote node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeExecutionRole {
     Full,
     ExecutorOnly,
@@ -168,6 +169,16 @@ pub struct NodeProfile {
     pub capabilities: Vec<String>,
     pub tags: Vec<String>,
     pub execution_role: NodeExecutionRole,
+}
+
+/// Lightweight runtime load advertised by a remote node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct NodeLoadSnapshot {
+    pub pending_tasks: u64,
+    pub running_tasks: u64,
+    pub recent_failures: u64,
+    pub recent_successes: u64,
+    pub recent_avg_duration_ms: Option<i64>,
 }
 
 /// Envelope sent between remote daemons for coordinated execution.

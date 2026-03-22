@@ -2,6 +2,7 @@ use anyhow::Result;
 use tokio::io::AsyncBufReadExt;
 
 use crate::config::metadata::{APP_DISPLAY_NAME, VERSION};
+use crate::storage::Database;
 use crate::storage::pending_tasks::PendingTaskStatus;
 
 use super::bootstrap;
@@ -17,13 +18,13 @@ pub async fn run() -> Result<()> {
     println!("{BLUE}{} v{}{RESET}", APP_DISPLAY_NAME, VERSION);
     println!("  {DIM}Type a task, or /help for commands. Ctrl+C to exit.{RESET}");
     println!();
-    println!("  {DIM}Initializing daemon (gateway + agent)...{RESET}");
+    println!("  {DIM}Starting local daemon session...{RESET}");
 
     let (_agent, database, gateway) = bootstrap::init_daemon().await?;
     gateway.clone().start();
 
-    println!("  {GREEN}Gateway poll loop started{RESET}");
-    println!("  {GREEN}Agent ready{RESET}");
+    println!("  {GREEN}Daemon ready{RESET}");
+    println!("  {DIM}Commands: /help, /status, /history, /quit{RESET}");
     println!();
 
     let stdin = tokio::io::stdin();
@@ -45,6 +46,8 @@ pub async fn run() -> Result<()> {
             "/quit" | "/exit" | "/q" => break,
             "/help" | "/h" => print_help(),
             "/status" => status::show()?,
+            "/history" => print_history(&database).await?,
+            "quit" | "exit" => break,
             _ => run_task(&database, &gateway, &input).await?,
         }
     }
@@ -59,6 +62,7 @@ fn print_help() {
     println!();
     println!("  Commands:");
     println!("    /status    Show system status");
+    println!("    /history   Show recent task history");
     println!("    /help      Show this help");
     println!("    /quit      Exit interactive mode");
     println!();
@@ -71,7 +75,7 @@ async fn run_task(
     gateway: &std::sync::Arc<crate::api::gateway::Gateway>,
     input: &str,
 ) -> Result<()> {
-    println!("  Processing...");
+    println!("  {DIM}Working...{RESET}");
     let task_id = match gateway.submit_cli(input, None).await {
         Ok(task_id) => task_id,
         Err(error) => {
@@ -86,7 +90,7 @@ async fn run_task(
         if let Ok(Some(task)) = repository.get_task(&task_id).await {
             match task.status {
                 PendingTaskStatus::Done => {
-                    println!("  {GREEN}Task completed{RESET}");
+                    print_task_answer(database, &task_id).await?;
                     break;
                 }
                 PendingTaskStatus::Failed => {
@@ -99,4 +103,53 @@ async fn run_task(
     }
 
     Ok(())
+}
+
+async fn print_history(database: &std::sync::Arc<Database>) -> Result<()> {
+    let tasks = database.tasks().get_recent_tasks(8).await?;
+    println!();
+    if tasks.is_empty() {
+        println!("  {DIM}No task history yet.{RESET}");
+        println!();
+        return Ok(());
+    }
+
+    println!("  Recent tasks");
+    for task in tasks {
+        let status = match task.status {
+            crate::storage::TaskStatus::Pending => "pending",
+            crate::storage::TaskStatus::Running => "running",
+            crate::storage::TaskStatus::Completed => "done",
+            crate::storage::TaskStatus::Failed => "failed",
+        };
+        println!(
+            "  - [{}] {}",
+            status,
+            single_line(&task.input, 72)
+        );
+    }
+    println!();
+    Ok(())
+}
+
+async fn print_task_answer(database: &std::sync::Arc<Database>, task_id: &str) -> Result<()> {
+    let answer = database.tasks().get_latest_answer(task_id).await?;
+    println!("  {GREEN}Done{RESET}");
+    if let Some(answer) = answer {
+        println!();
+        for line in answer.lines() {
+            println!("  {}", line);
+        }
+    }
+    println!();
+    Ok(())
+}
+
+fn single_line(value: &str, max_len: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() <= max_len {
+        compact
+    } else {
+        format!("{}...", &compact[..max_len.saturating_sub(3)])
+    }
 }

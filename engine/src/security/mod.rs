@@ -1,3 +1,4 @@
+pub mod approvals;
 pub mod command_executor;
 pub mod crypto;
 pub mod fs_guard;
@@ -6,6 +7,7 @@ pub mod rate_limiter;
 pub mod risk_assessor;
 pub mod secrets;
 
+pub use approvals::ApprovalRequest;
 pub use command_executor::CommandExecutor;
 pub use crypto::CryptoModule;
 pub use fs_guard::FileSystemGuard;

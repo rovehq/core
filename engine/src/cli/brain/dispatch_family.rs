@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use serde::Serialize;
 
 const REQUIRED_FILES: &[&str] = &[
     "dispatch.onnx",
@@ -9,6 +10,14 @@ const REQUIRED_FILES: &[&str] = &[
     "dispatch_prototypes.json",
     "tokenizer.json",
 ];
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DispatchBrainView {
+    pub root: PathBuf,
+    pub active: Option<String>,
+    pub installed: Vec<String>,
+    pub source: Option<String>,
+}
 
 pub async fn install(model: &str, source: Option<&Path>) -> Result<()> {
     let source = resolve_source(model, source)?;
@@ -67,37 +76,28 @@ pub fn list() -> Result<()> {
 }
 
 pub fn status() -> Result<()> {
-    let root = dispatch_root()?;
-    let active = current_model_name(&root)?;
-    let models = installed_models(&root)?;
-    let active_path = active.as_ref().map(|model| root.join(model));
+    let view = status_view()?;
 
     println!("Dispatch Brain Status");
     println!();
-    println!("root: {}", root.display());
+    println!("root: {}", view.root.display());
     println!(
         "active: {}",
-        active.clone().unwrap_or_else(|| "not selected".to_string())
+        view.active
+            .clone()
+            .unwrap_or_else(|| "not selected".to_string())
     );
     println!(
         "source: {}",
-        active_path
-            .as_ref()
-            .filter(|path| path.exists())
-            .map(|path| path.display().to_string())
-            .or_else(|| {
-                std::env::var("ROVE_DISPATCH_ARTIFACTS")
-                    .ok()
-                    .filter(|path| !path.trim().is_empty())
-            })
+        view.source
             .unwrap_or_else(|| "not installed".to_string())
     );
     println!(
         "installed: {}",
-        if models.is_empty() {
+        if view.installed.is_empty() {
             "none".to_string()
         } else {
-            models.join(", ")
+            view.installed.join(", ")
         }
     );
 
@@ -142,6 +142,29 @@ pub fn remove(model: &str) -> Result<()> {
 
     println!("Removed dispatch brain '{}'.", model);
     Ok(())
+}
+
+pub fn status_view() -> Result<DispatchBrainView> {
+    let root = dispatch_root()?;
+    let active = current_model_name(&root)?;
+    let installed = installed_models(&root)?;
+    let active_path = active.as_ref().map(|model| root.join(model));
+    let source = active_path
+        .as_ref()
+        .filter(|path| path.exists())
+        .map(|path| path.display().to_string())
+        .or_else(|| {
+            std::env::var("ROVE_DISPATCH_ARTIFACTS")
+                .ok()
+                .filter(|path| !path.trim().is_empty())
+        });
+
+    Ok(DispatchBrainView {
+        root,
+        active,
+        installed,
+        source,
+    })
 }
 
 fn dispatch_root() -> Result<PathBuf> {

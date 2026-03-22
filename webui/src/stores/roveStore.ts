@@ -3,13 +3,19 @@
 import { create } from 'zustand';
 
 import {
+  ApprovalRequest,
   AuthState,
   AuthStatus,
   DaemonConfig,
   DaemonError,
   DaemonHello,
   DaemonEvent,
+  DispatchBrainView,
   ExtensionRecord,
+  PolicyExplainReport,
+  PolicySummary,
+  RemotePeer,
+  RemoteStatus,
   RoveDaemonClient,
   ServiceStatus,
   TaskSummary,
@@ -53,6 +59,12 @@ interface RoveStore {
   tasks: TaskRecord[];
   services: ServiceStatus[];
   extensions: ExtensionRecord[];
+  brains: { dispatch: DispatchBrainView } | null;
+  policies: PolicySummary[];
+  policyExplain: PolicyExplainReport | null;
+  remoteStatus: RemoteStatus | null;
+  remoteNodes: RemotePeer[];
+  approvals: ApprovalRequest[];
   ws: WebSocketState;
   initialize: () => Promise<void>;
   setupPassword: (password: string, nodeName: string, mode: string) => Promise<boolean>;
@@ -67,6 +79,18 @@ interface RoveStore {
   refreshServices: () => Promise<void>;
   refreshExtensions: () => Promise<void>;
   refreshConfig: () => Promise<void>;
+  refreshBrains: () => Promise<void>;
+  refreshPolicies: () => Promise<void>;
+  explainPolicy: (task: string) => Promise<boolean>;
+  setPolicyEnabled: (name: string, enabled: boolean) => Promise<boolean>;
+  addPolicy: (name: string, scope: 'user' | 'workspace' | 'project') => Promise<boolean>;
+  removePolicy: (name: string) => Promise<boolean>;
+  refreshRemote: () => Promise<void>;
+  trustRemoteNode: (name: string) => Promise<boolean>;
+  unpairRemoteNode: (name: string) => Promise<boolean>;
+  refreshApprovals: () => Promise<void>;
+  resolveApproval: (id: string, approved: boolean) => Promise<boolean>;
+  useDispatchBrain: (model: string) => Promise<boolean>;
   setServiceEnabled: (name: string, enabled: boolean) => Promise<boolean>;
   setExtensionEnabled: (kind: string, name: string, enabled: boolean) => Promise<boolean>;
   removeExtension: (kind: string, name: string) => Promise<boolean>;
@@ -264,6 +288,7 @@ function handleEvent(event: DaemonEvent, get: () => RoveStore) {
       void get().initialize();
       return;
     case 'approval.required':
+      void get().refreshApprovals();
       useRoveStore.setState({
         error: `Approval required for task ${event.task_id} (${event.risk})`,
       });
@@ -296,6 +321,12 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
   tasks: [],
   services: [],
   extensions: [],
+  brains: null,
+  policies: [],
+  policyExplain: null,
+  remoteStatus: null,
+  remoteNodes: [],
+  approvals: [],
   ws: { connected: false, connecting: false, error: null },
 
   initialize: async () => {
@@ -317,16 +348,26 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
 
       if (storedToken && (nextState === 'unlocked' || nextState === 'reauth_required')) {
         const authStatus = await daemon.authStatus();
-        const [services, extensions, config] = await Promise.all([
+        const [services, extensions, config, brains, policies, remoteStatus, remoteNodes, approvals] = await Promise.all([
           daemon.listServices(),
           daemon.listExtensions(),
           daemon.getConfig(),
+          daemon.listBrains(),
+          daemon.listPolicies(),
+          daemon.remoteStatus(),
+          daemon.listRemoteNodes(),
+          daemon.listApprovals(),
         ]);
         set({
           authStatus,
           services,
           extensions,
           config,
+          brains,
+          policies,
+          remoteStatus,
+          remoteNodes,
+          approvals,
           appState: deriveAppState(authStatus.state, true),
         });
         await get().refreshTasks();
@@ -340,6 +381,12 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           config: null,
           services: [],
           extensions: [],
+          brains: null,
+          policies: [],
+          policyExplain: null,
+          remoteStatus: null,
+          remoteNodes: [],
+          approvals: [],
           tasks: nextState === 'locked' || nextState === 'uninitialized' ? [] : get().tasks,
           ws: { connected: false, connecting: false, error: null },
         });
@@ -354,6 +401,12 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         config: null,
         services: [],
         extensions: [],
+        brains: null,
+        policies: [],
+        policyExplain: null,
+        remoteStatus: null,
+        remoteNodes: [],
+        approvals: [],
         appState: 'offline',
         error: error instanceof Error ? error.message : 'Unable to reach daemon',
         ws: { connected: false, connecting: false, error: null },
@@ -420,6 +473,12 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         config: null,
         services: [],
         extensions: [],
+        brains: null,
+        policies: [],
+        policyExplain: null,
+        remoteStatus: null,
+        remoteNodes: [],
+        approvals: [],
         appState: 'locked',
         tasks: [],
         ws: { connected: false, connecting: false, error: null },
@@ -492,6 +551,133 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
       set({ config, error: null });
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Unable to load daemon config' });
+    }
+  },
+
+  refreshBrains: async () => {
+    try {
+      const brains = await daemon.listBrains();
+      set({ brains, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load brains' });
+    }
+  },
+
+  refreshPolicies: async () => {
+    try {
+      const policies = await daemon.listPolicies();
+      set({ policies, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load policies' });
+    }
+  },
+
+  explainPolicy: async (task) => {
+    try {
+      const policyExplain = await daemon.explainPolicy(task);
+      set({ policyExplain, error: null });
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to explain policy' });
+      return false;
+    }
+  },
+
+  setPolicyEnabled: async (name, enabled) => {
+    try {
+      await daemon.setPolicyEnabled(name, enabled);
+      await get().refreshPolicies();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to update policy state' });
+      return false;
+    }
+  },
+
+  addPolicy: async (name, scope) => {
+    try {
+      await daemon.addPolicy(name, scope);
+      await get().refreshPolicies();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to create policy' });
+      return false;
+    }
+  },
+
+  removePolicy: async (name) => {
+    try {
+      await daemon.removePolicy(name);
+      await get().refreshPolicies();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to remove policy' });
+      return false;
+    }
+  },
+
+  refreshRemote: async () => {
+    try {
+      const [remoteStatus, remoteNodes] = await Promise.all([
+        daemon.remoteStatus(),
+        daemon.listRemoteNodes(),
+      ]);
+      set({ remoteStatus, remoteNodes, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load remote state' });
+    }
+  },
+
+  trustRemoteNode: async (name) => {
+    try {
+      await daemon.trustRemoteNode(name);
+      await get().refreshRemote();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to trust remote node' });
+      return false;
+    }
+  },
+
+  unpairRemoteNode: async (name) => {
+    try {
+      await daemon.unpairRemoteNode(name);
+      await get().refreshRemote();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to unpair remote node' });
+      return false;
+    }
+  },
+
+  refreshApprovals: async () => {
+    try {
+      const approvals = await daemon.listApprovals();
+      set({ approvals, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load approvals' });
+    }
+  },
+
+  resolveApproval: async (id, approved) => {
+    try {
+      await daemon.resolveApproval(id, approved);
+      await get().refreshApprovals();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to resolve approval' });
+      return false;
+    }
+  },
+
+  useDispatchBrain: async (model) => {
+    try {
+      const dispatch = await daemon.useDispatchBrain(model);
+      set((state) => ({ brains: { ...(state.brains ?? { dispatch }), dispatch }, error: null }));
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to switch dispatch brain' });
+      return false;
     }
   },
 

@@ -1,5 +1,5 @@
 mod check;
-mod dispatch_family;
+pub(crate) mod dispatch_family;
 mod guide;
 mod install;
 mod list;

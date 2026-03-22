@@ -109,6 +109,13 @@ pub struct TaskRepository {
     pool: SqlitePool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TaskOutcomeStats {
+    pub recent_failures: u64,
+    pub recent_successes: u64,
+    pub recent_avg_duration_ms: Option<i64>,
+}
+
 impl TaskRepository {
     /// Create a new task repository
     pub fn new(pool: SqlitePool) -> Self {
@@ -279,6 +286,42 @@ impl TaskRepository {
                 }
             })
             .collect())
+    }
+
+    pub async fn recent_outcome_stats(&self, limit: i64) -> Result<TaskOutcomeStats> {
+        let rows = sqlx::query(
+            "SELECT status, duration_ms FROM tasks WHERE status IN ('completed', 'failed') ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch recent task outcome stats")?;
+
+        let mut recent_failures = 0_u64;
+        let mut recent_successes = 0_u64;
+        let mut duration_total = 0_i64;
+        let mut duration_count = 0_i64;
+
+        for row in rows {
+            match row.get::<String, _>("status").as_str() {
+                "failed" => recent_failures += 1,
+                "completed" => {
+                    recent_successes += 1;
+                    if let Some(duration_ms) = row.get::<Option<i64>, _>("duration_ms") {
+                        duration_total += duration_ms.max(0);
+                        duration_count += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(TaskOutcomeStats {
+            recent_failures,
+            recent_successes,
+            recent_avg_duration_ms: (duration_count > 0)
+                .then_some(duration_total / duration_count),
+        })
     }
 
     /// Add a step to a task

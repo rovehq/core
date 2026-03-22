@@ -67,6 +67,12 @@ pub struct PendingTask {
     pub team_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PendingQueueStats {
+    pub pending: u64,
+    pub running: u64,
+}
+
 /// Pending task repository for database operations
 pub struct PendingTaskRepository {
     pool: SqlitePool,
@@ -284,6 +290,27 @@ impl PendingTaskRepository {
             workspace: r.get("workspace"),
             team_id: r.get("team_id"),
         }))
+    }
+
+    pub async fn queue_stats(&self) -> Result<PendingQueueStats> {
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_tasks WHERE status = 'pending'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("Failed to count pending tasks")?;
+
+        let running: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_tasks WHERE status = 'running'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("Failed to count running tasks")?;
+
+        Ok(PendingQueueStats {
+            pending: pending.max(0) as u64,
+            running: running.max(0) as u64,
+        })
     }
 
     /// Recovery: Reset all running tasks to pending (crash recovery)

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +15,7 @@ use crate::runtime::{
     FilesystemTool, McpSpawner, NativeRuntime, TerminalTool, VisionTool, WasmRuntime,
 };
 use crate::security::command_executor::CommandExecutor;
+use crate::security::approvals;
 use crate::security::injection_detector::InjectionDetector;
 use crate::security::risk_assessor::{
     classify_terminal_command, Operation, OperationSource, RiskAssessor, RiskTier,
@@ -415,14 +417,39 @@ impl ToolRegistry {
 
         match tier {
             RiskTier::Tier0 => Ok(()),
-            RiskTier::Tier1 => self.confirm_tier1(task_id, tool_name).await,
-            RiskTier::Tier2 => self.confirm_tier2(task_id, tool_name).await,
+            RiskTier::Tier1 => self.confirm_tier1(task_id, tool_name, source).await,
+            RiskTier::Tier2 => self.confirm_tier2(task_id, tool_name, source).await,
         }
     }
 
-    async fn confirm_tier1(&self, _task_id: &str, tool_name: &str) -> Result<(), EngineError> {
+    async fn confirm_tier1(
+        &self,
+        task_id: &str,
+        tool_name: &str,
+        source: &TaskSource,
+    ) -> Result<(), EngineError> {
         if !self.config.security.confirm_tier1 || self.config.security.max_risk_tier < 1 {
             return Ok(());
+        }
+
+        if should_use_daemon_approval(source) {
+            let approved = approvals::request_approval(
+                task_id,
+                tool_name,
+                1,
+                format!(
+                    "Approve Tier 1 operation `{tool_name}`. It will auto-approve after {} seconds.",
+                    self.config.security.confirm_tier1_delay
+                ),
+                Some(Duration::from_secs(self.config.security.confirm_tier1_delay)),
+                true,
+            )
+            .await;
+            return if approved {
+                Ok(())
+            } else {
+                Err(EngineError::OperationAbortedByUser)
+            };
         }
 
         println!("\n[Tier 1 Risk] The agent wants to run: {}", tool_name);
@@ -443,12 +470,36 @@ impl ToolRegistry {
         }
     }
 
-    async fn confirm_tier2(&self, _task_id: &str, tool_name: &str) -> Result<(), EngineError> {
+    async fn confirm_tier2(
+        &self,
+        task_id: &str,
+        tool_name: &str,
+        source: &TaskSource,
+    ) -> Result<(), EngineError> {
         if self.config.security.max_risk_tier < 2 {
             return Err(EngineError::OperationAbortedByUser);
         }
         if !self.config.security.require_explicit_tier2 {
             return Ok(());
+        }
+
+        if should_use_daemon_approval(source) {
+            let approved = approvals::request_approval(
+                task_id,
+                tool_name,
+                2,
+                format!(
+                    "Approve Tier 2 operation `{tool_name}`. Explicit approval is required."
+                ),
+                None,
+                false,
+            )
+            .await;
+            return if approved {
+                Ok(())
+            } else {
+                Err(EngineError::OperationAbortedByUser)
+            };
         }
 
         println!(
@@ -667,6 +718,10 @@ impl ToolRegistry {
             }
         }
     }
+}
+
+fn should_use_daemon_approval(source: &TaskSource) -> bool {
+    !matches!(source, TaskSource::Cli) || !std::io::stdin().is_terminal()
 }
 
 fn operation_source_from_task_source(source: &TaskSource) -> OperationSource {

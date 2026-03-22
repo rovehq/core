@@ -124,29 +124,23 @@ impl AgentDagExecutor {
         dependency_context: &str,
         route: Route,
     ) -> Result<Option<DagNodeExecution>> {
-        if !matches!(step.role, StepRole::Executor) {
-            return Ok(None);
-        }
         if !self.config.ws_client.enabled || matches!(self.source, TaskSource::Remote(_)) {
             return Ok(None);
         }
 
         let prompt = build_remote_step_prompt(step, dependency_context);
         let manager = RemoteManager::new(self.config.as_ref().clone());
-        let execution_plan = manager
-            .plan_execution_bundle(&prompt, &self.policy_after_write_commands)
-            .await?;
+        let execution_plan = if matches!(step.role, StepRole::Executor) {
+            manager
+                .plan_execution_bundle(&prompt, &self.policy_after_write_commands)
+                .await?
+        } else {
+            None
+        };
         let result = match manager
             .send_with_options(
                 &prompt,
-                crate::remote::RemoteSendOptions {
-                    node: Some("auto".to_string()),
-                    required_capabilities: vec!["remote-execution".to_string()],
-                    allow_executor_only: true,
-                    prefer_executor_only: true,
-                    execution_plan,
-                    ..crate::remote::RemoteSendOptions::default()
-                },
+                remote_send_options_for_step(step, execution_plan),
             )
             .await
         {
@@ -442,7 +436,18 @@ fn step_role_to_subagent_role(role: &StepRole) -> SubagentRole {
 }
 
 fn build_remote_step_prompt(step: &PlanStep, dependency_context: &str) -> String {
-    let mut parts = vec![step.description.clone()];
+    let role_prefix = match step.role {
+        StepRole::Researcher => {
+            "Remote researcher task. Stay read-only, gather facts, and return concise findings."
+        }
+        StepRole::Executor => {
+            "Remote executor task. Perform the requested system/workspace action and summarize the result."
+        }
+        StepRole::Verifier => {
+            "Remote verifier task. Validate the prior work, stay read-only, and explain pass/fail clearly."
+        }
+    };
+    let mut parts = vec![role_prefix.to_string(), step.description.clone()];
     if !dependency_context.trim().is_empty() {
         parts.push(format!("Dependency context:\n{}", dependency_context.trim()));
     }
@@ -450,6 +455,38 @@ fn build_remote_step_prompt(step: &PlanStep, dependency_context: &str) -> String
         parts.push(format!("Expected outcome: {}", step.expected_outcome.trim()));
     }
     parts.join("\n\n")
+}
+
+fn remote_send_options_for_step(
+    step: &PlanStep,
+    execution_plan: Option<sdk::RemoteExecutionPlan>,
+) -> crate::remote::RemoteSendOptions {
+    match step.role {
+        StepRole::Researcher => crate::remote::RemoteSendOptions {
+            node: Some("auto".to_string()),
+            required_capabilities: vec!["remote-execution".to_string()],
+            allow_executor_only: false,
+            prefer_executor_only: false,
+            execution_plan: None,
+            ..crate::remote::RemoteSendOptions::default()
+        },
+        StepRole::Verifier => crate::remote::RemoteSendOptions {
+            node: Some("auto".to_string()),
+            required_capabilities: vec!["remote-execution".to_string()],
+            allow_executor_only: false,
+            prefer_executor_only: false,
+            execution_plan: None,
+            ..crate::remote::RemoteSendOptions::default()
+        },
+        StepRole::Executor => crate::remote::RemoteSendOptions {
+            node: Some("auto".to_string()),
+            required_capabilities: vec!["remote-execution".to_string()],
+            allow_executor_only: true,
+            prefer_executor_only: true,
+            execution_plan,
+            ..crate::remote::RemoteSendOptions::default()
+        },
+    }
 }
 
 fn remote_event_payload(
@@ -631,6 +668,50 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    async fn build_test_executor(
+        temp: &TempDir,
+        config: Config,
+        parent_task_id: Uuid,
+        domain: TaskDomain,
+    ) -> (Arc<TaskRepository>, AgentDagExecutor) {
+        let db_path = temp.path().join(format!("{}.db", parent_task_id));
+        let db = Database::new(&db_path).await.expect("database");
+        let pool = db.pool().clone();
+        let task_repo = Arc::new(TaskRepository::new(pool));
+        task_repo
+            .create_task(&parent_task_id, "remote dag parent")
+            .await
+            .expect("create parent task");
+
+        let llm_config = Arc::new(LLMConfig {
+            default_provider: "mock".to_string(),
+            sensitivity_threshold: 0.7,
+            complexity_threshold: 0.8,
+            ollama: Default::default(),
+            openai: Default::default(),
+            anthropic: Default::default(),
+            gemini: Default::default(),
+            nvidia_nim: Default::default(),
+            custom_providers: vec![],
+        });
+        let router = Arc::new(LLMRouter::new(vec![], llm_config));
+        let executor = AgentDagExecutor {
+            router,
+            task_repo: task_repo.clone(),
+            tools: Arc::new(ToolRegistry::empty()),
+            memory_system: None,
+            workspace_locks: Arc::new(WorkspaceLocks::new()),
+            parent_task_id,
+            source: TaskSource::Cli,
+            domain,
+            complexity: Complexity::Medium,
+            sensitive: false,
+            policy_after_write_commands: Vec::new(),
+            config: Arc::new(config),
+        };
+        (task_repo, executor)
+    }
+
     fn schema(name: &str, description: &str, domains: &[&str]) -> ToolSchema {
         ToolSchema {
             name: name.to_string(),
@@ -679,15 +760,7 @@ mod tests {
     #[tokio::test]
     async fn executor_step_can_delegate_to_remote_node() {
         let temp = TempDir::new().expect("temp dir");
-        let db_path = temp.path().join("test.db");
-        let db = Database::new(&db_path).await.expect("database");
-        let pool = db.pool().clone();
-        let task_repo = Arc::new(TaskRepository::new(pool));
         let parent_task_id = Uuid::new_v4();
-        task_repo
-            .create_task(&parent_task_id, "remote dag parent")
-            .await
-            .expect("create parent task");
 
         let mut config = Config::default();
         config.core.workspace = temp.path().join("workspace");
@@ -725,32 +798,8 @@ mod tests {
             .expect("pair");
         manager.trust("office-mac").expect("trust");
 
-        let llm_config = Arc::new(LLMConfig {
-            default_provider: "mock".to_string(),
-            sensitivity_threshold: 0.7,
-            complexity_threshold: 0.8,
-            ollama: Default::default(),
-            openai: Default::default(),
-            anthropic: Default::default(),
-            gemini: Default::default(),
-            nvidia_nim: Default::default(),
-            custom_providers: vec![],
-        });
-        let router = Arc::new(LLMRouter::new(vec![], llm_config));
-        let executor = AgentDagExecutor {
-            router,
-            task_repo: task_repo.clone(),
-            tools: Arc::new(ToolRegistry::empty()),
-            memory_system: None,
-            workspace_locks: Arc::new(WorkspaceLocks::new()),
-            parent_task_id,
-            source: TaskSource::Cli,
-            domain: TaskDomain::Code,
-            complexity: Complexity::Medium,
-            sensitive: false,
-            policy_after_write_commands: Vec::new(),
-            config: Arc::new(config),
-        };
+        let (task_repo, executor) =
+            build_test_executor(&temp, config, parent_task_id, TaskDomain::Code).await;
         let step = PlanStep {
             id: "step_1".to_string(),
             order: 1,
@@ -771,8 +820,15 @@ mod tests {
 
         assert_eq!(execution.output, "remote executor answer");
         let requests = server.received_requests().await.expect("received requests");
+        let execute_request = requests
+            .iter()
+            .find(|request| {
+                request.method.as_str() == "POST"
+                    && request.url.path() == "/api/v1/remote/execute"
+            })
+            .expect("remote execute request");
         let request_body: serde_json::Value =
-            serde_json::from_slice(&requests[0].body).expect("request body");
+            serde_json::from_slice(&execute_request.body).expect("request body");
         assert_eq!(
             request_body
                 .get("plan")
@@ -788,5 +844,165 @@ mod tests {
             .expect("events");
         assert!(events.iter().any(|event| event.event_type == "remote_delegate"));
         assert!(events.iter().any(|event| event.event_type == "remote_result"));
+    }
+
+    #[tokio::test]
+    async fn researcher_step_can_delegate_to_remote_full_node() {
+        let temp = TempDir::new().expect("temp dir");
+        let parent_task_id = Uuid::new_v4();
+
+        let mut config = Config::default();
+        config.core.workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&config.core.workspace).expect("workspace");
+        config.core.data_dir = temp.path().join("data");
+        config.ws_client.enabled = true;
+        config.ws_client.auth_token = Some("remote-token".to_string());
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/remote/execute"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "task_id": "remote-research-step",
+                "status": "completed",
+                "answer": "remote research answer",
+                "provider": "ollama",
+                "duration_ms": 7,
+                "message": null
+            })))
+            .mount(&server)
+            .await;
+
+        let manager = RemoteManager::new(config.clone());
+        manager
+            .pair(
+                "research-mac",
+                Some(&server.uri()),
+                None,
+                false,
+                &["workspace".to_string()],
+                &["remote-execution".to_string()],
+            )
+            .await
+            .expect("pair");
+        manager.trust("research-mac").expect("trust");
+
+        let (_task_repo, executor) =
+            build_test_executor(&temp, config, parent_task_id, TaskDomain::General).await;
+        let step = PlanStep {
+            id: "step_research".to_string(),
+            order: 1,
+            step_type: StepType::Research,
+            role: StepRole::Researcher,
+            parallel_safe: true,
+            route_policy: crate::conductor::RoutePolicy::Inherit,
+            dependencies: Vec::new(),
+            description: "inspect the workspace and summarize where test files live".to_string(),
+            expected_outcome: "List of candidate test file locations".to_string(),
+        };
+
+        let execution = executor
+            .try_remote_execute(&step, "", Route::Local)
+            .await
+            .expect("delegate result")
+            .expect("remote delegation should occur");
+
+        assert_eq!(execution.output, "remote research answer");
+        let requests = server.received_requests().await.expect("received requests");
+        let execute_request = requests
+            .iter()
+            .find(|request| {
+                request.method.as_str() == "POST"
+                    && request.url.path() == "/api/v1/remote/execute"
+            })
+            .expect("remote execute request");
+        let request_body: serde_json::Value =
+            serde_json::from_slice(&execute_request.body).expect("request body");
+        assert!(
+            request_body
+                .get("plan")
+                .map(serde_json::Value::is_null)
+                .unwrap_or(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn verifier_step_can_delegate_to_remote_full_node() {
+        let temp = TempDir::new().expect("temp dir");
+        let parent_task_id = Uuid::new_v4();
+
+        let mut config = Config::default();
+        config.core.workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&config.core.workspace).expect("workspace");
+        config.core.data_dir = temp.path().join("data");
+        config.ws_client.enabled = true;
+        config.ws_client.auth_token = Some("remote-token".to_string());
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/remote/execute"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "task_id": "remote-verify-step",
+                "status": "completed",
+                "answer": "remote verifier answer",
+                "provider": "ollama",
+                "duration_ms": 6,
+                "message": null
+            })))
+            .mount(&server)
+            .await;
+
+        let manager = RemoteManager::new(config.clone());
+        manager
+            .pair(
+                "verify-mac",
+                Some(&server.uri()),
+                None,
+                false,
+                &["workspace".to_string()],
+                &["remote-execution".to_string()],
+            )
+            .await
+            .expect("pair");
+        manager.trust("verify-mac").expect("trust");
+
+        let (_task_repo, executor) =
+            build_test_executor(&temp, config, parent_task_id, TaskDomain::General).await;
+        let step = PlanStep {
+            id: "step_verify".to_string(),
+            order: 1,
+            step_type: StepType::Verify,
+            role: StepRole::Verifier,
+            parallel_safe: true,
+            route_policy: crate::conductor::RoutePolicy::Inherit,
+            dependencies: Vec::new(),
+            description: "verify whether test.txt exists and report the result".to_string(),
+            expected_outcome: "Verification report".to_string(),
+        };
+
+        let execution = executor
+            .try_remote_execute(&step, "", Route::Local)
+            .await
+            .expect("delegate result")
+            .expect("remote delegation should occur");
+
+        assert_eq!(execution.output, "remote verifier answer");
+        let requests = server.received_requests().await.expect("received requests");
+        let execute_request = requests
+            .iter()
+            .find(|request| {
+                request.method.as_str() == "POST"
+                    && request.url.path() == "/api/v1/remote/execute"
+            })
+            .expect("remote execute request");
+        let request_body: serde_json::Value =
+            serde_json::from_slice(&execute_request.body).expect("request body");
+        assert!(
+            request_body
+                .get("plan")
+                .map(serde_json::Value::is_null)
+                .unwrap_or(true)
+        );
     }
 }

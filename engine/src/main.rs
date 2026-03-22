@@ -215,6 +215,7 @@ fn console_log_level(cli: &Cli) -> LevelFilter {
     }
 
     match &cli.command {
+        None => LevelFilter::ERROR,
         Some(Command::Task {
             view: rove_engine::cli::TaskView::Logs,
             ..

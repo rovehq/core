@@ -17,7 +17,8 @@ use crate::config::Config;
 use crate::policy::{infer_domain, PolicyExplainReport, PolicyManager};
 use crate::secrets::SecretManager;
 use sdk::{
-    NodeExecutionRole, NodeIdentity, NodeProfile, RemoteEnvelope, RemoteExecutionPlan,
+    NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, RemoteEnvelope,
+    RemoteExecutionPlan,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,12 +30,13 @@ pub struct RemotePeer {
     pub auth_secret_key: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteStatus {
     pub enabled: bool,
     pub node: NodeIdentity,
     pub profile: NodeProfile,
     pub paired_nodes: usize,
+    pub load: Option<NodeLoadSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,6 +79,12 @@ struct SelectionContext {
     direct_executor_candidate: bool,
 }
 
+#[derive(Debug, Clone)]
+struct PeerSelectionCandidate {
+    peer: RemotePeer,
+    load: Option<NodeLoadSnapshot>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteTaskEvent {
     pub task_id: String,
@@ -104,6 +112,7 @@ impl RemoteManager {
             node: node.identity,
             profile: node.profile,
             paired_nodes: peers.len(),
+            load: None,
         })
     }
 
@@ -250,7 +259,7 @@ impl RemoteManager {
 
         let peers = self.load_peers()?;
         let selection = self.derive_selection_context(prompt);
-        let peer = self.resolve_peer(
+        let peer = self.resolve_peer_preview(
             &peers,
             prompt,
             &selection,
@@ -314,7 +323,9 @@ impl RemoteManager {
         let mut selection = self.derive_selection_context(prompt);
         self.enrich_selection_context_with_policy(prompt, &mut selection)
             .await;
-        let peer = self.resolve_peer(&peers, prompt, &selection, &options)?;
+        let peer = self
+            .resolve_peer(&peers, prompt, &selection, &options)
+            .await?;
         if !peer.trusted {
             bail!(
                 "Remote node '{}' is paired but not trusted. Run `rove remote trust {}` first.",
@@ -422,7 +433,7 @@ impl RemoteManager {
         })
     }
 
-    fn resolve_peer(
+    async fn resolve_peer(
         &self,
         peers: &[RemotePeer],
         prompt: &str,
@@ -445,7 +456,33 @@ impl RemoteManager {
             return Ok(peer.clone());
         }
 
-        self.select_peer(peers, prompt, selection, options)
+        self.select_peer(peers, prompt, selection, options).await
+    }
+
+    fn resolve_peer_preview(
+        &self,
+        peers: &[RemotePeer],
+        prompt: &str,
+        selection: &SelectionContext,
+        options: &RemoteSendOptions,
+    ) -> Result<RemotePeer> {
+        if let Some(node) = options
+            .node
+            .as_deref()
+            .filter(|node| !node.eq_ignore_ascii_case("auto"))
+        {
+            let Some(peer) = peers.iter().find(|peer| {
+                peer.identity.node_name.eq_ignore_ascii_case(node)
+                    || peer.target.eq_ignore_ascii_case(node)
+                    || peer.identity.node_id == node
+            }) else {
+                bail!("Remote node '{}' is not paired", node);
+            };
+            self.validate_peer_selection(peer, options)?;
+            return Ok(peer.clone());
+        }
+
+        self.select_peer_preview(peers, prompt, selection, options)
     }
 
     fn validate_peer_selection(&self, peer: &RemotePeer, options: &RemoteSendOptions) -> Result<()> {
@@ -490,7 +527,151 @@ impl RemoteManager {
         Ok(())
     }
 
-    fn select_peer(
+    async fn select_peer(
+        &self,
+        peers: &[RemotePeer],
+        prompt: &str,
+        selection: &SelectionContext,
+        options: &RemoteSendOptions,
+    ) -> Result<RemotePeer> {
+        let prompt_lower = prompt.to_ascii_lowercase();
+        let live_candidates = self
+            .load_peer_selection_candidates(peers)
+            .await;
+        let mut candidates = live_candidates
+            .into_iter()
+            .filter(|peer| peer.peer.trusted)
+            .filter(|peer| {
+                options.allow_executor_only
+                    || !matches!(peer.peer.profile.execution_role, NodeExecutionRole::ExecutorOnly)
+            })
+            .filter(|peer| {
+                options.required_tags.iter().all(|tag| {
+                    peer.peer
+                        .profile
+                        .tags
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(tag))
+                })
+            })
+            .filter(|peer| {
+                options.required_capabilities.iter().all(|capability| {
+                    peer.peer
+                        .profile
+                        .capabilities
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(capability))
+                })
+            })
+            .map(|peer| {
+                let mut score = 0_i64;
+                if prompt_lower.contains(&peer.peer.identity.node_name.to_ascii_lowercase()) {
+                    score += 100;
+                }
+                for tag in &peer.peer.profile.tags {
+                    if prompt_lower.contains(&tag.to_ascii_lowercase()) {
+                        score += 20;
+                    }
+                }
+                if let Some(workspace_name) = &selection.workspace_name {
+                    if peer.peer
+                        .profile
+                        .tags
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(workspace_name))
+                    {
+                        score += 35;
+                    }
+                }
+                if let Some(domain_tag) = &selection.domain_tag {
+                    if peer.peer
+                        .profile
+                        .tags
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(domain_tag))
+                    {
+                        score += 15;
+                    }
+                }
+                for tag in &selection.policy_tags {
+                    if peer.peer
+                        .profile
+                        .tags
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(tag))
+                    {
+                        score += 10;
+                    }
+                }
+                for capability in &selection.preferred_capabilities {
+                    if peer.peer
+                        .profile
+                        .capabilities
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(capability))
+                    {
+                        score += 18;
+                    }
+                }
+                let prefer_executor_only =
+                    options.prefer_executor_only || selection.direct_executor_candidate;
+                if prefer_executor_only {
+                    score += match peer.peer.profile.execution_role {
+                        NodeExecutionRole::ExecutorOnly => 25,
+                        NodeExecutionRole::Full => 5,
+                    };
+                } else {
+                    score += match peer.peer.profile.execution_role {
+                        NodeExecutionRole::Full => 25,
+                        NodeExecutionRole::ExecutorOnly => 5,
+                    };
+                }
+                score += peer.peer.profile.capabilities.len() as i64;
+
+                if let Some(load) = &peer.load {
+                    score -= (load.pending_tasks as i64) * 5;
+                    score -= (load.running_tasks as i64) * 12;
+                    score -= (load.recent_failures as i64) * 18;
+                    score += (load.recent_successes as i64) * 2;
+                    if let Some(avg_duration) = load.recent_avg_duration_ms {
+                        score -= (avg_duration / 5_000).clamp(0, 12);
+                    }
+                } else {
+                    score -= 6;
+                }
+
+                (score, peer)
+            })
+            .collect::<Vec<_>>();
+
+        candidates.sort_by(|left, right| right.0.cmp(&left.0));
+
+        candidates
+            .into_iter()
+            .map(|(_, peer)| peer.peer)
+            .next()
+            .ok_or_else(|| {
+                let mut message =
+                    "No trusted remote node matches the requested selection.".to_string();
+                if !options.required_tags.is_empty() {
+                    message.push_str(&format!(" tags={}", options.required_tags.join(",")));
+                }
+                if !options.required_capabilities.is_empty() {
+                    message.push_str(&format!(
+                        " capabilities={}",
+                        options.required_capabilities.join(",")
+                    ));
+                }
+                if !options.allow_executor_only {
+                    message.push_str(
+                        " Executor-only nodes are excluded by default; retry with `--allow-executor-only` if that is intentional.",
+                    );
+                }
+                anyhow::anyhow!(message)
+            })
+    }
+
+    fn select_peer_preview(
         &self,
         peers: &[RemotePeer],
         prompt: &str,
@@ -551,69 +732,51 @@ impl RemoteManager {
                         score += 15;
                     }
                 }
-                for tag in &selection.policy_tags {
-                    if peer
-                        .profile
-                        .tags
-                        .iter()
-                        .any(|value| value.eq_ignore_ascii_case(tag))
-                    {
-                        score += 10;
-                    }
-                }
-                for capability in &selection.preferred_capabilities {
-                    if peer
-                        .profile
-                        .capabilities
-                        .iter()
-                        .any(|value| value.eq_ignore_ascii_case(capability))
-                    {
-                        score += 18;
-                    }
-                }
-                let prefer_executor_only =
-                    options.prefer_executor_only || selection.direct_executor_candidate;
-                if prefer_executor_only {
-                    score += match peer.profile.execution_role {
-                        NodeExecutionRole::ExecutorOnly => 25,
-                        NodeExecutionRole::Full => 5,
-                    };
-                } else {
-                    score += match peer.profile.execution_role {
-                        NodeExecutionRole::Full => 25,
-                        NodeExecutionRole::ExecutorOnly => 5,
-                    };
-                }
-                score += peer.profile.capabilities.len() as i64;
                 (score, peer.clone())
             })
             .collect::<Vec<_>>();
 
         candidates.sort_by(|left, right| right.0.cmp(&left.0));
-
         candidates
             .into_iter()
             .map(|(_, peer)| peer)
             .next()
-            .ok_or_else(|| {
-                let mut message =
-                    "No trusted remote node matches the requested selection.".to_string();
-                if !options.required_tags.is_empty() {
-                    message.push_str(&format!(" tags={}", options.required_tags.join(",")));
-                }
-                if !options.required_capabilities.is_empty() {
-                    message.push_str(&format!(
-                        " capabilities={}",
-                        options.required_capabilities.join(",")
-                    ));
-                }
-                if !options.allow_executor_only {
-                    message.push_str(
-                        " Executor-only nodes are excluded by default; retry with `--allow-executor-only` if that is intentional.",
-                    );
-                }
-                anyhow::anyhow!(message)
-            })
+            .ok_or_else(|| anyhow::anyhow!("No trusted remote node matches the requested selection."))
+    }
+
+    async fn load_peer_selection_candidates(
+        &self,
+        peers: &[RemotePeer],
+    ) -> Vec<PeerSelectionCandidate> {
+        let mut candidates = Vec::with_capacity(peers.len());
+        for peer in peers {
+            let load = self
+                .fetch_peer_status(peer)
+                .await
+                .ok()
+                .and_then(|status| status.load);
+            candidates.push(PeerSelectionCandidate {
+                peer: peer.clone(),
+                load,
+            });
+        }
+        candidates
+    }
+
+    async fn fetch_peer_status(&self, peer: &RemotePeer) -> Result<RemoteStatus> {
+        let auth_token = self.auth_token_for_peer(peer).await?;
+        let client = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .context("Failed to build remote status client")?;
+        let endpoint = format!("{}/api/v1/remote/status", peer.target.trim_end_matches('/'));
+        let response = client
+            .get(endpoint)
+            .bearer_auth(auth_token)
+            .send()
+            .await
+            .context("Failed to fetch remote node status")?;
+        parse_remote_status_response(response).await
     }
 
     async fn stream_remote_events(
@@ -1125,6 +1288,24 @@ async fn parse_remote_response(response: reqwest::Response) -> Result<RemoteExec
     Ok(parsed)
 }
 
+async fn parse_remote_status_response(response: reqwest::Response) -> Result<RemoteStatus> {
+    let status_code = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status_code.is_success() {
+        bail!(
+            "Remote status request failed (status {}): {}",
+            status_code,
+            body
+        );
+    }
+    serde_json::from_str(&body).with_context(|| {
+        format!(
+            "Remote daemon returned invalid status payload (status {}): {}",
+            status_code, body
+        )
+    })
+}
+
 fn resolve_pair_target(target: &str, url: Option<&str>) -> Result<(String, String)> {
     match url {
         Some(url) => Ok((target.to_string(), normalize_base_url(url)?)),
@@ -1629,6 +1810,132 @@ mod tests {
 
         assert_eq!(result.envelope.target_node, "office-mac");
         assert_eq!(result.answer.as_deref(), Some("office result"));
+    }
+
+    #[tokio::test]
+    async fn auto_selection_prefers_lower_load_when_capabilities_match() {
+        let (_temp, config) = test_config();
+        let quiet = MockServer::start().await;
+        let busy = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/remote/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "enabled": true,
+                "node": {
+                    "node_id": "quiet-node",
+                    "node_name": "quiet-mac",
+                    "public_key": "quiet-public"
+                },
+                "profile": {
+                    "capabilities": ["system-execution", "remote-execution"],
+                    "tags": ["office"],
+                    "execution_role": "full"
+                },
+                "paired_nodes": 0,
+                "load": {
+                    "pending_tasks": 0,
+                    "running_tasks": 0,
+                    "recent_failures": 0,
+                    "recent_successes": 12,
+                    "recent_avg_duration_ms": 1400
+                }
+            })))
+            .mount(&quiet)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/remote/execute"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "task_id": "quiet-task",
+                "status": "completed",
+                "answer": "quiet result",
+                "provider": "ollama",
+                "duration_ms": 8,
+                "message": null
+            })))
+            .mount(&quiet)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/remote/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "enabled": true,
+                "node": {
+                    "node_id": "busy-node",
+                    "node_name": "busy-mac",
+                    "public_key": "busy-public"
+                },
+                "profile": {
+                    "capabilities": ["system-execution", "remote-execution"],
+                    "tags": ["office"],
+                    "execution_role": "full"
+                },
+                "paired_nodes": 0,
+                "load": {
+                    "pending_tasks": 7,
+                    "running_tasks": 4,
+                    "recent_failures": 3,
+                    "recent_successes": 1,
+                    "recent_avg_duration_ms": 21000
+                }
+            })))
+            .mount(&busy)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/remote/execute"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "task_id": "busy-task",
+                "status": "completed",
+                "answer": "busy result",
+                "provider": "ollama",
+                "duration_ms": 8,
+                "message": null
+            })))
+            .mount(&busy)
+            .await;
+
+        let manager = RemoteManager::new(config);
+        manager
+            .pair(
+                "quiet-mac",
+                Some(&quiet.uri()),
+                None,
+                false,
+                &["office".to_string()],
+                &["system-execution".to_string()],
+            )
+            .await
+            .expect("pair quiet");
+        manager.trust("quiet-mac").expect("trust quiet");
+        manager
+            .pair(
+                "busy-mac",
+                Some(&busy.uri()),
+                None,
+                false,
+                &["office".to_string()],
+                &["system-execution".to_string()],
+            )
+            .await
+            .expect("pair busy");
+        manager.trust("busy-mac").expect("trust busy");
+
+        let result = manager
+            .send_with_options(
+                "find test.txt on the office machine",
+                RemoteSendOptions {
+                    node: Some("auto".to_string()),
+                    required_capabilities: vec!["system-execution".to_string()],
+                    ..RemoteSendOptions::default()
+                },
+            )
+            .await
+            .expect("send");
+
+        assert_eq!(result.envelope.target_node, "quiet-mac");
+        assert_eq!(result.answer.as_deref(), Some("quiet result"));
     }
 
     #[tokio::test]
