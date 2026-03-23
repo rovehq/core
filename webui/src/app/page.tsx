@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
+import { DEFAULT_DAEMON_PORT } from '@/lib/daemon';
 import { useRoveStore } from '@/stores/roveStore';
 
 export default function MessagesPage() {
@@ -9,6 +10,7 @@ export default function MessagesPage() {
     appState,
     authStatus,
     clearError,
+    daemonPort,
     daemonUrl,
     error,
     hello,
@@ -18,6 +20,7 @@ export default function MessagesPage() {
     reauth,
     refreshTasks,
     setupPassword,
+    setDaemonPort,
     submitTask,
     tasks,
     ws,
@@ -26,11 +29,16 @@ export default function MessagesPage() {
   const [password, setPassword] = useState('');
   const [nodeName, setNodeName] = useState('my-device');
   const [mode, setMode] = useState('local_only');
+  const [portInput, setPortInput] = useState(String(DEFAULT_DAEMON_PORT));
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     void initialize();
   }, [initialize]);
+
+  useEffect(() => {
+    setPortInput(String(daemonPort ?? DEFAULT_DAEMON_PORT));
+  }, [daemonPort]);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -73,13 +81,35 @@ export default function MessagesPage() {
     return (
       <AuthShell title="Local Daemon Not Reachable" subtitle="Start the daemon from the Rove menu bar app, then refresh.">
         <div className="space-y-4">
-          <p className="text-sm text-gray-400 whitespace-pre-wrap">{error ?? 'The browser could not reach 127.0.0.1:47630.'}</p>
-          <button
-            onClick={() => void initialize()}
-            className="w-full rounded-lg bg-primary px-4 py-3 font-medium hover:bg-primary/80"
-          >
-            Retry Connection
-          </button>
+          <p className="text-sm text-gray-400 whitespace-pre-wrap">
+            {error ?? `The browser could not reach your local daemon. Default probe port is ${DEFAULT_DAEMON_PORT}.`}
+          </p>
+          <Field label="Daemon port">
+            <input
+              value={portInput}
+              onChange={(event) => setPortInput(event.target.value)}
+              className="w-full rounded-lg border border-surface2 bg-background px-3 py-3 outline-none focus:border-primary"
+              placeholder={String(DEFAULT_DAEMON_PORT)}
+              inputMode="numeric"
+            />
+          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              onClick={() => void setDaemonPort(portInput.trim() ? Number(portInput) : null)}
+              className="w-full rounded-lg bg-primary px-4 py-3 font-medium hover:bg-primary/80"
+            >
+              Save Port And Retry
+            </button>
+            <button
+              onClick={() => {
+                setPortInput(String(DEFAULT_DAEMON_PORT));
+                void setDaemonPort(null);
+              }}
+              className="w-full rounded-lg border border-surface2 px-4 py-3 font-medium hover:border-primary"
+            >
+              Use Default Probe List
+            </button>
+          </div>
         </div>
       </AuthShell>
     );

@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
+import { DEFAULT_DAEMON_PORT } from '@/lib/daemon';
 import Nav from '@/components/Nav';
 import { useRoveStore } from '@/stores/roveStore';
 
@@ -10,22 +11,30 @@ export default function SettingsPage() {
     appState,
     authStatus,
     clearError,
+    daemonPort,
+    daemonUrl,
     error,
     hello,
     initialize,
     installService,
     lock,
     refreshServiceInstall,
+    setDaemonPort,
     serviceInstall,
     services,
     setServiceEnabled,
     uninstallService,
   } = useRoveStore();
+  const [portInput, setPortInput] = useState(String(DEFAULT_DAEMON_PORT));
 
   useEffect(() => {
     void initialize();
     void refreshServiceInstall();
   }, [initialize, refreshServiceInstall]);
+
+  useEffect(() => {
+    setPortInput(String(daemonPort ?? DEFAULT_DAEMON_PORT));
+  }, [daemonPort]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -62,6 +71,50 @@ export default function SettingsPage() {
                   >
                     Lock now
                   </button>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="font-medium mb-4">Daemon Endpoint</h3>
+              <div className="space-y-4">
+                <div className="p-4 bg-surface2 rounded-lg space-y-3">
+                  <div>
+                    <p className="font-medium">Current endpoint</p>
+                    <p className="text-sm text-gray-500 break-all">
+                      {daemonUrl ?? `Not connected. Default probe port is ${DEFAULT_DAEMON_PORT}.`}
+                    </p>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
+                    <label className="block">
+                      <span className="mb-2 block text-sm text-gray-400">Daemon port</span>
+                      <input
+                        value={portInput}
+                        onChange={(event) => setPortInput(event.target.value)}
+                        className="w-full rounded-lg border border-surface bg-background px-3 py-3 outline-none focus:border-primary"
+                        placeholder={String(DEFAULT_DAEMON_PORT)}
+                        inputMode="numeric"
+                      />
+                    </label>
+                    <button
+                      onClick={() => void setDaemonPort(portInput.trim() ? Number(portInput) : null)}
+                      className="rounded-lg bg-primary px-4 py-3 text-sm hover:bg-primary/80"
+                    >
+                      Save Port
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPortInput(String(DEFAULT_DAEMON_PORT));
+                        void setDaemonPort(null);
+                      }}
+                      className="rounded-lg border border-surface px-4 py-3 text-sm hover:border-primary"
+                    >
+                      Use Defaults
+                    </button>
+                  </div>
+                  <p className="text-sm text-gray-500">
+                    The hosted UI probes the new default port first, then falls back to legacy ports such as 3727 if needed.
+                  </p>
                 </div>
               </div>
             </div>

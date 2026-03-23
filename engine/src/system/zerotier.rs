@@ -951,21 +951,21 @@ mod tests {
     #[test]
     fn loopback_bind_addr_is_not_remote_reachable() {
         let mut config = Config::default();
-        config.webui.bind_addr = "127.0.0.1:47630".to_string();
+        config.webui.bind_addr = format!("127.0.0.1:{}", DEFAULT_PORT);
         assert!(!daemon_reachable_over_network(&config));
     }
 
     #[test]
     fn zerotier_transport_records_use_daemon_port() {
         let mut config = Config::default();
-        config.webui.bind_addr = "0.0.0.0:47630".to_string();
+        config.webui.bind_addr = format!("0.0.0.0:{}", DEFAULT_PORT);
         let manager = ZeroTierManager::new(config);
         let records = manager
             .transport_records_from_addresses("8056c2e21c000001", &["10.10.10.8/24".to_string()]);
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].base_url.as_deref(),
-            Some("http://10.10.10.8:47630")
+            Some(&format!("http://10.10.10.8:{}", DEFAULT_PORT))
         );
         assert!(records[0].reachable);
     }
@@ -976,7 +976,7 @@ mod tests {
             RemoteTransportRecord {
                 kind: "direct".to_string(),
                 address: "example.com".to_string(),
-                base_url: Some("http://example.com:47630".to_string()),
+                base_url: Some(format!("http://example.com:{}", DEFAULT_PORT)),
                 network_id: None,
                 reachable: true,
                 latency_ms: Some(40),
@@ -986,7 +986,7 @@ mod tests {
             RemoteTransportRecord {
                 kind: "zerotier".to_string(),
                 address: "10.10.10.8".to_string(),
-                base_url: Some("http://10.10.10.8:47630".to_string()),
+                base_url: Some(format!("http://10.10.10.8:{}", DEFAULT_PORT)),
                 network_id: Some("net".to_string()),
                 reachable: true,
                 latency_ms: Some(12),
@@ -995,6 +995,9 @@ mod tests {
             },
         ]);
 
-        assert_eq!(url.as_deref(), Some("http://10.10.10.8:47630"));
+        assert_eq!(
+            url.as_deref(),
+            Some(&format!("http://10.10.10.8:{}", DEFAULT_PORT))
+        );
     }
 }

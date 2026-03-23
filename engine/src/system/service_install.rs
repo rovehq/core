@@ -399,16 +399,17 @@ mod tests {
 
     #[test]
     fn rendered_service_file_includes_profile_and_port() {
+        let port = DEFAULT_PORT;
         let output = render_service_file(
             ServiceInstallMode::Login,
             "co.roveai.daemon.login",
             "/usr/local/bin/rove",
-            47630,
+            port,
             DaemonProfile::Desktop,
             &PathBuf::from("/tmp/rove-logs"),
         );
         assert!(output.contains("/usr/local/bin/rove"));
-        assert!(output.contains("47630"));
+        assert!(output.contains(&port.to_string()));
         assert!(output.contains("desktop"));
     }
 }

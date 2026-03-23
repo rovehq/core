@@ -200,7 +200,10 @@ mod tests {
             transports: vec![RemoteTransportRecord {
                 kind: "zerotier".to_string(),
                 address: "10.10.10.2".to_string(),
-                base_url: Some("http://10.10.10.2:47630".to_string()),
+                base_url: Some(format!(
+                    "http://10.10.10.2:{}",
+                    crate::config::metadata::DEFAULT_PORT
+                )),
                 network_id: Some("net".to_string()),
                 reachable: true,
                 latency_ms: Some(12),

@@ -1720,7 +1720,8 @@ fn resolve_pair_target(target: &str, url: Option<&str>) -> Result<(String, Strin
             Ok((derive_node_name(target), normalize_base_url(target)?))
         }
         None => bail!(
-            "Pairing requires a daemon URL. Use `rove remote pair office-mac --url http://host:47630 --token ...` or pass the URL directly as the target."
+            "Pairing requires a daemon URL. Use `rove remote pair office-mac --url http://host:{} --token ...` or pass the URL directly as the target.",
+            crate::info::DEFAULT_PORT
         ),
     }
 }

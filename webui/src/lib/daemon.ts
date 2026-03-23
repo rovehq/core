@@ -259,18 +259,45 @@ export type DaemonEvent =
   | { type: 'approval.required'; task_id: string; risk: string }
   | { type: 'remote.node.updated'; node_name: string };
 
-const DEFAULT_BASE_URLS = [
-  'https://127.0.0.1:47630',
-  'http://127.0.0.1:47630',
-];
+export const DEFAULT_DAEMON_PORT = 43177;
+const LEGACY_DAEMON_PORTS = [3727, 47630];
 
 const TOKEN_KEY = 'rove_webui_access_token';
+const PORT_KEY = 'rove_webui_daemon_port';
+
+function buildLoopbackBaseUrls(port: number): string[] {
+  return [`https://127.0.0.1:${port}`, `http://127.0.0.1:${port}`];
+}
+
+function normalizePort(value: number | null | undefined): number | null {
+  if (value == null) {
+    return null;
+  }
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error('Daemon port must be an integer between 1 and 65535');
+  }
+  return value;
+}
 
 export function readStoredToken(): string | null {
   if (typeof window === 'undefined') {
     return null;
   }
   return window.sessionStorage.getItem(TOKEN_KEY);
+}
+
+export function readStoredDaemonPort(): number | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const value = window.localStorage.getItem(PORT_KEY);
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : null;
 }
 
 export function writeStoredToken(token: string | null) {
@@ -284,12 +311,35 @@ export function writeStoredToken(token: string | null) {
   }
 }
 
-function configuredBaseUrls(): string[] {
+export function writeStoredDaemonPort(port: number | null) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const normalized = normalizePort(port);
+  if (normalized == null) {
+    window.localStorage.removeItem(PORT_KEY);
+  } else {
+    window.localStorage.setItem(PORT_KEY, String(normalized));
+  }
+}
+
+function configuredBaseUrls(portOverride?: number | null): string[] {
   const configured = process.env.NEXT_PUBLIC_ROVE_DAEMON_URLS
     ?.split(',')
     .map((value) => value.trim())
     .filter(Boolean);
-  return configured && configured.length > 0 ? configured : DEFAULT_BASE_URLS;
+  const defaults = [DEFAULT_DAEMON_PORT, ...LEGACY_DAEMON_PORTS].flatMap((port) =>
+    buildLoopbackBaseUrls(port),
+  );
+
+  return Array.from(
+    new Set([
+      ...(portOverride ? buildLoopbackBaseUrls(portOverride) : []),
+      ...(configured ?? []),
+      ...defaults,
+    ]),
+  );
 }
 
 export class DaemonError extends Error {
@@ -307,19 +357,41 @@ export class DaemonError extends Error {
 export class RoveDaemonClient {
   private token?: string;
   private preferredBaseUrl?: string;
-  private readonly baseUrls: string[];
+  private baseUrls: string[];
 
   constructor(token?: string) {
     this.token = token;
-    this.baseUrls = configuredBaseUrls();
+    this.baseUrls = configuredBaseUrls(readStoredDaemonPort());
   }
 
   setToken(token?: string) {
     this.token = token;
   }
 
+  setPortOverride(port?: number | null) {
+    const normalized = normalizePort(port ?? null);
+    writeStoredDaemonPort(normalized);
+    this.preferredBaseUrl = undefined;
+    this.baseUrls = configuredBaseUrls(normalized);
+  }
+
   currentBaseUrl(): string | null {
     return this.preferredBaseUrl ?? this.baseUrls[0] ?? null;
+  }
+
+  currentPort(): number | null {
+    const baseUrl = this.currentBaseUrl();
+    if (!baseUrl) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(baseUrl);
+      const port = Number(parsed.port);
+      return Number.isInteger(port) && port > 0 ? port : null;
+    } catch {
+      return null;
+    }
   }
 
   async hello(): Promise<DaemonHello> {

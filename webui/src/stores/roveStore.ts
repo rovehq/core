@@ -9,11 +9,13 @@ import {
   AuthStatus,
   DaemonConfig,
   DaemonError,
+  DEFAULT_DAEMON_PORT,
   DaemonHello,
   DaemonEvent,
   DispatchBrainView,
   ExtensionRecord,
   PolicyExplainReport,
+  readStoredDaemonPort,
   RemoteDiscoveryCandidate,
   PolicySummary,
   RemotePeer,
@@ -58,6 +60,7 @@ interface RoveStore {
   authStatus: AuthStatus | null;
   config: DaemonConfig | null;
   daemonUrl: string | null;
+  daemonPort: number | null;
   token: string | null;
   error: string | null;
   tasks: TaskRecord[];
@@ -74,6 +77,7 @@ interface RoveStore {
   serviceInstall: ServiceInstallStatus | null;
   zeroTier: ZeroTierStatus | null;
   ws: WebSocketState;
+  setDaemonPort: (port: number | null) => Promise<boolean>;
   initialize: () => Promise<void>;
   setupPassword: (password: string, nodeName: string, mode: string) => Promise<boolean>;
   login: (password: string) => Promise<boolean>;
@@ -340,6 +344,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
   authStatus: null,
   config: null,
   daemonUrl: null,
+  daemonPort: DEFAULT_DAEMON_PORT,
   token: null,
   error: null,
   tasks: [],
@@ -359,16 +364,19 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
 
   initialize: async () => {
     const storedToken = readStoredToken();
+    daemon.setPortOverride(readStoredDaemonPort());
     setStoredSession(storedToken);
 
     try {
       const hello = await daemon.hello();
       const daemonUrl = daemon.currentBaseUrl();
+      const daemonPort = daemon.currentPort() ?? DEFAULT_DAEMON_PORT;
       const nextState = deriveAppState(hello.auth_state, Boolean(storedToken));
 
       set({
         hello,
         daemonUrl,
+        daemonPort,
         token: storedToken,
         appState: nextState,
         error: null,
@@ -404,6 +412,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           approvalRules: approvalRules.rules,
           serviceInstall,
           zeroTier,
+          daemonPort,
           appState: deriveAppState(authStatus.state, true),
         });
         await get().refreshTasks();
@@ -436,6 +445,8 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
       stopAuthPolling();
       setStoredSession(null);
       set({
+        daemonUrl: daemon.currentBaseUrl(),
+        daemonPort: daemon.currentPort() ?? DEFAULT_DAEMON_PORT,
         token: null,
         authStatus: null,
         config: null,
@@ -455,6 +466,25 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         error: error instanceof Error ? error.message : 'Unable to reach daemon',
         ws: { connected: false, connecting: false, error: null },
       });
+    }
+  },
+
+  setDaemonPort: async (port) => {
+    try {
+      daemon.setPortOverride(port);
+      stopEventStream();
+      stopAuthPolling();
+      set({
+        daemonUrl: daemon.currentBaseUrl(),
+        daemonPort: daemon.currentPort() ?? DEFAULT_DAEMON_PORT,
+        error: null,
+        appState: 'checking',
+      });
+      await get().initialize();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to update daemon port' });
+      return false;
     }
   },
 
