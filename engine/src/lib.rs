@@ -36,6 +36,8 @@ pub use storage as db;
 pub use system::daemon;
 pub use system::message_bus;
 pub use system::remote;
+pub use system::service_install;
 pub use system::services;
 pub use system::telemetry;
+pub use system::zerotier;
 pub use tools as builtin_tools;

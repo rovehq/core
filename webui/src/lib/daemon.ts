@@ -48,6 +48,23 @@ export interface ServiceStatus {
   details: Record<string, string>;
 }
 
+export interface ServiceInstallState {
+  mode: 'login' | 'boot';
+  installed: boolean;
+  supported: boolean;
+  path: string;
+  label: string;
+  default_profile: 'desktop' | 'headless';
+  auto_restart: boolean;
+}
+
+export interface ServiceInstallStatus {
+  current_binary?: string | null;
+  default_port: number;
+  login: ServiceInstallState;
+  boot: ServiceInstallState;
+}
+
 export interface NodeLoadSnapshot {
   pending_tasks: number;
   running_tasks: number;
@@ -70,6 +87,7 @@ export interface RemoteStatus {
   };
   paired_nodes: number;
   load?: NodeLoadSnapshot | null;
+  transports: RemoteTransportRecord[];
 }
 
 export interface RemotePeer {
@@ -85,6 +103,15 @@ export interface RemotePeer {
   };
   target: string;
   trusted: boolean;
+  transports: RemoteTransportRecord[];
+}
+
+export interface RemoteTransportRecord {
+  kind: string;
+  address: string;
+  base_url?: string | null;
+  network_id?: string | null;
+  reachable: boolean;
 }
 
 export interface ExtensionRecord {
@@ -100,11 +127,15 @@ export interface ExtensionRecord {
 
 export interface DaemonConfig {
   node_name: string;
+  profile: 'desktop' | 'headless';
   privacy_mode: string;
   idle_timeout_secs: number;
   absolute_timeout_secs: number;
   reauth_window_secs: number;
   session_persist_on_restart: boolean;
+  approval_mode: 'default' | 'allowlist' | 'open' | 'assisted';
+  approvals_rules_path: string;
+  secret_backend: 'auto' | 'vault' | 'keychain' | 'env';
   bind_addr: string;
   tls_enabled: boolean;
   tls_cert_path: string;
@@ -139,6 +170,39 @@ export interface ApprovalRequest {
   summary: string;
   created_at: number;
   auto_resolve_after_secs?: number | null;
+}
+
+export interface ApprovalRule {
+  id: string;
+  action: 'allow' | 'require_approval';
+  tool?: string | null;
+  commands: string[];
+  paths: string[];
+  nodes: string[];
+  channels: string[];
+  risk_tier?: number | null;
+  effect?: string | null;
+}
+
+export interface ApprovalRulesFile {
+  rules: ApprovalRule[];
+}
+
+export interface ZeroTierStatus {
+  enabled: boolean;
+  configured: boolean;
+  token_configured: boolean;
+  service_url: string;
+  network_id?: string | null;
+  managed_name_sync: boolean;
+  service_online: boolean;
+  joined: boolean;
+  node_id?: string | null;
+  network_name?: string | null;
+  network_status?: string | null;
+  assigned_addresses: string[];
+  transport_records: RemoteTransportRecord[];
+  message?: string | null;
 }
 
 export interface DispatchBrainView {
@@ -281,6 +345,27 @@ export class RoveDaemonClient {
     return this.request<ServiceStatus[]>('/v1/services');
   }
 
+  async serviceInstallStatus(): Promise<ServiceInstallStatus> {
+    return this.request<ServiceInstallStatus>('/v1/services/install/status');
+  }
+
+  async installService(
+    mode: 'login' | 'boot',
+    profile?: 'desktop' | 'headless',
+    port?: number,
+  ): Promise<ServiceInstallState> {
+    return this.request<ServiceInstallState>('/v1/services/install', {
+      method: 'POST',
+      body: JSON.stringify({ mode, profile, port }),
+    });
+  }
+
+  async uninstallService(mode: 'login' | 'boot'): Promise<void> {
+    await this.request<void>(`/v1/services/install/${encodeURIComponent(mode)}`, {
+      method: 'DELETE',
+    });
+  }
+
   async listBrains(): Promise<{ dispatch: DispatchBrainView }> {
     return this.request<{ dispatch: DispatchBrainView }>('/v1/brains');
   }
@@ -369,10 +454,38 @@ export class RoveDaemonClient {
     return this.request<ApprovalRequest[]>('/v1/approvals');
   }
 
+  async listApprovalRules(): Promise<ApprovalRulesFile> {
+    return this.request<ApprovalRulesFile>('/v1/approvals/rules');
+  }
+
+  async addApprovalRule(rule: ApprovalRule): Promise<ApprovalRulesFile> {
+    return this.request<ApprovalRulesFile>('/v1/approvals/rules', {
+      method: 'POST',
+      body: JSON.stringify(rule),
+    });
+  }
+
+  async removeApprovalRule(id: string): Promise<void> {
+    await this.request<void>(`/v1/approvals/rules/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+
   async resolveApproval(id: string, approved: boolean): Promise<void> {
     await this.request<void>(`/v1/approvals/${encodeURIComponent(id)}/resolve`, {
       method: 'POST',
       body: JSON.stringify({ approved }),
+    });
+  }
+
+  async zeroTierStatus(): Promise<ZeroTierStatus> {
+    return this.request<ZeroTierStatus>('/v1/remote/transports/zerotier');
+  }
+
+  async zeroTierJoin(networkId?: string): Promise<ZeroTierStatus> {
+    return this.request<ZeroTierStatus>('/v1/remote/transports/zerotier', {
+      method: 'POST',
+      body: JSON.stringify({ network_id: networkId }),
     });
   }
 

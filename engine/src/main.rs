@@ -269,7 +269,15 @@ async fn run_daemon(port: u16, profile: Option<DaemonProfileArg>) -> Result<()> 
     rove_engine::channels::manager::ChannelManager::new(config.clone())
         .start_enabled(gateway.clone(), database.clone());
     tracing::info!("{}", rove_engine::info::engine_banner());
-    server::start_daemon(agent, port, database, gateway, config.webui.enabled).await?;
+    server::start_daemon(
+        agent,
+        port,
+        config.webui.bind_addr.clone(),
+        database,
+        gateway,
+        config.webui.enabled,
+    )
+    .await?;
     Ok(())
 }
 
@@ -743,6 +751,15 @@ async fn handle_service(action: ServiceAction) -> Result<()> {
                 name,
                 &mut config,
             )?;
+        }
+        ServiceAction::InstallStatus => {
+            rove_engine::cli::service::install_status(&config)?;
+        }
+        ServiceAction::Install { mode, profile, port } => {
+            rove_engine::cli::service::install_service(mode, profile, port, &config)?;
+        }
+        ServiceAction::Uninstall { mode } => {
+            rove_engine::cli::service::uninstall_service(mode, &config)?;
         }
     }
     Ok(())

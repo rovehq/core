@@ -17,7 +17,9 @@ use crate::gateway::Task;
 use crate::policy::PolicyManager;
 use crate::remote::RemoteManager;
 use crate::security::approvals;
+use crate::service_install::{ServiceInstallMode, ServiceInstaller};
 use crate::services::{ManagedService, ServiceManager};
+use crate::zerotier::ZeroTierManager;
 use sdk::{
     AuthState, DaemonCapabilities, DaemonHello, NodeLoadSnapshot, NodeSummary,
     PolicyScope, RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, TaskSource,
@@ -106,6 +108,18 @@ pub struct AddApprovalRuleRequest {
     pub channels: Vec<String>,
     pub risk_tier: Option<u8>,
     pub effect: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InstallServiceRequest {
+    pub mode: String,
+    pub profile: Option<String>,
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ZeroTierJoinRequest {
+    pub network_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -417,6 +431,17 @@ fn parse_rule_action(
     }
 }
 
+fn parse_service_install_mode(value: &str) -> anyhow::Result<ServiceInstallMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "login" => Ok(ServiceInstallMode::Login),
+        "boot" => Ok(ServiceInstallMode::Boot),
+        other => Err(anyhow::anyhow!(
+            "Invalid service install mode '{}'. Use login or boot.",
+            other
+        )),
+    }
+}
+
 async fn set_extension_enabled_inner(
     kind: String,
     name: String,
@@ -658,11 +683,28 @@ pub async fn execute_task(
 
 pub async fn execute_remote_task(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<RemoteExecuteRequest>,
 ) -> impl IntoResponse {
     let Some(input) = parse_task_input(payload.input.clone(), payload.task.clone()) else {
         return invalid_request("Request must include a non-empty `input` or `task` field");
     };
+
+    match Config::load_or_create() {
+        Ok(config) => {
+            if payload.origin_node.is_some() {
+                if payload.task_id.as_deref().is_none() {
+                    return invalid_request("Remote execute requests must include a task_id");
+                }
+                if let Err(error) = RemoteManager::new(config)
+                    .verify_signed_request(&headers, "execute", payload.task_id.as_deref())
+                {
+                    return json_error_response(StatusCode::UNAUTHORIZED, error);
+                }
+            }
+        }
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
 
     if let Some(plan) = payload.plan.clone() {
         return accept_remote_planned_task(state, payload, input, plan).await;
@@ -846,6 +888,61 @@ pub async fn service_status(Path(name): Path<String>) -> impl IntoResponse {
             Json(serde_json::json!({ "error": error.to_string() })),
         )
             .into_response(),
+    }
+}
+
+pub async fn service_install_status() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ServiceInstaller::new(config).status() {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn install_service(
+    Json(payload): Json<InstallServiceRequest>,
+) -> impl IntoResponse {
+    let mode = match parse_service_install_mode(&payload.mode) {
+        Ok(mode) => mode,
+        Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
+    };
+
+    let profile = match payload.profile.as_deref() {
+        Some(profile) => match parse_profile(profile) {
+            Ok(profile) => Some(profile),
+            Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        None => None,
+    };
+
+    match Config::load_or_create() {
+        Ok(config) => match ServiceInstaller::new(config)
+            .install(
+                mode,
+                profile,
+                payload.port.unwrap_or(crate::info::DEFAULT_PORT),
+            ) {
+            Ok(status) => (StatusCode::CREATED, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn uninstall_service(Path(mode): Path<String>) -> impl IntoResponse {
+    let mode = match parse_service_install_mode(&mode) {
+        Ok(mode) => mode,
+        Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
+    };
+
+    match Config::load_or_create() {
+        Ok(config) => match ServiceInstaller::new(config).uninstall(mode) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
 
@@ -1067,10 +1164,16 @@ pub async fn resolve_approval(
 
 pub async fn remote_status(State(state): State<AppState>) -> impl IntoResponse {
     match Config::load_or_create() {
-        Ok(config) => match RemoteManager::new(config).status() {
+        Ok(config) => match RemoteManager::new(config.clone()).status() {
             Ok(mut status) => match current_node_load(&state).await {
                 Ok(load) => {
                     status.load = Some(load);
+                    if let Ok(transports) = ZeroTierManager::new(config)
+                        .transport_records()
+                        .await
+                    {
+                        status.transports = transports;
+                    }
                     (StatusCode::OK, Json(status)).into_response()
                 }
                 Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -1086,6 +1189,31 @@ pub async fn remote_status(State(state): State<AppState>) -> impl IntoResponse {
             Json(serde_json::json!({ "error": error.to_string() })),
         )
             .into_response(),
+    }
+}
+
+pub async fn zerotier_status() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ZeroTierManager::new(config).status().await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn zerotier_join(
+    Json(payload): Json<ZeroTierJoinRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ZeroTierManager::new(config)
+            .join(payload.network_id.as_deref())
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
 

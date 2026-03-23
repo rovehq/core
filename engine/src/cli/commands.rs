@@ -31,7 +31,7 @@ pub enum Command {
     /// Start the Rove daemon in background.
     Start {
         /// Port to bind the server to.
-        #[arg(short, long, default_value_t = 3727)]
+        #[arg(short, long, default_value_t = crate::config::metadata::DEFAULT_PORT)]
         port: u16,
 
         /// Runtime profile for the daemon.
@@ -224,7 +224,7 @@ pub enum Command {
     #[command(hide = true)]
     Daemon {
         /// Port to bind the HTTP server to.
-        #[arg(short, long, default_value_t = 3727)]
+        #[arg(short, long, default_value_t = crate::config::metadata::DEFAULT_PORT)]
         port: u16,
 
         /// Runtime profile for the daemon.
@@ -788,6 +788,28 @@ pub enum ServiceAction {
     Enable { name: ServiceTarget },
     /// Disable a service.
     Disable { name: ServiceTarget },
+    /// Show login/boot service installation state.
+    InstallStatus,
+    /// Install Rove as a login or boot service.
+    Install {
+        /// Install mode.
+        #[arg(value_enum)]
+        mode: ServiceInstallModeArg,
+
+        /// Runtime profile for the installed service.
+        #[arg(long, value_enum)]
+        profile: Option<DaemonProfileArg>,
+
+        /// Port for the installed daemon service.
+        #[arg(short, long, default_value_t = crate::config::metadata::DEFAULT_PORT)]
+        port: u16,
+    },
+    /// Remove a login or boot service install.
+    Uninstall {
+        /// Install mode.
+        #[arg(value_enum)]
+        mode: ServiceInstallModeArg,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -962,6 +984,12 @@ pub enum ServiceTarget {
     Remote,
     #[value(name = "connector-engine")]
     ConnectorEngine,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ServiceInstallModeArg {
+    Login,
+    Boot,
 }
 
 #[derive(Clone, Debug, ValueEnum)]

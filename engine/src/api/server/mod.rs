@@ -16,7 +16,7 @@ pub mod mcp;
 pub mod tls;
 pub mod ws;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     middleware,
     routing::{delete, get, post},
@@ -51,6 +51,7 @@ pub struct AppState {
 pub async fn start_daemon(
     agent: Arc<RwLock<AgentCore>>,
     port: u16,
+    bind_addr: String,
     db: Arc<Database>,
     gateway: Arc<Gateway>,
     webui_enabled: bool,
@@ -63,6 +64,7 @@ pub async fn start_daemon(
     } else {
         port
     };
+    let addr = daemon_socket_addr(&bind_addr, port)?;
 
     let secret_manager = Arc::new(SecretManager::new("rove"));
     let state = AppState {
@@ -120,8 +122,12 @@ pub async fn start_daemon(
         .route("/v1/services/:name", get(api::service_status))
         .route("/v1/services/:name/enable", post(api::enable_service))
         .route("/v1/services/:name/disable", post(api::disable_service))
+        .route("/v1/services/install/status", get(api::service_install_status))
+        .route("/v1/services/install", post(api::install_service))
+        .route("/v1/services/install/:mode", delete(api::uninstall_service))
         .route("/v1/remote/status", get(api::remote_status))
         .route("/v1/remote/nodes", get(api::remote_nodes))
+        .route("/v1/remote/transports/zerotier", get(api::zerotier_status).post(api::zerotier_join))
         .route("/v1/remote/pair", post(api::remote_pair))
         .route("/v1/remote/nodes/:name/trust", post(api::remote_trust))
         .route("/v1/remote/nodes/:name", delete(api::remote_unpair))
@@ -139,10 +145,14 @@ pub async fn start_daemon(
         .route("/api/v1/services/:name", get(api::service_status))
         .route("/api/v1/services/:name/enable", post(api::enable_service))
         .route("/api/v1/services/:name/disable", post(api::disable_service))
+        .route("/api/v1/services/install/status", get(api::service_install_status))
+        .route("/api/v1/services/install", post(api::install_service))
+        .route("/api/v1/services/install/:mode", delete(api::uninstall_service))
         .route("/api/v1/channels", get(api::list_channels))
         .route("/api/v1/remote/execute", post(api::execute_remote_task))
         .route("/api/v1/remote/status", get(api::remote_status))
         .route("/api/v1/remote/nodes", get(api::remote_nodes))
+        .route("/api/v1/remote/transports/zerotier", get(api::zerotier_status).post(api::zerotier_join))
         .route("/api/v1/remote/pair", post(api::remote_pair))
         .route("/api/v1/remote/nodes/:name/trust", post(api::remote_trust))
         .route("/api/v1/remote/nodes/:name", delete(api::remote_unpair))
@@ -171,9 +181,8 @@ pub async fn start_daemon(
         .layer(cors)
         .with_state(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     info!(
-        "{} Daemon listening on {} (localhost only)",
+        "{} Daemon listening on {}",
         crate::info::APP_DISPLAY_NAME,
         addr
     );
@@ -204,4 +213,20 @@ pub async fn start_daemon(
     }
 
     Ok(())
+}
+
+fn daemon_socket_addr(bind_addr: &str, port: u16) -> Result<SocketAddr> {
+    if let Ok(mut addr) = bind_addr.parse::<SocketAddr>() {
+        addr.set_port(port);
+        return Ok(addr);
+    }
+
+    let host = bind_addr
+        .split(':')
+        .next()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("127.0.0.1");
+    format!("{}:{}", host, port)
+        .parse::<SocketAddr>()
+        .with_context(|| format!("Invalid daemon bind address '{}'", bind_addr))
 }

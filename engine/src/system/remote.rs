@@ -1,14 +1,17 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use axum::http::HeaderMap;
+use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderValue};
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
@@ -17,10 +20,20 @@ use crate::config::Config;
 use crate::policy::{infer_domain, PolicyExplainReport, PolicyManager};
 use crate::secrets::SecretManager;
 use crate::system::identity::IdentityManager;
+use crate::system::zerotier::RemoteTransportRecord;
 use sdk::{
     NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, RemoteEnvelope,
     RemoteExecutionPlan,
 };
+
+const HEADER_ORIGIN_NODE_ID: &str = "x-rove-origin-node-id";
+const HEADER_TARGET_NODE_ID: &str = "x-rove-target-node-id";
+const HEADER_REMOTE_PURPOSE: &str = "x-rove-remote-purpose";
+const HEADER_REMOTE_NONCE: &str = "x-rove-remote-nonce";
+const HEADER_REMOTE_TIMESTAMP: &str = "x-rove-remote-timestamp";
+const HEADER_REMOTE_SIGNATURE: &str = "x-rove-remote-signature";
+const REMOTE_SIGNATURE_TTL_SECS: u64 = 30;
+const REMOTE_NONCE_TTL_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemotePeer {
@@ -29,6 +42,8 @@ pub struct RemotePeer {
     pub target: String,
     pub trusted: bool,
     pub auth_secret_key: Option<String>,
+    #[serde(default)]
+    pub transports: Vec<RemoteTransportRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +53,8 @@ pub struct RemoteStatus {
     pub profile: NodeProfile,
     pub paired_nodes: usize,
     pub load: Option<NodeLoadSnapshot>,
+    #[serde(default)]
+    pub transports: Vec<RemoteTransportRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +131,7 @@ impl RemoteManager {
             profile: node.profile,
             paired_nodes: peers.len(),
             load: None,
+            transports: Vec::new(),
         })
     }
 
@@ -234,6 +252,10 @@ impl RemoteManager {
             target: endpoint,
             trusted: false,
             auth_secret_key,
+            transports: remote_status
+                .as_ref()
+                .map(|status| status.transports.clone())
+                .unwrap_or_default(),
         };
         peers.push(peer.clone());
         self.save_peers(&peers)?;
@@ -388,8 +410,13 @@ impl RemoteManager {
         };
 
         let auth_token = self.auth_token_for_peer(&peer).await?;
+        let signed_headers =
+            self.signed_request_headers(&peer.identity.node_id, "execute", Some(&envelope.task_id))?;
         let client = Client::new();
-        let endpoint = format!("{}/api/v1/remote/execute", peer.target.trim_end_matches('/'));
+        let endpoint = format!(
+            "{}/api/v1/remote/execute",
+            self.peer_endpoint(&peer).trim_end_matches('/')
+        );
         let request = RemoteExecuteRequest {
             task_id: Some(envelope.task_id.clone()),
             input: Some(prompt.to_string()),
@@ -402,9 +429,11 @@ impl RemoteManager {
             plan: execution_plan,
         };
 
-        let execute = client
-            .post(endpoint)
-            .bearer_auth(auth_token.clone())
+        let mut execute = client.post(endpoint).bearer_auth(auth_token.clone());
+        for (name, value) in signed_headers {
+            execute = execute.header(&name, value);
+        }
+        let execute = execute
             .json(&request)
             .send()
             .await
@@ -795,7 +824,8 @@ impl RemoteManager {
 
     async fn fetch_peer_status(&self, peer: &RemotePeer) -> Result<RemoteStatus> {
         let auth_token = self.auth_token_for_peer(peer).await?;
-        self.fetch_pair_status(&peer.target, Some(&auth_token)).await
+        self.fetch_pair_status(&self.peer_endpoint(peer), Some(&auth_token))
+            .await
     }
 
     async fn fetch_pair_status(
@@ -830,12 +860,19 @@ impl RemoteManager {
         auth_token: &str,
         task_id: &str,
     ) -> Result<(Vec<RemoteTaskEvent>, RemoteExecuteResponse)> {
-        let mut request = websocket_task_url(&peer.target)?
+        let mut request = websocket_task_url(&self.peer_endpoint(peer))?
             .into_client_request()
             .context("Failed to prepare remote WebSocket request")?;
         let header = HeaderValue::from_str(&format!("Bearer {}", auth_token))
             .context("Invalid remote bearer token")?;
         request.headers_mut().insert(AUTHORIZATION, header);
+        for (name, value) in self.signed_request_headers(&peer.identity.node_id, "event_stream", None)? {
+            let header_name =
+                HeaderName::from_bytes(name.as_bytes()).context("Invalid remote signed header name")?;
+            let header_value =
+                HeaderValue::from_str(&value).context("Invalid remote signed header value")?;
+            request.headers_mut().insert(header_name, header_value);
+        }
 
         let (mut ws, _) = connect_async(request)
             .await
@@ -941,7 +978,7 @@ impl RemoteManager {
         let deadline = Instant::now() + Duration::from_secs(120);
         let status_url = format!(
             "{}/api/v1/tasks/{}",
-            peer.target.trim_end_matches('/'),
+            self.peer_endpoint(peer).trim_end_matches('/'),
             task_id
         );
 
@@ -997,6 +1034,125 @@ impl RemoteManager {
                     peer.identity.node_name
                 )
             })
+    }
+
+    fn peer_endpoint(&self, peer: &RemotePeer) -> String {
+        if self.config.remote.transports.zerotier.enabled {
+            if let Some(base_url) = peer
+                .transports
+                .iter()
+                .find(|record| record.kind.eq_ignore_ascii_case("zerotier") && record.reachable)
+                .and_then(|record| record.base_url.clone())
+            {
+                return base_url;
+            }
+        }
+        peer.target.clone()
+    }
+
+    fn signed_request_headers(
+        &self,
+        target_node_id: &str,
+        purpose: &str,
+        task_id: Option<&str>,
+    ) -> Result<Vec<(String, String)>> {
+        let metadata = self.load_or_init_node_metadata()?;
+        let timestamp = unix_timestamp_secs()?;
+        let nonce = Uuid::new_v4().simple().to_string();
+        let payload = signed_request_payload(
+            &metadata.identity.node_id,
+            target_node_id,
+            purpose,
+            timestamp,
+            &nonce,
+            task_id,
+        );
+        let signature = IdentityManager::new(self.config.clone()).sign_message(&payload)?;
+        Ok(vec![
+            (
+                HEADER_ORIGIN_NODE_ID.to_string(),
+                metadata.identity.node_id.clone(),
+            ),
+            (
+                HEADER_TARGET_NODE_ID.to_string(),
+                target_node_id.to_string(),
+            ),
+            (HEADER_REMOTE_PURPOSE.to_string(), purpose.to_string()),
+            (HEADER_REMOTE_NONCE.to_string(), nonce),
+            (
+                HEADER_REMOTE_TIMESTAMP.to_string(),
+                timestamp.to_string(),
+            ),
+            (HEADER_REMOTE_SIGNATURE.to_string(), signature),
+        ])
+    }
+
+    pub fn verify_signed_request(
+        &self,
+        headers: &HeaderMap,
+        purpose: &str,
+        task_id: Option<&str>,
+    ) -> Result<RemotePeer> {
+        let origin_node_id = header_value(headers, HEADER_ORIGIN_NODE_ID)?;
+        let target_node_id = header_value(headers, HEADER_TARGET_NODE_ID)?;
+        let remote_purpose = header_value(headers, HEADER_REMOTE_PURPOSE)?;
+        let nonce = header_value(headers, HEADER_REMOTE_NONCE)?;
+        let timestamp_raw = header_value(headers, HEADER_REMOTE_TIMESTAMP)?;
+        let signature = header_value(headers, HEADER_REMOTE_SIGNATURE)?;
+
+        if remote_purpose != purpose {
+            bail!(
+                "Remote request purpose mismatch: expected '{}', got '{}'",
+                purpose,
+                remote_purpose
+            );
+        }
+
+        let local = self.load_or_init_node_metadata()?;
+        if target_node_id != local.identity.node_id {
+            bail!("Remote request target does not match this node");
+        }
+
+        let timestamp = timestamp_raw
+            .parse::<u64>()
+            .with_context(|| format!("Invalid remote request timestamp '{}'", timestamp_raw))?;
+        let now = unix_timestamp_secs()?;
+        if now.abs_diff(timestamp) > REMOTE_SIGNATURE_TTL_SECS {
+            bail!("Remote request signature expired");
+        }
+
+        prune_remote_nonce_cache(now);
+        let cache_key = format!("{}:{}:{}", origin_node_id, purpose, nonce);
+        if remote_nonce_cache().contains_key(&cache_key) {
+            bail!("Remote request replay detected");
+        }
+
+        let peer = self
+            .load_peers()?
+            .into_iter()
+            .find(|peer| peer.identity.node_id == origin_node_id)
+            .ok_or_else(|| anyhow::anyhow!("Remote request came from an unknown node"))?;
+        if !peer.trusted {
+            bail!(
+                "Remote node '{}' is paired but not trusted",
+                peer.identity.node_name
+            );
+        }
+
+        let payload = signed_request_payload(
+            &origin_node_id,
+            &target_node_id,
+            &remote_purpose,
+            timestamp,
+            &nonce,
+            task_id,
+        );
+        if !IdentityManager::verify_message(&peer.identity.public_key, &payload, &signature) {
+            bail!("Remote request signature verification failed");
+        }
+
+        remote_nonce_cache().insert(cache_key, now);
+        Ok(peer)
     }
 
     fn remote_node_file(&self) -> PathBuf {
@@ -1383,7 +1539,7 @@ fn resolve_pair_target(target: &str, url: Option<&str>) -> Result<(String, Strin
             Ok((derive_node_name(target), normalize_base_url(target)?))
         }
         None => bail!(
-            "Pairing requires a daemon URL. Use `rove remote pair office-mac --url http://host:3727 --token ...` or pass the URL directly as the target."
+            "Pairing requires a daemon URL. Use `rove remote pair office-mac --url http://host:47630 --token ...` or pass the URL directly as the target."
         ),
     }
 }
@@ -1428,6 +1584,52 @@ fn secret_key_fragment(node_name: &str) -> String {
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect()
+}
+
+fn remote_nonce_cache() -> &'static DashMap<String, u64> {
+    static CACHE: OnceLock<DashMap<String, u64>> = OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn prune_remote_nonce_cache(now: u64) {
+    remote_nonce_cache().retain(|_, seen_at| now.saturating_sub(*seen_at) <= REMOTE_NONCE_TTL_SECS);
+}
+
+fn unix_timestamp_secs() -> Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("System clock is before the unix epoch")?
+        .as_secs())
+}
+
+fn signed_request_payload(
+    origin_node_id: &str,
+    target_node_id: &str,
+    purpose: &str,
+    timestamp: u64,
+    nonce: &str,
+    task_id: Option<&str>,
+) -> Vec<u8> {
+    serde_json::json!({
+        "origin_node_id": origin_node_id,
+        "target_node_id": target_node_id,
+        "purpose": purpose,
+        "timestamp": timestamp,
+        "nonce": nonce,
+        "task_id": task_id.unwrap_or_default(),
+    })
+    .to_string()
+    .into_bytes()
+}
+
+fn header_value(headers: &HeaderMap, name: &str) -> Result<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("Missing required remote header '{}'", name))
 }
 
 fn default_local_profile(config: &Config) -> NodeProfile {
@@ -1648,6 +1850,93 @@ mod tests {
         config.ws_client.enabled = true;
         config.ws_client.auth_token = Some("remote-token".to_string());
         (temp, config)
+    }
+
+    fn secondary_config(temp: &TempDir, name: &str) -> Config {
+        let mut config = Config::default();
+        config.core.workspace = temp.path().join(format!("workspace-{}", name));
+        std::fs::create_dir_all(&config.core.workspace).expect("workspace");
+        config.core.data_dir = temp.path().join(format!("data-{}", name));
+        *config.policy.policy_dir_mut() = temp.path().join(format!("policies-{}", name));
+        std::fs::create_dir_all(config.policy.policy_dir()).expect("policy dir");
+        config.ws_client.enabled = true;
+        config.ws_client.auth_token = Some("remote-token".to_string());
+        config
+    }
+
+    #[test]
+    fn signed_remote_request_verifies_for_trusted_peer() {
+        let (temp, config) = test_config();
+        let local = RemoteManager::new(config.clone());
+        let remote = RemoteManager::new(secondary_config(&temp, "remote"));
+
+        let local_status = local.status().expect("local status");
+        let remote_status = remote.status().expect("remote status");
+        local
+            .save_peers(&[RemotePeer {
+                identity: remote_status.node.clone(),
+                profile: remote_status.profile,
+                target: "http://remote-node".to_string(),
+                trusted: true,
+                auth_secret_key: None,
+                transports: Vec::new(),
+            }])
+            .expect("save peer");
+
+        let mut headers = HeaderMap::new();
+        for (name, value) in remote
+            .signed_request_headers(&local_status.node.node_id, "execute", Some("task-1"))
+            .expect("sign")
+        {
+            headers.insert(
+                name.parse::<axum::http::HeaderName>().expect("header name"),
+                value.parse().expect("header value"),
+            );
+        }
+
+        let verified = local
+            .verify_signed_request(&headers, "execute", Some("task-1"))
+            .expect("verify");
+        assert_eq!(verified.identity.node_id, remote_status.node.node_id);
+    }
+
+    #[test]
+    fn signed_remote_request_rejects_replay() {
+        let (temp, config) = test_config();
+        let local = RemoteManager::new(config.clone());
+        let remote = RemoteManager::new(secondary_config(&temp, "remote-replay"));
+
+        let local_status = local.status().expect("local status");
+        let remote_status = remote.status().expect("remote status");
+        local
+            .save_peers(&[RemotePeer {
+                identity: remote_status.node.clone(),
+                profile: remote_status.profile,
+                target: "http://remote-node".to_string(),
+                trusted: true,
+                auth_secret_key: None,
+                transports: Vec::new(),
+            }])
+            .expect("save peer");
+
+        let mut headers = HeaderMap::new();
+        for (name, value) in remote
+            .signed_request_headers(&local_status.node.node_id, "execute", Some("task-replay"))
+            .expect("sign")
+        {
+            headers.insert(
+                name.parse::<axum::http::HeaderName>().expect("header name"),
+                value.parse().expect("header value"),
+            );
+        }
+
+        local
+            .verify_signed_request(&headers, "execute", Some("task-replay"))
+            .expect("first verify");
+        let error = local
+            .verify_signed_request(&headers, "execute", Some("task-replay"))
+            .expect_err("replay should fail");
+        assert!(error.to_string().contains("replay"));
     }
 
     #[tokio::test]

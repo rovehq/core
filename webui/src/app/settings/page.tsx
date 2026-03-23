@@ -13,14 +13,19 @@ export default function SettingsPage() {
     error,
     hello,
     initialize,
+    installService,
     lock,
+    refreshServiceInstall,
+    serviceInstall,
     services,
     setServiceEnabled,
+    uninstallService,
   } = useRoveStore();
 
   useEffect(() => {
     void initialize();
-  }, [initialize]);
+    void refreshServiceInstall();
+  }, [initialize, refreshServiceInstall]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -58,6 +63,52 @@ export default function SettingsPage() {
                     Lock now
                   </button>
                 </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="font-medium mb-4">Daemon Install Modes</h3>
+              <div className="space-y-4">
+                {serviceInstall ? (
+                  ['login', 'boot'].map((mode) => {
+                    const state = serviceInstall[mode as 'login' | 'boot'];
+                    return (
+                      <div key={mode} className="flex items-center justify-between p-4 bg-surface2 rounded-lg">
+                        <div>
+                          <p className="font-medium">{mode}</p>
+                          <p className="text-sm text-gray-500">
+                            {state.installed ? 'installed' : 'not installed'} · default profile {state.default_profile}
+                          </p>
+                          {state.supported ? (
+                            <p className="text-sm text-gray-500">{state.path}</p>
+                          ) : (
+                            <p className="text-sm text-gray-500">Not supported on this platform.</p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {state.installed ? (
+                            <button
+                              onClick={() => void uninstallService(mode as 'login' | 'boot')}
+                              className="rounded-lg border border-error/30 px-4 py-2 text-sm text-error hover:bg-error/10"
+                            >
+                              Uninstall
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => void installService(mode as 'login' | 'boot')}
+                              disabled={!state.supported}
+                              className="rounded-lg bg-primary px-4 py-2 text-sm hover:bg-primary/80 disabled:bg-surface disabled:text-gray-500"
+                            >
+                              Install
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="p-4 bg-surface2 rounded-lg text-sm text-gray-500">Loading service install state…</div>
+                )}
               </div>
             </div>
 

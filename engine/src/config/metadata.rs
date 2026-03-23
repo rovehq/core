@@ -27,7 +27,7 @@ Run `rove` with no arguments to enter interactive mode.";
 pub const SERVICE_NAME: &str = "rove";
 
 /// Default daemon port
-pub const DEFAULT_PORT: u16 = 3727;
+pub const DEFAULT_PORT: u16 = 47630;
 
 /// User-Agent string for outbound HTTP requests
 pub fn user_agent() -> String {

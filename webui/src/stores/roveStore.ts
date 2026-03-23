@@ -3,6 +3,7 @@
 import { create } from 'zustand';
 
 import {
+  ApprovalRule,
   ApprovalRequest,
   AuthState,
   AuthStatus,
@@ -17,8 +18,10 @@ import {
   RemotePeer,
   RemoteStatus,
   RoveDaemonClient,
+  ServiceInstallStatus,
   ServiceStatus,
   TaskSummary,
+  ZeroTierStatus,
   readStoredToken,
   writeStoredToken,
 } from '@/lib/daemon';
@@ -64,7 +67,10 @@ interface RoveStore {
   policyExplain: PolicyExplainReport | null;
   remoteStatus: RemoteStatus | null;
   remoteNodes: RemotePeer[];
+  approvalRules: ApprovalRule[];
   approvals: ApprovalRequest[];
+  serviceInstall: ServiceInstallStatus | null;
+  zeroTier: ZeroTierStatus | null;
   ws: WebSocketState;
   initialize: () => Promise<void>;
   setupPassword: (password: string, nodeName: string, mode: string) => Promise<boolean>;
@@ -88,8 +94,16 @@ interface RoveStore {
   refreshRemote: () => Promise<void>;
   trustRemoteNode: (name: string) => Promise<boolean>;
   unpairRemoteNode: (name: string) => Promise<boolean>;
+  refreshApprovalRules: () => Promise<void>;
+  addApprovalRule: (rule: ApprovalRule) => Promise<boolean>;
+  removeApprovalRule: (id: string) => Promise<boolean>;
   refreshApprovals: () => Promise<void>;
   resolveApproval: (id: string, approved: boolean) => Promise<boolean>;
+  refreshServiceInstall: () => Promise<void>;
+  installService: (mode: 'login' | 'boot', profile?: 'desktop' | 'headless', port?: number) => Promise<boolean>;
+  uninstallService: (mode: 'login' | 'boot') => Promise<boolean>;
+  refreshZeroTier: () => Promise<void>;
+  joinZeroTier: (networkId?: string) => Promise<boolean>;
   useDispatchBrain: (model: string) => Promise<boolean>;
   setServiceEnabled: (name: string, enabled: boolean) => Promise<boolean>;
   setExtensionEnabled: (kind: string, name: string, enabled: boolean) => Promise<boolean>;
@@ -326,7 +340,10 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
   policyExplain: null,
   remoteStatus: null,
   remoteNodes: [],
+  approvalRules: [],
   approvals: [],
+  serviceInstall: null,
+  zeroTier: null,
   ws: { connected: false, connecting: false, error: null },
 
   initialize: async () => {
@@ -348,7 +365,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
 
       if (storedToken && (nextState === 'unlocked' || nextState === 'reauth_required')) {
         const authStatus = await daemon.authStatus();
-        const [services, extensions, config, brains, policies, remoteStatus, remoteNodes, approvals] = await Promise.all([
+        const [services, extensions, config, brains, policies, remoteStatus, remoteNodes, approvals, approvalRules, serviceInstall, zeroTier] = await Promise.all([
           daemon.listServices(),
           daemon.listExtensions(),
           daemon.getConfig(),
@@ -357,6 +374,9 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           daemon.remoteStatus(),
           daemon.listRemoteNodes(),
           daemon.listApprovals(),
+          daemon.listApprovalRules(),
+          daemon.serviceInstallStatus(),
+          daemon.zeroTierStatus(),
         ]);
         set({
           authStatus,
@@ -368,6 +388,9 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           remoteStatus,
           remoteNodes,
           approvals,
+          approvalRules: approvalRules.rules,
+          serviceInstall,
+          zeroTier,
           appState: deriveAppState(authStatus.state, true),
         });
         await get().refreshTasks();
@@ -386,7 +409,10 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           policyExplain: null,
           remoteStatus: null,
           remoteNodes: [],
+          approvalRules: [],
           approvals: [],
+          serviceInstall: null,
+          zeroTier: null,
           tasks: nextState === 'locked' || nextState === 'uninitialized' ? [] : get().tasks,
           ws: { connected: false, connecting: false, error: null },
         });
@@ -406,7 +432,10 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         policyExplain: null,
         remoteStatus: null,
         remoteNodes: [],
+        approvalRules: [],
         approvals: [],
+        serviceInstall: null,
+        zeroTier: null,
         appState: 'offline',
         error: error instanceof Error ? error.message : 'Unable to reach daemon',
         ws: { connected: false, connecting: false, error: null },
@@ -478,7 +507,10 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         policyExplain: null,
         remoteStatus: null,
         remoteNodes: [],
+        approvalRules: [],
         approvals: [],
+        serviceInstall: null,
+        zeroTier: null,
         appState: 'locked',
         tasks: [],
         ws: { connected: false, connecting: false, error: null },
@@ -650,6 +682,37 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
     }
   },
 
+  refreshApprovalRules: async () => {
+    try {
+      const file = await daemon.listApprovalRules();
+      set({ approvalRules: file.rules, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load approval rules' });
+    }
+  },
+
+  addApprovalRule: async (rule) => {
+    try {
+      const file = await daemon.addApprovalRule(rule);
+      set({ approvalRules: file.rules, error: null });
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to save approval rule' });
+      return false;
+    }
+  },
+
+  removeApprovalRule: async (id) => {
+    try {
+      await daemon.removeApprovalRule(id);
+      await get().refreshApprovalRules();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to remove approval rule' });
+      return false;
+    }
+  },
+
   refreshApprovals: async () => {
     try {
       const approvals = await daemon.listApprovals();
@@ -666,6 +729,58 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
       return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Unable to resolve approval' });
+      return false;
+    }
+  },
+
+  refreshServiceInstall: async () => {
+    try {
+      const serviceInstall = await daemon.serviceInstallStatus();
+      set({ serviceInstall, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load service install state' });
+    }
+  },
+
+  installService: async (mode, profile, port) => {
+    try {
+      await daemon.installService(mode, profile, port);
+      await get().refreshServiceInstall();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to install daemon service' });
+      return false;
+    }
+  },
+
+  uninstallService: async (mode) => {
+    try {
+      await daemon.uninstallService(mode);
+      await get().refreshServiceInstall();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to uninstall daemon service' });
+      return false;
+    }
+  },
+
+  refreshZeroTier: async () => {
+    try {
+      const zeroTier = await daemon.zeroTierStatus();
+      set({ zeroTier, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load ZeroTier status' });
+    }
+  },
+
+  joinZeroTier: async (networkId) => {
+    try {
+      const zeroTier = await daemon.zeroTierJoin(networkId);
+      set({ zeroTier, error: null });
+      await get().refreshRemote();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to join ZeroTier network' });
       return false;
     }
   },

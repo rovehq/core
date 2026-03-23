@@ -36,9 +36,9 @@ The Rove daemon automatically serves the built WebUI:
 ```bash
 # After building, start the daemon
 cd /Users/as/workspace/rove/core/target/debug
-ROVE_OPENAI_API_KEY=test ./rove daemon --port 3727
+ROVE_OPENAI_API_KEY=test ./rove daemon --port 47630
 
-# WebUI is now at http://localhost:3727
+# Open the hosted shell at https://app.roveai.co
 ```
 
 Or use the build script:
@@ -186,7 +186,7 @@ npm run build
 
 ### WebSocket not connecting
 - Check daemon is running: `rove status`
-- Check correct port: default is 3727
+- Check correct port: default is 47630
 - Check browser console for errors
 
 ### Styles not loading

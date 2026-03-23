@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 import Nav from '@/components/Nav';
 import { useRoveStore } from '@/stores/roveStore';
@@ -11,16 +11,21 @@ export default function RemotePage() {
     error,
     initialize,
     refreshRemote,
+    refreshZeroTier,
     remoteNodes,
     remoteStatus,
     trustRemoteNode,
     unpairRemoteNode,
+    zeroTier,
+    joinZeroTier,
   } = useRoveStore();
+  const [networkId, setNetworkId] = useState('');
 
   useEffect(() => {
     void initialize();
     void refreshRemote();
-  }, [initialize, refreshRemote]);
+    void refreshZeroTier();
+  }, [initialize, refreshRemote, refreshZeroTier]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -37,9 +42,51 @@ export default function RemotePage() {
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6 space-y-6">
         <section className="bg-surface rounded-xl p-6 border border-surface2 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Stat label="Node" value={remoteStatus?.node.node_name ?? 'unknown'} />
+          <Stat label="Node ID" value={remoteStatus?.node.node_id ?? 'unknown'} />
           <Stat label="Role" value={remoteStatus?.profile.execution_role ?? 'unknown'} />
           <Stat label="Queue" value={`${remoteStatus?.load?.pending_tasks ?? 0} pending / ${remoteStatus?.load?.running_tasks ?? 0} running`} />
           <Stat label="Recent" value={`${remoteStatus?.load?.recent_successes ?? 0} ok / ${remoteStatus?.load?.recent_failures ?? 0} fail`} />
+        </section>
+
+        <section className="bg-surface rounded-xl p-6 border border-surface2 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">ZeroTier Transport</h2>
+              <p className="text-sm text-gray-400">
+                {zeroTier?.enabled ? 'enabled' : 'disabled'} · service {zeroTier?.service_online ? 'online' : 'offline'}
+              </p>
+            </div>
+            <button
+              onClick={() => void refreshZeroTier()}
+              className="rounded-lg border border-surface2 px-3 py-2 text-sm hover:border-primary"
+            >
+              Refresh Transport
+            </button>
+          </div>
+          <div className="rounded-lg bg-surface2 px-4 py-3 text-sm text-gray-300 space-y-1">
+            <p>Network: <span className="font-mono">{zeroTier?.network_id ?? 'not configured'}</span></p>
+            <p>Node: <span className="font-mono">{zeroTier?.node_id ?? 'unknown'}</span></p>
+            <p>Assigned addresses: {zeroTier?.assigned_addresses.join(', ') || 'none'}</p>
+            <p>Transport URLs: {zeroTier?.transport_records.map((record) => record.base_url ?? record.address).join(', ') || 'none'}</p>
+            {zeroTier?.message ? <p className="text-gray-500">{zeroTier.message}</p> : null}
+          </div>
+          <form
+            className="flex flex-col gap-3 md:flex-row"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              await joinZeroTier(networkId || zeroTier?.network_id || undefined);
+            }}
+          >
+            <input
+              value={networkId}
+              onChange={(event) => setNetworkId(event.target.value)}
+              className="flex-1 rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+              placeholder="ZeroTier network id"
+            />
+            <button className="rounded-lg bg-primary px-4 py-2 text-sm font-medium hover:bg-primary/80">
+              Join Network
+            </button>
+          </form>
         </section>
 
         <section className="bg-surface rounded-xl p-6 border border-surface2 space-y-4">
@@ -61,9 +108,13 @@ export default function RemotePage() {
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="font-medium">{node.identity.node_name}</p>
+                      <p className="text-sm text-gray-500">id {node.identity.node_id}</p>
                       <p className="text-sm text-gray-500">{node.target}</p>
                       <p className="text-sm text-gray-500">
                         {node.profile.execution_role} · tags {node.profile.tags.join(', ') || 'none'} · caps {node.profile.capabilities.join(', ') || 'none'}
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        transports {node.transports.map((record) => record.base_url ?? record.address).join(', ') || 'none'}
                       </p>
                     </div>
                     <div className="flex items-center gap-2">

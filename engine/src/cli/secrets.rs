@@ -11,6 +11,7 @@ const KNOWN_SECRETS: &[(&str, &str)] = &[
     ("gemini", "gemini_api_key"),
     ("nvidia_nim", "nvidia_nim_api_key"),
     ("telegram", "telegram_token"),
+    ("zerotier", "zerotier_api_token"),
     ("webui", "webui_token"),
 ];
 

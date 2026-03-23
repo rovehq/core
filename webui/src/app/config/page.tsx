@@ -6,13 +6,16 @@ import Nav from '@/components/Nav';
 import { useRoveStore } from '@/stores/roveStore';
 
 export default function ConfigPage() {
-  const { appState, clearError, config, daemonUrl, error, hello, initialize, updateConfig } = useRoveStore();
+  const { appState, clearError, config, daemonUrl, error, hello, initialize, remoteStatus, updateConfig } = useRoveStore();
   const [nodeName, setNodeName] = useState('');
+  const [profile, setProfile] = useState<'desktop' | 'headless'>('desktop');
   const [privacyMode, setPrivacyMode] = useState('local_only');
   const [idleTimeout, setIdleTimeout] = useState('1200');
   const [absoluteTimeout, setAbsoluteTimeout] = useState('43200');
   const [reauthWindow, setReauthWindow] = useState('600');
   const [persistOnRestart, setPersistOnRestart] = useState(false);
+  const [approvalMode, setApprovalMode] = useState<'default' | 'allowlist' | 'open' | 'assisted'>('default');
+  const [secretBackend, setSecretBackend] = useState<'auto' | 'vault' | 'keychain' | 'env'>('auto');
 
   useEffect(() => {
     void initialize();
@@ -23,11 +26,14 @@ export default function ConfigPage() {
       return;
     }
     setNodeName(config.node_name);
+    setProfile(config.profile);
     setPrivacyMode(config.privacy_mode);
     setIdleTimeout(String(config.idle_timeout_secs));
     setAbsoluteTimeout(String(config.absolute_timeout_secs));
     setReauthWindow(String(config.reauth_window_secs));
     setPersistOnRestart(config.session_persist_on_restart);
+    setApprovalMode(config.approval_mode);
+    setSecretBackend(config.secret_backend);
   }, [config]);
 
   return (
@@ -65,6 +71,8 @@ export default function ConfigPage() {
               <h3 className="font-medium mb-4">Node Identity</h3>
               <div className="space-y-3">
                 <SettingRow label="Node" value={hello?.node.node_name ?? 'unknown'} />
+                <SettingRow label="Node ID" value={remoteStatus?.node.node_id ?? 'unknown'} />
+                <SettingRow label="Public key" value={remoteStatus?.node.public_key ?? 'unknown'} />
                 <SettingRow label="Role" value={hello?.node.role ?? 'unknown'} />
                 <SettingRow label="Version" value={hello?.version ?? 'unknown'} />
               </div>
@@ -85,15 +93,28 @@ export default function ConfigPage() {
                 event.preventDefault();
                 await updateConfig({
                   node_name: nodeName,
+                  profile,
                   privacy_mode: privacyMode,
                   idle_timeout_secs: Number(idleTimeout),
                   absolute_timeout_secs: Number(absoluteTimeout),
                   reauth_window_secs: Number(reauthWindow),
                   session_persist_on_restart: persistOnRestart,
+                  approval_mode: approvalMode,
+                  secret_backend: secretBackend,
                 });
               }}
             >
               <h3 className="font-medium">Daemon Settings</h3>
+              <Field label="Profile">
+                <select
+                  value={profile}
+                  onChange={(event) => setProfile(event.target.value as 'desktop' | 'headless')}
+                  className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                >
+                  <option value="desktop">Desktop</option>
+                  <option value="headless">Headless</option>
+                </select>
+              </Field>
               <Field label="Node name">
                 <input
                   value={nodeName}
@@ -112,6 +133,32 @@ export default function ConfigPage() {
                   <option value="cloud_enabled">Cloud enabled</option>
                 </select>
               </Field>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="Approval mode">
+                  <select
+                    value={approvalMode}
+                    onChange={(event) => setApprovalMode(event.target.value as 'default' | 'allowlist' | 'open' | 'assisted')}
+                    className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                  >
+                    <option value="default">Default</option>
+                    <option value="allowlist">Allowlist</option>
+                    <option value="open">Open</option>
+                    <option value="assisted">Assisted</option>
+                  </select>
+                </Field>
+                <Field label="Secret backend">
+                  <select
+                    value={secretBackend}
+                    onChange={(event) => setSecretBackend(event.target.value as 'auto' | 'vault' | 'keychain' | 'env')}
+                    className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="vault">Vault</option>
+                    <option value="keychain">Keychain</option>
+                    <option value="env">Env</option>
+                  </select>
+                </Field>
+              </div>
               <div className="grid gap-4 md:grid-cols-3">
                 <Field label="Idle timeout (secs)">
                   <input value={idleTimeout} onChange={(event) => setIdleTimeout(event.target.value)} className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary" />
@@ -132,6 +179,7 @@ export default function ConfigPage() {
                 Keep sessions after daemon restart
               </label>
               <div className="rounded-lg bg-background p-3 text-sm text-gray-400">
+                Approval rules: <code>{config?.approvals_rules_path ?? 'unknown'}</code><br />
                 TLS: {config?.tls_enabled ? 'enabled' : 'disabled'}<br />
                 Cert: <code>{config?.tls_cert_path ?? 'unknown'}</code><br />
                 Key: <code>{config?.tls_key_path ?? 'unknown'}</code>

@@ -25,6 +25,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::HeaderMap,
     http::StatusCode,
     response::IntoResponse,
 };
@@ -34,6 +35,8 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 use super::{auth::AuthManager, completion, AppState};
+use crate::config::Config;
+use crate::remote::RemoteManager;
 
 // ── Client → Server messages ─────────────────────────────────────────────────
 
@@ -90,14 +93,28 @@ impl ServerMsg {
 pub async fn task_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     let manager = AuthManager::new(state.db.clone());
-    let Some(token) = query.token.as_deref() else {
-        return (StatusCode::UNAUTHORIZED, "Missing WebSocket token").into_response();
-    };
-    if let Err(error) = manager.validate_session(token, true).await {
-        return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+    if let Some(token) = query.token.as_deref() {
+        if let Err(error) = manager.validate_session(token, true).await {
+            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+        }
+    } else {
+        let config = match Config::load_or_create() {
+            Ok(config) => config,
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error.to_string(),
+                )
+                    .into_response()
+            }
+        };
+        if let Err(error) = RemoteManager::new(config).verify_signed_request(&headers, "event_stream", None) {
+            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+        }
     }
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
@@ -106,14 +123,28 @@ pub async fn task_ws_handler(
 pub async fn telemetry_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     let manager = AuthManager::new(state.db.clone());
-    let Some(token) = query.token.as_deref() else {
-        return (StatusCode::UNAUTHORIZED, "Missing WebSocket token").into_response();
-    };
-    if let Err(error) = manager.validate_session(token, true).await {
-        return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+    if let Some(token) = query.token.as_deref() {
+        if let Err(error) = manager.validate_session(token, true).await {
+            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+        }
+    } else {
+        let config = match Config::load_or_create() {
+            Ok(config) => config,
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error.to_string(),
+                )
+                    .into_response()
+            }
+        };
+        if let Err(error) = RemoteManager::new(config).verify_signed_request(&headers, "event_stream", None) {
+            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+        }
     }
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }

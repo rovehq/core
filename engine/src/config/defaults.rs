@@ -17,7 +17,7 @@ use super::{ApprovalMode, DaemonProfile, SecretBackend};
 
 /// Default webui bind address
 pub fn default_webui_bind_addr() -> String {
-    "127.0.0.1:3000".to_string()
+    format!("127.0.0.1:{}", crate::config::metadata::DEFAULT_PORT)
 }
 
 pub fn default_webui_idle_timeout_secs() -> u64 {
