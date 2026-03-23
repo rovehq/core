@@ -5,6 +5,8 @@
 //!
 //! # Configuration Sections
 //!
+//! - **config_schema_version**: persisted config schema version
+//! - **config_written_by**: engine version that most recently wrote the file
 //! - **core**: Workspace path, log level, data directory
 //! - **llm**: LLM provider settings and preferences
 //! - **tools**: Core tool enablement flags
@@ -84,6 +86,11 @@ pub use tools::*;
 pub use transport::*;
 pub use webui::*;
 
+use sdk::config_handle::{
+    ApprovalConfigSnapshot, ChannelsConfigSnapshot, ConfigMetadataSnapshot, CoreConfigSnapshot,
+    DaemonConfigSnapshot, LlmConfigSnapshot, SecretConfigSnapshot, ServicesConfigSnapshot,
+    VersionedConfigSnapshot,
+};
 use sdk::errors::EngineError;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -219,6 +226,16 @@ impl Config {
 
     /// Clamp all config values to valid ranges and validate
     fn clamp_and_validate(&mut self) -> Result<(), EngineError> {
+        if self.config_schema_version > metadata::CONFIG_SCHEMA_VERSION {
+            return Err(EngineError::Config(format!(
+                "Config schema version {} is newer than this engine supports ({})",
+                self.config_schema_version,
+                metadata::CONFIG_SCHEMA_VERSION
+            )));
+        }
+        self.config_schema_version = metadata::CONFIG_SCHEMA_VERSION;
+        self.config_written_by = metadata::VERSION.to_string();
+
         // Clamp memory config values
         self.memory.consolidation_interval_mins =
             self.memory.consolidation_interval_mins.clamp(5, 1440);
@@ -313,29 +330,74 @@ impl Config {
             }
         }
     }
+
+    pub fn sdk_snapshot(&self) -> VersionedConfigSnapshot {
+        VersionedConfigSnapshot {
+            metadata: ConfigMetadataSnapshot {
+                schema_version: self.config_schema_version,
+                written_by_version: self.config_written_by.clone(),
+            },
+            daemon: DaemonConfigSnapshot {
+                profile: self.daemon.profile.as_str().to_string(),
+            },
+            core: CoreConfigSnapshot {
+                workspace: self.core.workspace.display().to_string(),
+                data_dir: self.core.data_dir.display().to_string(),
+                log_level: self.core.log_level.clone(),
+            },
+            approvals: ApprovalConfigSnapshot {
+                mode: self.approvals.mode.as_str().to_string(),
+            },
+            llm: LlmConfigSnapshot {
+                default_provider: self.llm.default_provider.clone(),
+            },
+            secrets: SecretConfigSnapshot {
+                backend: self.secrets.backend.as_str().to_string(),
+            },
+            services: ServicesConfigSnapshot {
+                webui_enabled: self.webui.enabled,
+                remote_enabled: self.ws_client.enabled,
+                connector_engine_enabled: !self.mcp.servers.is_empty(),
+            },
+            channels: ChannelsConfigSnapshot {
+                telegram_enabled: self.telegram.enabled,
+            },
+        }
+    }
 }
 
 fn config_to_toml(config: &Config) -> Result<String, toml::ser::Error> {
-    let mut value = Value::try_from(config)?;
-    let table = value
-        .as_table_mut()
-        .expect("Config serialization should produce a TOML table");
-
-    if let Some(core) = table.get("core").cloned() {
-        table.insert("kernel".to_string(), core);
-    }
-
-    if let Some(policy) = table.get("policy").cloned() {
-        table.insert("policy".to_string(), canonical_policy_value(policy));
-    } else if let Some(steering) = table.get("steering").cloned() {
-        table.insert("policy".to_string(), canonical_policy_value(steering));
-    }
-
+    let mut table = Map::new();
+    table.insert(
+        "config_schema_version".to_string(),
+        Value::Integer(config.config_schema_version as i64),
+    );
+    table.insert(
+        "config_written_by".to_string(),
+        Value::String(config.config_written_by.clone()),
+    );
+    table.insert("daemon".to_string(), Value::try_from(&config.daemon)?);
+    table.insert("core".to_string(), Value::try_from(&config.core)?);
+    table.insert("approvals".to_string(), Value::try_from(&config.approvals)?);
+    table.insert("llm".to_string(), Value::try_from(&config.llm)?);
+    table.insert("tools".to_string(), Value::try_from(&config.tools)?);
+    table.insert("plugins".to_string(), Value::try_from(&config.plugins)?);
+    table.insert("security".to_string(), Value::try_from(&config.security)?);
+    table.insert("agent".to_string(), Value::try_from(&config.agent)?);
+    table.insert("memory".to_string(), Value::try_from(&config.memory)?);
+    table.insert(
+        "policy".to_string(),
+        canonical_policy_value(Value::try_from(&config.policy)?),
+    );
+    table.insert("secrets".to_string(), Value::try_from(&config.secrets)?);
+    table.insert("remote".to_string(), Value::try_from(&config.remote)?);
+    table.insert("gateway".to_string(), Value::try_from(&config.gateway)?);
+    table.insert("mcp".to_string(), Value::try_from(&config.mcp)?);
     table.insert("services".to_string(), Value::Table(public_services_table(config)));
     table.insert("channels".to_string(), Value::Table(public_channels_table(config)));
-    insert_public_brain_aliases(table, config)?;
+    insert_public_brain_aliases(&mut table, config)?;
 
-    toml::to_string_pretty(&value)
+    toml::to_string_pretty(&Value::Table(table))
 }
 
 fn normalize_public_aliases(value: &mut Value) -> Result<(), EngineError> {
@@ -585,13 +647,78 @@ auto_unload = true
 
         config.save_to_path(&config_path).expect("save config");
         let raw = std::fs::read_to_string(&config_path).expect("read config");
-        assert!(raw.contains("[kernel]"));
+        assert!(raw.contains("config_schema_version = 2"));
+        assert!(raw.contains("config_written_by = "));
+        assert!(raw.contains("[core]"));
+        assert!(!raw.contains("[kernel]"));
         assert!(raw.contains("[policy]"));
         assert!(raw.contains("[services.logging]"));
         assert!(raw.contains("[services.webui]"));
         assert!(raw.contains("[services.remote]"));
         assert!(raw.contains("[channels.telegram]"));
         assert!(raw.contains("[brains.dispatch]"));
+    }
+
+    #[test]
+    fn load_rejects_newer_config_schema() {
+        let base = std::env::current_dir()
+            .expect("cwd")
+            .join("target/config-tests")
+            .join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&base).expect("base dir");
+        let workspace = base.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let config_path = base.join("config.toml");
+
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"config_schema_version = 999
+config_written_by = "99.0.0"
+
+[core]
+workspace = "{workspace}"
+data_dir = "{data_dir}"
+
+[llm]
+default_provider = "ollama"
+sensitivity_threshold = 0.7
+complexity_threshold = 0.7
+
+[security]
+max_risk_tier = 2
+"#,
+                workspace = workspace.display(),
+                data_dir = base.join("data").display(),
+            ),
+        )
+        .expect("write config");
+
+        let error = Config::load_from_path(&config_path).expect_err("newer schema should fail");
+        assert!(error
+            .to_string()
+            .contains("Config schema version 999 is newer"));
+    }
+
+    #[test]
+    fn sdk_snapshot_tracks_schema_and_profile() {
+        let mut config = Config::default();
+        config.core.workspace = std::env::current_dir().expect("cwd");
+        config.core.data_dir = config.core.workspace.join("target/config-tests/sdk-snapshot");
+        config.daemon.profile = crate::config::DaemonProfile::Headless;
+        config.approvals.mode = crate::config::ApprovalMode::Allowlist;
+        config.secrets.backend = crate::config::SecretBackend::Vault;
+        config.ws_client.enabled = true;
+        config.telegram.enabled = true;
+        config.clamp_and_validate().expect("valid");
+
+        let snapshot = config.sdk_snapshot();
+        assert_eq!(snapshot.metadata.schema_version, 2);
+        assert_eq!(snapshot.daemon.profile, "headless");
+        assert_eq!(snapshot.approvals.mode, "allowlist");
+        assert_eq!(snapshot.secrets.backend, "vault");
+        assert!(snapshot.services.remote_enabled);
+        assert!(snapshot.channels.telegram_enabled);
     }
 }
 

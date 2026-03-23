@@ -10,6 +10,9 @@
 /// Must match `Cargo.toml [package] version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Persisted config schema version written to `config.toml`.
+pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+
 /// Application name (short, lowercase)
 pub const APP_NAME: &str = "rove";
 

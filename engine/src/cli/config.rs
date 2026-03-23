@@ -19,6 +19,8 @@ pub fn reload() -> Result<()> {
         "Reloaded config from {}",
         Config::config_path()?.display()
     );
+    println!("config_schema_version: {}", config.config_schema_version);
+    println!("config_written_by: {}", config.config_written_by);
     println!("profile: {}", config.daemon.profile.as_str());
     Ok(())
 }

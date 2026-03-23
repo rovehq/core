@@ -75,7 +75,13 @@ impl CoreTool for VisionTool {
     }
 
     fn start(&mut self, ctx: CoreContext) -> Result<(), EngineError> {
-        if let Some(workspace) = ctx.config.get("core.workspace").and_then(|v| v.as_str().map(PathBuf::from)) {
+        if let Some(snapshot) = ctx.config.snapshot() {
+            self.work_dir = PathBuf::from(snapshot.core.workspace);
+        } else if let Some(workspace) = ctx
+            .config
+            .get("core.workspace")
+            .and_then(|v| v.as_str().map(PathBuf::from))
+        {
             self.work_dir = workspace;
         }
         Ok(())

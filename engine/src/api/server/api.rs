@@ -59,6 +59,8 @@ pub struct CreateTaskRequest {
 
 #[derive(Debug, Serialize)]
 pub struct DaemonConfigView {
+    pub config_schema_version: u32,
+    pub config_written_by: String,
     pub node_name: String,
     pub profile: String,
     pub privacy_mode: String,
@@ -464,6 +466,8 @@ fn daemon_config_view() -> anyhow::Result<DaemonConfigView> {
     let approvals_rules_path = approvals::rules_path(&config)?;
 
     Ok(DaemonConfigView {
+        config_schema_version: config.config_schema_version,
+        config_written_by: config.config_written_by.clone(),
         node_name,
         profile: config.daemon.profile.as_str().to_string(),
         privacy_mode: config.webui.privacy_mode.clone(),

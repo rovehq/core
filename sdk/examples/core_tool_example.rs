@@ -4,9 +4,12 @@
 //! to interact with the engine.
 
 use sdk::{
-    AgentHandle, AgentHandleImpl, BusHandle, BusHandleImpl, ConfigHandle, ConfigHandleImpl,
-    CoreContext, CoreTool, CryptoHandle, CryptoHandleImpl, DbHandle, DbHandleImpl, EngineError,
-    NetworkHandle, NetworkHandleImpl, ToolInput, ToolOutput,
+    AgentHandle, AgentHandleImpl, ApprovalConfigSnapshot, BusHandle, BusHandleImpl,
+    ChannelsConfigSnapshot, ConfigHandle, ConfigMetadataSnapshot, CoreConfigSnapshot,
+    CoreContext, CoreTool, CryptoHandle, CryptoHandleImpl, DaemonConfigSnapshot, DbHandle,
+    DbHandleImpl, EngineError, LlmConfigSnapshot, NetworkHandle, NetworkHandleImpl,
+    SecretConfigSnapshot, ServicesConfigSnapshot, StaticConfigHandle, ToolInput, ToolOutput,
+    VersionedConfigSnapshot,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -159,18 +162,6 @@ impl DbHandleImpl for MockDbHandle {
     }
 }
 
-struct MockConfigHandle;
-impl ConfigHandleImpl for MockConfigHandle {
-    fn get(&self, key: &str) -> Option<serde_json::Value> {
-        println!("Mock: Getting config: {}", key);
-        match key {
-            "core.workspace" => Some(json!("~/projects")),
-            "llm.default_provider" => Some(json!("ollama")),
-            _ => None,
-        }
-    }
-}
-
 struct MockCryptoHandle;
 impl CryptoHandleImpl for MockCryptoHandle {
     fn sign_data(&self, data: &[u8]) -> Result<Vec<u8>, EngineError> {
@@ -226,7 +217,39 @@ fn main() {
     // Create mock handles
     let agent = AgentHandle::new(Arc::new(MockAgentHandle));
     let db = DbHandle::new(Arc::new(MockDbHandle));
-    let config = ConfigHandle::new(Arc::new(MockConfigHandle));
+    let config = ConfigHandle::new(Arc::new(StaticConfigHandle::from_snapshot(
+        VersionedConfigSnapshot {
+            metadata: ConfigMetadataSnapshot {
+                schema_version: 2,
+                written_by_version: "example".to_string(),
+            },
+            daemon: DaemonConfigSnapshot {
+                profile: "desktop".to_string(),
+            },
+            core: CoreConfigSnapshot {
+                workspace: "~/projects".to_string(),
+                data_dir: "~/.rove".to_string(),
+                log_level: "info".to_string(),
+            },
+            approvals: ApprovalConfigSnapshot {
+                mode: "default".to_string(),
+            },
+            llm: LlmConfigSnapshot {
+                default_provider: "ollama".to_string(),
+            },
+            secrets: SecretConfigSnapshot {
+                backend: "auto".to_string(),
+            },
+            services: ServicesConfigSnapshot {
+                webui_enabled: true,
+                remote_enabled: false,
+                connector_engine_enabled: false,
+            },
+            channels: ChannelsConfigSnapshot {
+                telegram_enabled: false,
+            },
+        },
+    )));
     let crypto = CryptoHandle::new(Arc::new(MockCryptoHandle));
     let network = NetworkHandle::new(Arc::new(MockNetworkHandle));
     let bus = BusHandle::new(Arc::new(MockBusHandle));

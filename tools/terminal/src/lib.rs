@@ -109,7 +109,13 @@ impl CoreTool for TerminalTool {
     }
 
     fn start(&mut self, ctx: CoreContext) -> Result<(), EngineError> {
-        if let Some(workspace) = ctx.config.get("core.workspace").and_then(|v| v.as_str().map(ToOwned::to_owned)) {
+        if let Some(snapshot) = ctx.config.snapshot() {
+            self.work_dir = snapshot.core.workspace;
+        } else if let Some(workspace) = ctx
+            .config
+            .get("core.workspace")
+            .and_then(|v| v.as_str().map(ToOwned::to_owned))
+        {
             self.work_dir = workspace;
         }
         Ok(())

@@ -10,6 +10,7 @@ use super::defaults::{default_data_dir, default_log_level, default_true};
 use super::gateway::GatewayFileConfig;
 use super::llm::LLMConfig;
 use super::memory::MemoryConfig;
+use super::metadata::{CONFIG_SCHEMA_VERSION, VERSION};
 use super::security::SecurityConfig;
 use super::secrets::SecretsConfig;
 use super::policy::PolicyConfig;
@@ -22,6 +23,10 @@ use super::webui::WebUIConfig;
 /// Main configuration structure loaded from `~/.rove/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
+    #[serde(default = "default_config_schema_version")]
+    pub config_schema_version: u32,
+    #[serde(default = "default_config_written_by")]
+    pub config_written_by: String,
     #[serde(default)]
     pub daemon: DaemonConfig,
     #[serde(default)]
@@ -58,6 +63,14 @@ pub struct Config {
     pub telegram: TelegramConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+}
+
+fn default_config_schema_version() -> u32 {
+    CONFIG_SCHEMA_VERSION
+}
+
+fn default_config_written_by() -> String {
+    VERSION.to_string()
 }
 
 /// Core engine configuration.

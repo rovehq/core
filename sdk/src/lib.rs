@@ -37,7 +37,11 @@ pub use brain::{
     ToolTag,
 };
 pub use bus_handle::{BusHandle, BusHandleImpl};
-pub use config_handle::{ConfigHandle, ConfigHandleImpl};
+pub use config_handle::{
+    ApprovalConfigSnapshot, ChannelsConfigSnapshot, ConfigHandle, ConfigHandleImpl,
+    ConfigMetadataSnapshot, CoreConfigSnapshot, DaemonConfigSnapshot, LlmConfigSnapshot,
+    SecretConfigSnapshot, ServicesConfigSnapshot, StaticConfigHandle, VersionedConfigSnapshot,
+};
 pub use control::{
     AuthState, AuthStatus, BrainFamily, DaemonCapabilities, DaemonHello, ExtensionKind,
     NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, NodeSummary, PolicyScope,
