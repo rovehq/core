@@ -58,11 +58,15 @@ pub struct CreateTaskRequest {
 #[derive(Debug, Serialize)]
 pub struct DaemonConfigView {
     pub node_name: String,
+    pub profile: String,
     pub privacy_mode: String,
     pub idle_timeout_secs: u64,
     pub absolute_timeout_secs: u64,
     pub reauth_window_secs: u64,
     pub session_persist_on_restart: bool,
+    pub approval_mode: String,
+    pub approvals_rules_path: String,
+    pub secret_backend: String,
     pub bind_addr: String,
     pub tls_enabled: bool,
     pub tls_cert_path: String,
@@ -72,11 +76,36 @@ pub struct DaemonConfigView {
 #[derive(Debug, Deserialize)]
 pub struct UpdateDaemonConfigRequest {
     pub node_name: Option<String>,
+    pub profile: Option<String>,
     pub privacy_mode: Option<String>,
     pub idle_timeout_secs: Option<u64>,
     pub absolute_timeout_secs: Option<u64>,
     pub reauth_window_secs: Option<u64>,
     pub session_persist_on_restart: Option<bool>,
+    pub approval_mode: Option<String>,
+    pub secret_backend: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateApprovalModeRequest {
+    pub mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddApprovalRuleRequest {
+    pub id: String,
+    pub action: String,
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    #[serde(default)]
+    pub channels: Vec<String>,
+    pub risk_tier: Option<u8>,
+    pub effect: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -336,6 +365,58 @@ fn json_error_response(
         .into_response()
 }
 
+fn parse_profile(value: &str) -> anyhow::Result<crate::config::DaemonProfile> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "desktop" => Ok(crate::config::DaemonProfile::Desktop),
+        "headless" => Ok(crate::config::DaemonProfile::Headless),
+        other => Err(anyhow::anyhow!(
+            "Invalid daemon profile '{}'. Use desktop or headless.",
+            other
+        )),
+    }
+}
+
+fn parse_approval_mode(value: &str) -> anyhow::Result<crate::config::ApprovalMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "default" => Ok(crate::config::ApprovalMode::Default),
+        "allowlist" => Ok(crate::config::ApprovalMode::Allowlist),
+        "open" => Ok(crate::config::ApprovalMode::Open),
+        "assisted" => Ok(crate::config::ApprovalMode::Assisted),
+        other => Err(anyhow::anyhow!(
+            "Invalid approval mode '{}'. Use default, allowlist, open, or assisted.",
+            other
+        )),
+    }
+}
+
+fn parse_secret_backend(value: &str) -> anyhow::Result<crate::config::SecretBackend> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(crate::config::SecretBackend::Auto),
+        "vault" => Ok(crate::config::SecretBackend::Vault),
+        "keychain" => Ok(crate::config::SecretBackend::Keychain),
+        "env" => Ok(crate::config::SecretBackend::Env),
+        other => Err(anyhow::anyhow!(
+            "Invalid secret backend '{}'. Use auto, vault, keychain, or env.",
+            other
+        )),
+    }
+}
+
+fn parse_rule_action(
+    value: &str,
+) -> anyhow::Result<approvals::ApprovalRuleAction> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "allow" => Ok(approvals::ApprovalRuleAction::Allow),
+        "require_approval" | "require-approval" => {
+            Ok(approvals::ApprovalRuleAction::RequireApproval)
+        }
+        other => Err(anyhow::anyhow!(
+            "Invalid approval rule action '{}'. Use allow or require-approval.",
+            other
+        )),
+    }
+}
+
 async fn set_extension_enabled_inner(
     kind: String,
     name: String,
@@ -355,14 +436,19 @@ fn daemon_config_view() -> anyhow::Result<DaemonConfigView> {
     let remote = RemoteManager::new(config.clone());
     let tls_status = super::tls::localhost_tls_status();
     let node_name = remote.status()?.node.node_name;
+    let approvals_rules_path = approvals::rules_path(&config)?;
 
     Ok(DaemonConfigView {
         node_name,
+        profile: config.daemon.profile.as_str().to_string(),
         privacy_mode: config.webui.privacy_mode.clone(),
         idle_timeout_secs: config.webui.idle_timeout_secs,
         absolute_timeout_secs: config.webui.absolute_timeout_secs,
         reauth_window_secs: config.webui.reauth_window_secs,
         session_persist_on_restart: config.webui.session_persist_on_restart,
+        approval_mode: config.approvals.mode.as_str().to_string(),
+        approvals_rules_path: approvals_rules_path.display().to_string(),
+        secret_backend: config.secrets.backend.as_str().to_string(),
         bind_addr: config.webui.bind_addr.clone(),
         tls_enabled: tls_status.enabled,
         tls_cert_path: tls_status.cert_path,
@@ -376,6 +462,10 @@ fn apply_config_update(payload: UpdateDaemonConfigRequest) -> anyhow::Result<Dae
 
     if let Some(node_name) = payload.node_name.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
         remote.rename(node_name)?;
+    }
+    if let Some(profile) = payload.profile {
+        config.daemon.profile = parse_profile(&profile)?;
+        config.apply_profile_preset();
     }
     if let Some(privacy_mode) = payload.privacy_mode {
         config.webui.privacy_mode = privacy_mode;
@@ -392,9 +482,107 @@ fn apply_config_update(payload: UpdateDaemonConfigRequest) -> anyhow::Result<Dae
     if let Some(persist) = payload.session_persist_on_restart {
         config.webui.session_persist_on_restart = persist;
     }
+    if let Some(mode) = payload.approval_mode {
+        config.approvals.mode = parse_approval_mode(&mode)?;
+    }
+    if let Some(secret_backend) = payload.secret_backend {
+        config.secrets.backend = parse_secret_backend(&secret_backend)?;
+    }
 
     config.save()?;
     daemon_config_view()
+}
+
+pub async fn reload_config() -> impl IntoResponse {
+    match daemon_config_view() {
+        Ok(config) => (StatusCode::OK, Json(config)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_approval_mode() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "mode": config.approvals.mode.as_str() })),
+        )
+            .into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn update_approval_mode(
+    Json(payload): Json<UpdateApprovalModeRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(mut config) => match parse_approval_mode(&payload.mode) {
+            Ok(mode) => {
+                config.approvals.mode = mode;
+                match config.save() {
+                    Ok(()) => (
+                        StatusCode::OK,
+                        Json(serde_json::json!({ "mode": config.approvals.mode.as_str() })),
+                    )
+                        .into_response(),
+                    Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+                }
+            }
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_approval_rules() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match approvals::load_rules(&config) {
+            Ok(file) => (StatusCode::OK, Json(file)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn add_approval_rule(
+    Json(payload): Json<AddApprovalRuleRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match parse_rule_action(&payload.action) {
+            Ok(action) => {
+                let rule = approvals::ApprovalRule {
+                    id: payload.id,
+                    action,
+                    tool: payload.tool,
+                    commands: payload.commands,
+                    paths: payload.paths,
+                    nodes: payload.nodes,
+                    channels: payload.channels,
+                    risk_tier: payload.risk_tier,
+                    effect: payload.effect,
+                };
+                match approvals::add_rule(&config, rule) {
+                    Ok(file) => (StatusCode::CREATED, Json(file)).into_response(),
+                    Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+                }
+            }
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn remove_approval_rule(Path(id): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match approvals::remove_rule(&config, &id) {
+            Ok(true) => StatusCode::NO_CONTENT.into_response(),
+            Ok(false) => json_error_response(
+                StatusCode::NOT_FOUND,
+                anyhow::anyhow!("Approval rule '{}' was not found", id),
+            ),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
 }
 
 pub async fn create_task(

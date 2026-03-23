@@ -3,13 +3,17 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::agent::AgentConfig;
+use super::approvals::ApprovalsConfig;
 use super::brain::BrainsConfig;
+use super::daemon::DaemonConfig;
 use super::defaults::{default_data_dir, default_log_level, default_true};
 use super::gateway::GatewayFileConfig;
 use super::llm::LLMConfig;
 use super::memory::MemoryConfig;
 use super::security::SecurityConfig;
+use super::secrets::SecretsConfig;
 use super::policy::PolicyConfig;
+use super::remote::RemoteConfig;
 use super::telegram::TelegramConfig;
 use super::tools::{PluginsConfig, ToolsConfig};
 use super::transport::{McpConfig, WsClientConfig};
@@ -19,7 +23,11 @@ use super::webui::WebUIConfig;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
+    pub daemon: DaemonConfig,
+    #[serde(default)]
     pub core: CoreConfig,
+    #[serde(default)]
+    pub approvals: ApprovalsConfig,
     #[serde(default)]
     pub llm: LLMConfig,
     #[serde(default)]
@@ -37,7 +45,11 @@ pub struct Config {
     #[serde(default, alias = "steering")]
     pub policy: PolicyConfig,
     #[serde(default)]
+    pub secrets: SecretsConfig,
+    #[serde(default)]
     pub ws_client: WsClientConfig,
+    #[serde(default)]
+    pub remote: RemoteConfig,
     #[serde(default)]
     pub gateway: GatewayFileConfig,
     #[serde(default)]

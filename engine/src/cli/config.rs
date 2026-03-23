@@ -13,6 +13,16 @@ pub fn show(config: &Config) -> Result<()> {
     Ok(())
 }
 
+pub fn reload() -> Result<()> {
+    let config = Config::load_or_create()?;
+    println!(
+        "Reloaded config from {}",
+        Config::config_path()?.display()
+    );
+    println!("profile: {}", config.daemon.profile.as_str());
+    Ok(())
+}
+
 fn mask_sensitive(value: &mut toml::Value, key: Option<&str>) {
     match value {
         toml::Value::Table(table) => {

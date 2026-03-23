@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -16,6 +16,7 @@ use crate::config::metadata::SERVICE_NAME;
 use crate::config::Config;
 use crate::policy::{infer_domain, PolicyExplainReport, PolicyManager};
 use crate::secrets::SecretManager;
+use crate::system::identity::IdentityManager;
 use sdk::{
     NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, RemoteEnvelope,
     RemoteExecutionPlan,
@@ -121,11 +122,7 @@ impl RemoteManager {
     }
 
     pub fn rename(&self, name: &str) -> Result<NodeIdentity> {
-        let path = self.remote_node_file();
-        let mut metadata = self.load_or_init_node_metadata()?;
-        metadata.identity.node_name = name.to_string();
-        self.save_node_metadata(&path, &metadata)?;
-        Ok(metadata.identity)
+        IdentityManager::new(self.config.clone()).rename(name)
     }
 
     pub fn local_profile(&self) -> Result<NodeProfile> {
@@ -133,26 +130,23 @@ impl RemoteManager {
     }
 
     pub fn set_execution_role(&self, execution_role: NodeExecutionRole) -> Result<NodeProfile> {
-        let path = self.remote_node_file();
         let mut metadata = self.load_or_init_node_metadata()?;
         metadata.profile.execution_role = execution_role;
-        self.save_node_metadata(&path, &metadata)?;
+        self.save_node_profile(&metadata.profile)?;
         Ok(metadata.profile)
     }
 
     pub fn replace_tags(&self, tags: &[String]) -> Result<NodeProfile> {
-        let path = self.remote_node_file();
         let mut metadata = self.load_or_init_node_metadata()?;
         metadata.profile.tags = tags.to_vec();
-        self.save_node_metadata(&path, &metadata)?;
+        self.save_node_profile(&metadata.profile)?;
         Ok(metadata.profile)
     }
 
     pub fn replace_capabilities(&self, capabilities: &[String]) -> Result<NodeProfile> {
-        let path = self.remote_node_file();
         let mut metadata = self.load_or_init_node_metadata()?;
         metadata.profile.capabilities = normalize_capabilities(capabilities);
-        self.save_node_metadata(&path, &metadata)?;
+        self.save_node_profile(&metadata.profile)?;
         Ok(metadata.profile)
     }
 
@@ -166,12 +160,29 @@ impl RemoteManager {
         capabilities: &[String],
     ) -> Result<RemotePeer> {
         let mut peers = self.load_peers()?;
-        let (node_name, endpoint) = resolve_pair_target(target, url)?;
+        let (_, endpoint) = resolve_pair_target(target, url)?;
+        let auth_token = token
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                self.config
+                    .ws_client
+                    .auth_token
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+            });
+        let remote_status = self.fetch_pair_status(&endpoint, auth_token.as_deref()).await;
+        let node_name = remote_status
+            .as_ref()
+            .map(|status| status.node.node_name.clone())
+            .unwrap_or_else(|_| target.to_string());
 
         if peers.iter().any(|peer| {
             peer.identity.node_name.eq_ignore_ascii_case(&node_name)
                 || peer.target.eq_ignore_ascii_case(&endpoint)
-                || peer.identity.node_id == target
+                || remote_status
+                    .as_ref()
+                    .map(|status| peer.identity.node_id == status.node.node_id)
+                    .unwrap_or(false)
         }) {
             bail!("Remote node '{}' is already paired", node_name);
         }
@@ -185,22 +196,41 @@ impl RemoteManager {
         } else {
             None
         };
+        if let Err(error) = &remote_status {
+            tracing::warn!(
+                target = %endpoint,
+                error = %error,
+                "Falling back to compatibility pairing without remote status"
+            );
+        }
 
         let peer = RemotePeer {
-            identity: NodeIdentity {
-                node_id: Uuid::new_v4().to_string(),
-                node_name: node_name.clone(),
-                public_key: Uuid::new_v4().simple().to_string(),
-            },
-            profile: NodeProfile {
-                capabilities: normalize_capabilities(capabilities),
-                tags: tags.to_vec(),
-                execution_role: if executor_only {
-                    NodeExecutionRole::ExecutorOnly
-                } else {
-                    NodeExecutionRole::Full
-                },
-            },
+            identity: remote_status
+                .as_ref()
+                .map(|status| status.node.clone())
+                .unwrap_or_else(|_| NodeIdentity {
+                    node_id: Uuid::new_v4().to_string(),
+                    node_name: if node_name.trim().is_empty() {
+                        derive_node_name(&endpoint)
+                    } else {
+                        node_name.clone()
+                    },
+                    public_key: Uuid::new_v4().simple().to_string(),
+                }),
+            profile: remote_status
+                .as_ref()
+                .map(|status| {
+                    merge_paired_profile(status.profile.clone(), executor_only, tags, capabilities)
+                })
+                .unwrap_or_else(|_| NodeProfile {
+                    capabilities: normalize_capabilities(capabilities),
+                    tags: tags.to_vec(),
+                    execution_role: if executor_only {
+                        NodeExecutionRole::ExecutorOnly
+                    } else {
+                        NodeExecutionRole::Full
+                    },
+                }),
             target: endpoint,
             trusted: false,
             auth_secret_key,
@@ -765,14 +795,29 @@ impl RemoteManager {
 
     async fn fetch_peer_status(&self, peer: &RemotePeer) -> Result<RemoteStatus> {
         let auth_token = self.auth_token_for_peer(peer).await?;
+        self.fetch_pair_status(&peer.target, Some(&auth_token)).await
+    }
+
+    async fn fetch_pair_status(
+        &self,
+        endpoint: &str,
+        auth_token: Option<&str>,
+    ) -> Result<RemoteStatus> {
         let client = Client::builder()
             .timeout(Duration::from_secs(2))
             .build()
             .context("Failed to build remote status client")?;
-        let endpoint = format!("{}/api/v1/remote/status", peer.target.trim_end_matches('/'));
-        let response = client
-            .get(endpoint)
-            .bearer_auth(auth_token)
+        let request = client.get(format!(
+            "{}/api/v1/remote/status",
+            endpoint.trim_end_matches('/')
+        ));
+        let request = if let Some(auth_token) = auth_token.filter(|value| !value.trim().is_empty())
+        {
+            request.bearer_auth(auth_token)
+        } else {
+            request
+        };
+        let response = request
             .send()
             .await
             .context("Failed to fetch remote node status")?;
@@ -955,6 +1000,10 @@ impl RemoteManager {
     }
 
     fn remote_node_file(&self) -> PathBuf {
+        self.config.core.data_dir.join("node-profile.toml")
+    }
+
+    fn legacy_remote_node_file(&self) -> PathBuf {
         self.config.core.data_dir.join("remote-node.toml")
     }
 
@@ -963,37 +1012,64 @@ impl RemoteManager {
     }
 
     fn load_or_init_node_metadata(&self) -> Result<RemoteNodeMetadata> {
+        let identity_manager = IdentityManager::new(self.config.clone());
+        let mut identity = identity_manager.load_or_init()?;
         let path = self.remote_node_file();
         if path.exists() {
             let raw = fs::read_to_string(&path)?;
-            return Ok(toml::from_str(&raw)?);
+            if let Ok(file) = toml::from_str::<NodeProfileFile>(&raw) {
+                return Ok(RemoteNodeMetadata {
+                    identity,
+                    profile: file.profile,
+                });
+            }
+            if let Ok(legacy) = toml::from_str::<RemoteNodeMetadata>(&raw) {
+                if identity.node_name != legacy.identity.node_name
+                    && !legacy.identity.node_name.trim().is_empty()
+                {
+                    identity = identity_manager.rename(&legacy.identity.node_name)?;
+                }
+                self.save_node_profile(&legacy.profile)?;
+                return Ok(RemoteNodeMetadata {
+                    identity,
+                    profile: legacy.profile,
+                });
+            }
         }
 
-        let metadata = RemoteNodeMetadata {
-            identity: NodeIdentity {
-                node_id: Uuid::new_v4().to_string(),
-                node_name: self.default_node_name(),
-                public_key: Uuid::new_v4().simple().to_string(),
-            },
-            profile: NodeProfile {
-                capabilities: vec![
-                    "task-routing".to_string(),
-                    "remote-execution".to_string(),
-                    "system-execution".to_string(),
-                ],
-                tags: vec![std::env::consts::OS.to_string()],
-                execution_role: NodeExecutionRole::Full,
-            },
-        };
-        self.save_node_metadata(&path, &metadata)?;
-        Ok(metadata)
+        let legacy_path = self.legacy_remote_node_file();
+        if legacy_path.exists() {
+            let raw = fs::read_to_string(&legacy_path)?;
+            if let Ok(legacy) = toml::from_str::<RemoteNodeMetadata>(&raw) {
+                if identity.node_name != legacy.identity.node_name
+                    && !legacy.identity.node_name.trim().is_empty()
+                {
+                    identity = identity_manager.rename(&legacy.identity.node_name)?;
+                }
+                self.save_node_profile(&legacy.profile)?;
+                return Ok(RemoteNodeMetadata {
+                    identity,
+                    profile: legacy.profile,
+                });
+            }
+        }
+
+        let profile = default_local_profile(&self.config);
+        self.save_node_profile(&profile)?;
+        Ok(RemoteNodeMetadata { identity, profile })
     }
 
-    fn save_node_metadata(&self, path: &Path, metadata: &RemoteNodeMetadata) -> Result<()> {
+    fn save_node_profile(&self, profile: &NodeProfile) -> Result<()> {
+        let path = self.remote_node_file();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, toml::to_string_pretty(metadata)?)?;
+        fs::write(
+            path,
+            toml::to_string_pretty(&NodeProfileFile {
+                profile: profile.clone(),
+            })?,
+        )?;
         Ok(())
     }
 
@@ -1029,17 +1105,6 @@ impl RemoteManager {
         };
         fs::write(path, toml::to_string_pretty(&file)?)?;
         Ok(())
-    }
-
-    fn default_node_name(&self) -> String {
-        self.config
-            .core
-            .workspace
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or("local-node")
-            .to_string()
     }
 
     fn derive_selection_context(&self, prompt: &str) -> SelectionContext {
@@ -1196,6 +1261,11 @@ impl RemoteManager {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RemoteNodeMetadata {
     identity: NodeIdentity,
+    profile: NodeProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NodeProfileFile {
     profile: NodeProfile,
 }
 
@@ -1358,6 +1428,42 @@ fn secret_key_fragment(node_name: &str) -> String {
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect()
+}
+
+fn default_local_profile(config: &Config) -> NodeProfile {
+    NodeProfile {
+        capabilities: normalize_capabilities(&[
+            "task-routing".to_string(),
+            "remote-execution".to_string(),
+            "system-execution".to_string(),
+        ]),
+        tags: vec![std::env::consts::OS.to_string()],
+        execution_role: if matches!(config.daemon.profile, crate::config::DaemonProfile::Headless) {
+            NodeExecutionRole::ExecutorOnly
+        } else {
+            NodeExecutionRole::Full
+        },
+    }
+}
+
+fn merge_paired_profile(
+    mut advertised: NodeProfile,
+    executor_only: bool,
+    tags: &[String],
+    capabilities: &[String],
+) -> NodeProfile {
+    if executor_only {
+        advertised.execution_role = NodeExecutionRole::ExecutorOnly;
+    }
+    if !tags.is_empty() {
+        advertised.tags = tags.to_vec();
+    }
+    if !capabilities.is_empty() {
+        advertised.capabilities = normalize_capabilities(capabilities);
+    } else {
+        advertised.capabilities = normalize_capabilities(&advertised.capabilities);
+    }
+    advertised
 }
 
 fn normalize_capabilities(capabilities: &[String]) -> Vec<String> {

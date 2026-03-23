@@ -46,15 +46,19 @@
 //! ```
 
 pub mod agent;
+pub mod approvals;
 pub mod brain;
 pub mod core;
+pub mod daemon;
 pub mod defaults;
 pub mod gateway;
 pub mod llm;
 pub mod memory;
 pub mod metadata;
 pub mod policy;
+pub mod remote;
 pub mod security;
+pub mod secrets;
 pub mod steering;
 pub mod telegram;
 pub mod tools;
@@ -62,15 +66,19 @@ pub mod transport;
 pub mod webui;
 
 pub use agent::*;
+pub use approvals::*;
 pub use brain::*;
 pub use core::*;
+pub use daemon::*;
 pub use defaults::*;
 pub use gateway::*;
 pub use llm::*;
 pub use memory::*;
 pub use metadata::*;
 pub use policy::*;
+pub use remote::*;
 pub use security::*;
+pub use secrets::*;
 pub use telegram::*;
 pub use tools::*;
 pub use transport::*;
@@ -287,6 +295,23 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Apply the built-in preset defaults for the selected daemon profile.
+    pub fn apply_profile_preset(&mut self) {
+        match self.daemon.profile {
+            DaemonProfile::Desktop => {
+                self.webui.enabled = true;
+                self.secrets.backend = SecretBackend::Auto;
+                self.approvals.mode = ApprovalMode::Default;
+            }
+            DaemonProfile::Headless => {
+                self.webui.enabled = true;
+                self.ws_client.enabled = true;
+                self.secrets.backend = SecretBackend::Vault;
+                self.approvals.mode = ApprovalMode::Allowlist;
+            }
+        }
     }
 }
 

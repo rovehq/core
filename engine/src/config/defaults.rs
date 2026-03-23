@@ -13,6 +13,8 @@
 
 use std::path::PathBuf;
 
+use super::{ApprovalMode, DaemonProfile, SecretBackend};
+
 /// Default webui bind address
 pub fn default_webui_bind_addr() -> String {
     "127.0.0.1:3000".to_string()
@@ -56,6 +58,18 @@ pub fn default_true() -> bool {
 /// Default false value
 pub fn default_false() -> bool {
     false
+}
+
+pub fn default_daemon_profile() -> DaemonProfile {
+    DaemonProfile::Desktop
+}
+
+pub fn default_approval_mode() -> ApprovalMode {
+    ApprovalMode::Default
+}
+
+pub fn default_secret_backend() -> SecretBackend {
+    SecretBackend::Auto
 }
 
 /// Default data directory
@@ -209,6 +223,10 @@ pub fn default_min_importance_to_inject() -> f32 {
 /// Default WebSocket URL
 pub fn default_ws_url() -> String {
     "ws://localhost:8080/ws".to_string()
+}
+
+pub fn default_zerotier_service_url() -> String {
+    "http://127.0.0.1:9993".to_string()
 }
 
 /// Default WebSocket reconnect delay

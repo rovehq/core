@@ -8,10 +8,10 @@ use tracing_subscriber::{
 };
 
 use rove_engine::cli::{
-    ActivateTarget, AddTarget, Cli, Command, ConfigAction, ExtensionAction,
-    ExtensionFacadeAction, ExtensionKindArg, McpAction, ModelAction, OutputFormat, PluginAction,
-    PolicyAction, RemoteAction, RemoteNodeAction, RemoteProfileAction, SecretsAction,
-    ServiceAction, SteeringAction,
+    ActivateTarget, AddTarget, ApprovalsAction, Cli, Command, ConfigAction, DaemonProfileArg,
+    ExtensionAction, ExtensionFacadeAction, ExtensionKindArg, McpAction, ModelAction,
+    OutputFormat, PluginAction, PolicyAction, RemoteAction, RemoteNodeAction,
+    RemoteProfileAction, SecretBackendAction, SecretsAction, ServiceAction, SteeringAction,
 };
 use rove_engine::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use rove_engine::server;
@@ -33,7 +33,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => rove_engine::cli::repl::run().await?,
-        Some(Command::Start { port }) => rove_engine::cli::daemon::start_background(port)?,
+        Some(Command::Start { port, profile }) => {
+            let profile = apply_profile_override(profile)?;
+            rove_engine::cli::daemon::start_background(port, profile)?
+        }
         Some(Command::Stop) => rove_engine::cli::daemon::stop()?,
         Some(Command::Task {
             prompt,
@@ -123,6 +126,7 @@ async fn main() -> Result<()> {
             handle_config(action, &config).await?;
         }
         Some(Command::Secrets { action }) => handle_secrets(action).await?,
+        Some(Command::Approvals { action }) => handle_approvals(action).await?,
         Some(Command::Mcp { action }) => {
             eprintln!(
                 "Compatibility alias: `rove mcp` remains available, but prefer `rove connector`."
@@ -131,7 +135,7 @@ async fn main() -> Result<()> {
             handle_mcp(action, &config).await?;
         }
         Some(Command::Brain { action }) => rove_engine::cli::brain::execute(action).await?,
-        Some(Command::Daemon { port }) => run_daemon(port).await?,
+        Some(Command::Daemon { port, profile }) => run_daemon(port, profile).await?,
         Some(Command::Doctor) => {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::doctor::handle_doctor(&config, OutputFormat::Text).await?;
@@ -254,7 +258,8 @@ fn log_file_path() -> PathBuf {
         .join("rove.log")
 }
 
-async fn run_daemon(port: u16) -> Result<()> {
+async fn run_daemon(port: u16, profile: Option<DaemonProfileArg>) -> Result<()> {
+    let _ = apply_profile_override(profile)?;
     let config = rove_engine::config::Config::load_or_create()?;
     // Runtime manager bootstrap happens inside CLI bootstrap:
     // builtins are registered immediately, while plugin schemas are loaded
@@ -664,6 +669,7 @@ async fn handle_model(action: ModelAction) -> Result<()> {
 async fn handle_config(action: ConfigAction, config: &rove_engine::config::Config) -> Result<()> {
     match action {
         ConfigAction::Show => rove_engine::cli::config::show(config),
+        ConfigAction::Reload => rove_engine::cli::config::reload(),
     }
 }
 
@@ -672,7 +678,33 @@ async fn handle_secrets(action: SecretsAction) -> Result<()> {
         SecretsAction::Set { name } => rove_engine::cli::secrets::set(&name).await,
         SecretsAction::List => rove_engine::cli::secrets::list().await,
         SecretsAction::Remove { name } => rove_engine::cli::secrets::remove(&name).await,
+        SecretsAction::Backend { action } => match action {
+            SecretBackendAction::Show => rove_engine::cli::secrets::show_backend(),
+            SecretBackendAction::Set { backend } => rove_engine::cli::secrets::set_backend(backend),
+        },
     }
+}
+
+async fn handle_approvals(action: ApprovalsAction) -> Result<()> {
+    let mut config = rove_engine::config::Config::load_or_create()?;
+    rove_engine::cli::approvals::handle(action, &mut config)
+}
+
+fn apply_profile_override(
+    profile: Option<DaemonProfileArg>,
+) -> Result<Option<rove_engine::config::DaemonProfile>> {
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+    let mut config = rove_engine::config::Config::load_or_create()?;
+    let profile = match profile {
+        DaemonProfileArg::Desktop => rove_engine::config::DaemonProfile::Desktop,
+        DaemonProfileArg::Headless => rove_engine::config::DaemonProfile::Headless,
+    };
+    config.daemon.profile = profile;
+    config.apply_profile_preset();
+    config.save()?;
+    Ok(Some(profile))
 }
 
 async fn handle_mcp(action: McpAction, config: &rove_engine::config::Config) -> Result<()> {

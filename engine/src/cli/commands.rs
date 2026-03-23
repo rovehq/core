@@ -33,6 +33,10 @@ pub enum Command {
         /// Port to bind the server to.
         #[arg(short, long, default_value_t = 3727)]
         port: u16,
+
+        /// Runtime profile for the daemon.
+        #[arg(long, value_enum)]
+        profile: Option<DaemonProfileArg>,
     },
 
     /// Stop the running Rove daemon.
@@ -126,6 +130,12 @@ pub enum Command {
         action: SecretsAction,
     },
 
+    /// Approval mode and allowlist rule management.
+    Approvals {
+        #[command(subcommand)]
+        action: ApprovalsAction,
+    },
+
     /// MCP server management.
     #[command(hide = true)]
     Mcp {
@@ -216,6 +226,10 @@ pub enum Command {
         /// Port to bind the HTTP server to.
         #[arg(short, long, default_value_t = 3727)]
         port: u16,
+
+        /// Runtime profile for the daemon.
+        #[arg(long, value_enum)]
+        profile: Option<DaemonProfileArg>,
     },
 
     /// Run system diagnostics.
@@ -968,10 +982,18 @@ pub enum ActivateTarget {
     Remote,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum DaemonProfileArg {
+    Desktop,
+    Headless,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ConfigAction {
     /// Show the current configuration with sensitive fields masked.
     Show,
+    /// Reload and validate config from disk.
+    Reload,
 }
 
 #[derive(Subcommand, Debug)]
@@ -982,6 +1004,87 @@ pub enum SecretsAction {
     List,
     /// Remove a stored secret.
     Remove { name: String },
+    /// Show or change the configured secret backend.
+    Backend {
+        #[command(subcommand)]
+        action: SecretBackendAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SecretBackendAction {
+    /// Show the configured backend.
+    Show,
+    /// Set the configured backend.
+    Set { backend: SecretBackendArg },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ApprovalsAction {
+    /// Show or change the current approval mode.
+    Mode {
+        #[command(subcommand)]
+        action: ApprovalModeAction,
+    },
+    /// Manage allowlist rules.
+    Rules {
+        #[command(subcommand)]
+        action: ApprovalRuleCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ApprovalModeAction {
+    Show,
+    Set { mode: ApprovalModeArg },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ApprovalRuleCommand {
+    List,
+    Add {
+        id: String,
+        #[arg(long, value_enum)]
+        action: ApprovalRuleActionArg,
+        #[arg(long)]
+        tool: Option<String>,
+        #[arg(long = "command")]
+        commands: Vec<String>,
+        #[arg(long = "path")]
+        paths: Vec<String>,
+        #[arg(long = "node")]
+        nodes: Vec<String>,
+        #[arg(long = "channel")]
+        channels: Vec<String>,
+        #[arg(long)]
+        risk_tier: Option<u8>,
+        #[arg(long)]
+        effect: Option<String>,
+    },
+    Remove { id: String },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum SecretBackendArg {
+    Auto,
+    Vault,
+    Keychain,
+    Env,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ApprovalModeArg {
+    Default,
+    Allowlist,
+    Open,
+    Assisted,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ApprovalRuleActionArg {
+    Allow,
+    #[value(name = "require-approval")]
+    RequireApproval,
 }
 
 #[derive(Subcommand, Debug)]

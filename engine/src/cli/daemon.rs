@@ -5,14 +5,17 @@ use anyhow::Result;
 
 use crate::cli::database_path::expand_data_dir;
 use crate::config::metadata::{APP_DISPLAY_NAME, VERSION};
-use crate::config::Config;
+use crate::config::{Config, DaemonProfile};
 
-pub fn start_background(port: u16) -> Result<()> {
+pub fn start_background(port: u16, profile: Option<DaemonProfile>) -> Result<()> {
     let config = Config::load_or_create()?;
     let executable = std::env::current_exe()?;
     let mut command = std::process::Command::new(&executable);
+    command.arg("daemon").args(["--port", &port.to_string()]);
+    if let Some(profile) = profile {
+        command.args(["--profile", profile.as_str()]);
+    }
     command
-        .args(["daemon", "--port", &port.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .stdin(std::process::Stdio::null());

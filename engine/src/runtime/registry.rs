@@ -414,6 +414,35 @@ impl ToolRegistry {
             operation_source_from_task_source(source),
         );
         let tier = self.risk_assessor.assess(&operation)?;
+        let risk_tier = match tier {
+            RiskTier::Tier0 => 0,
+            RiskTier::Tier1 => 1,
+            RiskTier::Tier2 => 2,
+        };
+
+        match approvals::evaluate(&self.config, tool_name, args, source, risk_tier)
+            .map_err(|error| EngineError::Config(error.to_string()))?
+        {
+            approvals::ApprovalDecision::AutoAllow { reason } => {
+                tracing::info!(
+                    task_id = %task_id,
+                    tool_name = %tool_name,
+                    reason = %reason,
+                    "Approval engine auto-allowed tool invocation"
+                );
+                return Ok(());
+            }
+            approvals::ApprovalDecision::RequireApproval { reason } => {
+                if let Some(reason) = reason.filter(|value| !value.trim().is_empty()) {
+                    tracing::info!(
+                        task_id = %task_id,
+                        tool_name = %tool_name,
+                        reason = %reason,
+                        "Approval engine requires explicit approval"
+                    );
+                }
+            }
+        }
 
         match tier {
             RiskTier::Tier0 => Ok(()),
@@ -432,7 +461,9 @@ impl ToolRegistry {
             return Ok(());
         }
 
-        if should_use_daemon_approval(source) {
+        if should_use_daemon_approval(source)
+            || matches!(self.config.daemon.profile, crate::config::DaemonProfile::Headless)
+        {
             let approved = approvals::request_approval(
                 task_id,
                 tool_name,
@@ -483,7 +514,9 @@ impl ToolRegistry {
             return Ok(());
         }
 
-        if should_use_daemon_approval(source) {
+        if should_use_daemon_approval(source)
+            || matches!(self.config.daemon.profile, crate::config::DaemonProfile::Headless)
+        {
             let approved = approvals::request_approval(
                 task_id,
                 tool_name,

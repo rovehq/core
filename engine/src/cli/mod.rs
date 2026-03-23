@@ -1,3 +1,4 @@
+pub mod approvals;
 pub mod bootstrap;
 pub mod brain;
 pub mod commands;

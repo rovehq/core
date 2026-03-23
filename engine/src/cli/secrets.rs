@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 
+use crate::cli::SecretBackendArg;
+use crate::config::{Config, SecretBackend};
 use crate::config::metadata::SERVICE_NAME;
 use crate::security::secrets::SecretManager;
 
@@ -50,6 +52,25 @@ pub async fn remove(name: &str) -> Result<()> {
     let manager = SecretManager::new(SERVICE_NAME);
     manager.delete_secret(key).await?;
     println!("Removed secret '{}'", name);
+    Ok(())
+}
+
+pub fn show_backend() -> Result<()> {
+    let manager = SecretManager::new(SERVICE_NAME);
+    println!("secret_backend: {}", manager.configured_backend().as_str());
+    Ok(())
+}
+
+pub fn set_backend(backend: SecretBackendArg) -> Result<()> {
+    let mut config = Config::load_or_create()?;
+    config.secrets.backend = match backend {
+        SecretBackendArg::Auto => SecretBackend::Auto,
+        SecretBackendArg::Vault => SecretBackend::Vault,
+        SecretBackendArg::Keychain => SecretBackend::Keychain,
+        SecretBackendArg::Env => SecretBackend::Env,
+    };
+    config.save()?;
+    println!("secret_backend: {}", config.secrets.backend.as_str());
     Ok(())
 }
 

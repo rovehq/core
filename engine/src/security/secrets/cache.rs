@@ -79,6 +79,8 @@ impl SecretCache {
                 SecretSource::Env => from_env.push(*key),
                 SecretSource::Keychain => from_keychain.push(*key),
                 SecretSource::Memory => from_memory.push(*key),
+                SecretSource::Vault => from_keychain.push(*key),
+                SecretSource::LegacyFallback => from_memory.push(*key),
             }
 
             cache.insert(key.to_string(), SecretString::new(secret_value));
