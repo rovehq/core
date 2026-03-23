@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
+use std::{fs::OpenOptions, process::Stdio};
 
 use anyhow::Result;
 
@@ -10,15 +11,22 @@ use crate::config::{Config, DaemonProfile};
 pub fn start_background(port: u16, profile: Option<DaemonProfile>) -> Result<()> {
     let config = Config::load_or_create()?;
     let executable = std::env::current_exe()?;
+    let startup_log = startup_log_path();
+    let stdout = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&startup_log)?;
+    let stderr = stdout.try_clone()?;
     let mut command = std::process::Command::new(&executable);
     command.arg("daemon").args(["--port", &port.to_string()]);
     if let Some(profile) = profile {
         command.args(["--profile", profile.as_str()]);
     }
     command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null());
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .stdin(Stdio::null());
 
     #[cfg(unix)]
     {
@@ -45,12 +53,22 @@ pub fn start_background(port: u16, profile: Option<DaemonProfile>) -> Result<()>
     std::thread::sleep(Duration::from_millis(250));
     if let Some(status) = child.try_wait()? {
         let _ = std::fs::remove_file(&pid_file);
-        anyhow::bail!("daemon exited immediately with status {}", status);
+        let startup_output = std::fs::read_to_string(&startup_log).unwrap_or_default();
+        let startup_output = startup_output.trim();
+        if startup_output.is_empty() {
+            anyhow::bail!("daemon exited immediately with status {}", status);
+        }
+        anyhow::bail!(
+            "daemon exited immediately with status {}\n{}",
+            status,
+            startup_output
+        );
     }
 
     println!();
     println!("  {} v{}", APP_DISPLAY_NAME, VERSION);
     println!("  Daemon started (PID {}, port {})", child.id(), port);
+    println!("  Startup log: {}", startup_log.display());
     println!();
     Ok(())
 }
@@ -116,4 +134,8 @@ pub fn pid_file() -> Result<PathBuf> {
 
 fn pid_file_path(config: &Config) -> PathBuf {
     expand_data_dir(&config.core.data_dir).join("rove.pid")
+}
+
+fn startup_log_path() -> PathBuf {
+    std::env::temp_dir().join(format!("rove-daemon-start-{}.log", std::process::id()))
 }

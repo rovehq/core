@@ -93,6 +93,7 @@ use sdk::config_handle::{
 };
 use sdk::errors::EngineError;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use toml::{map::Map, Value};
 
@@ -137,6 +138,8 @@ impl Config {
         let mut config: Config = raw
             .try_into()
             .map_err(|e| EngineError::Config(format!("Failed to parse config: {}", e)))?;
+
+        config.apply_env_overrides();
 
         // Clamp and validate configuration
         config.clamp_and_validate()?;
@@ -311,7 +314,17 @@ impl Config {
             })?;
         }
 
+        ensure_directory_writable(&self.core.data_dir)?;
+        ensure_database_path_writable(&self.core.data_dir.join("rove.db"))?;
+
         Ok(())
+    }
+
+    fn apply_env_overrides(&mut self) {
+        if let Some(data_dir) = std::env::var_os("ROVE_DATA_DIR").filter(|value| !value.is_empty())
+        {
+            self.core.data_dir = PathBuf::from(data_dir);
+        }
     }
 
     /// Apply the built-in preset defaults for the selected daemon profile.
@@ -747,6 +760,42 @@ fn expand_path(path: &Path) -> Result<PathBuf, EngineError> {
     } else {
         Ok(path.to_path_buf())
     }
+}
+
+fn ensure_directory_writable(path: &Path) -> Result<(), EngineError> {
+    let probe = path.join(format!(".rove-write-test-{}", std::process::id()));
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&probe)
+        .map_err(|error| {
+            EngineError::Config(format!(
+                "Configured data directory is not writable: {} ({})",
+                path.display(),
+                error
+            ))
+        })?;
+    let _ = fs::remove_file(probe);
+    Ok(())
+}
+
+fn ensure_database_path_writable(path: &Path) -> Result<(), EngineError> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|error| {
+            EngineError::Config(format!(
+                "Configured database path is not writable: {} ({}). Update `core.data_dir` or set `ROVE_DATA_DIR` to a writable location.",
+                path.display(),
+                error
+            ))
+        })?;
+    Ok(())
 }
 
 /// Reject dangerous workspace paths (system roots)
