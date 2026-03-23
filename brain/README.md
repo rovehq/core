@@ -1,31 +1,23 @@
-# 🧠 Brain
+# Brain
 
-AI model adapters for Rove's dispatch and reasoning pipeline.
+The `brain` crate contains the local dispatch and reasoning runtime used by the
+engine.
 
-## 📦 Modules
+## Modules
 
-| Module        | Description                             |
-| ------------- | --------------------------------------- |
-| `dispatch.rs` | 📡 Intent classification & task routing |
-| `runtime.rs`  | ⚙️ Model loading & inference execution  |
-| `adapter.rs`  | 🔌 Provider-agnostic model interface    |
-| `budget.rs`   | 💰 Token budget management              |
+| Module | Responsibility |
+| ------ | -------------- |
+| `dispatch/` | Fast task classification and route hints |
+| `reasoning/` | Reasoning-family model management and execution helpers |
+| `runtime.rs` | Shared model loading and inference plumbing |
+| `adapter.rs` | Provider-agnostic interfaces for local/runtime backends |
+| `budget.rs` | Token and model-budget helpers |
 
-## 🧬 How It Works
+## Role In The System
 
-```
-User Input → Dispatch Brain → Classify Intent
-                                    │
-                              ┌─────▼──────┐
-                              │  Reasoning  │
-                              │    Brain    │
-                              └─────┬──────┘
-                                    │
-                              Task Execution
-```
+- The dispatch family is used for fast task classification and routing.
+- Reasoning families back slower, higher-capability execution paths.
+- The engine chooses which family to invoke; this crate provides the runtime
+  plumbing and helpers rather than the task loop itself.
 
-The **dispatch brain** (lightweight, fast) classifies intent, then hands off to the **reasoning brain** (powerful, slower) for complex tasks.
-
----
-
-⬆️ [Back to root](../README.md)
+See [`../README.md`](../README.md) for the workspace overview.

@@ -1,21 +1,25 @@
-# 🧰 SDK
+# SDK
 
-Shared types, traits, and helpers for building Rove tools and plugins.
+The SDK crate contains the shared contracts used by the engine, installable
+extensions, tools, and supporting surfaces.
 
-## 📦 What's Inside
+## Main Surfaces
 
-| Module         | Description                                  |
-| -------------- | -------------------------------------------- |
-| `core_tool.rs` | 🔧 Trait for native core tools               |
-| `types.rs`     | 📋 Shared types (ToolCall, TaskResult, etc.) |
-| `manifest.rs`  | 📝 Plugin manifest parsing & validation      |
-| `errors.rs`    | ⚠️ Common error types                        |
-| `helpers.rs`   | 🛠️ Utility functions                         |
+| Module | Responsibility |
+| ------ | -------------- |
+| `control.rs` | Public control-plane types for daemon auth, remote nodes, profiles, services, and brains |
+| `core_tool.rs` | Trait and context for native core tools |
+| `manifest.rs` | Extension and plugin manifest parsing/validation |
+| `plugin.rs` | Plugin and runtime-facing plugin types |
+| `brain.rs` | Brain-family traits and result types |
+| `task.rs` | Task source and task-facing contracts |
+| `tool_io.rs` | Tool input/output and error surfaces |
+| `types.rs` | Compatibility re-exports for shared tool/task types |
+| `*_handle.rs` | Engine capability handles for config, crypto, DB, network, bus, and agents |
 
-## 🔗 Usage
+## Usage
 
 ```toml
-# In your tool's Cargo.toml
 [dependencies]
 rove-sdk = { path = "../sdk" }
 ```
@@ -27,15 +31,10 @@ pub struct MyTool;
 
 impl CoreTool for MyTool {
     fn name(&self) -> &str { "my-tool" }
-    // ...
 }
 ```
 
-## 📖 Examples
+The SDK intentionally carries both the older plugin compatibility types and the
+newer control-plane types while the repo finishes its public-surface cleanup.
 
-- [`core_tool_example.rs`](./examples/core_tool_example.rs) — Building a core tool
-- [`tool_usage.rs`](./examples/tool_usage.rs) — Using SDK types
-
----
-
-⬆️ [Back to root](../README.md)
+See [`../README.md`](../README.md) for workspace context.
