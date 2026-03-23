@@ -108,8 +108,8 @@ pub fn load_rules(config: &Config) -> Result<ApprovalRulesFile> {
     if !path.exists() {
         return Ok(ApprovalRulesFile::default());
     }
-    let raw = fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
     toml::from_str(&raw).with_context(|| format!("Failed to parse {}", path.display()))
 }
 
@@ -287,7 +287,8 @@ fn rule_matches(
     if !rule.paths.is_empty() {
         let paths = extract_string_values(args);
         if !rule.paths.iter().any(|pattern| {
-            paths.iter()
+            paths
+                .iter()
                 .any(|path| path_looks_like_path(path) && pattern_matches(pattern, path))
         }) {
             return false;
@@ -301,7 +302,11 @@ fn rule_matches(
         }) else {
             return false;
         };
-        if !rule.nodes.iter().any(|pattern| pattern_matches(pattern, node)) {
+        if !rule
+            .nodes
+            .iter()
+            .any(|pattern| pattern_matches(pattern, node))
+        {
             return false;
         }
     }
@@ -455,7 +460,9 @@ mod tests {
         });
 
         let approval = loop {
-            if let Some(approval) = list_pending().into_iter().find(|value| value.task_id == "task-1")
+            if let Some(approval) = list_pending()
+                .into_iter()
+                .find(|value| value.task_id == "task-1")
             {
                 break approval;
             }

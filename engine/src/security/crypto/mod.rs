@@ -628,10 +628,7 @@ mod tests {
         temp_file.write_all(b"dev payload").unwrap();
         temp_file.flush().unwrap();
 
-        let result = crypto.verify_file_signature(
-            temp_file.path(),
-            "LOCAL_DEV_PAYLOAD_SIGNATURE",
-        );
+        let result = crypto.verify_file_signature(temp_file.path(), "LOCAL_DEV_PAYLOAD_SIGNATURE");
         assert!(result.is_ok());
     }
 

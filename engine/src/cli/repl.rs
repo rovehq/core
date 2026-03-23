@@ -2,8 +2,12 @@ use anyhow::Result;
 use tokio::io::AsyncBufReadExt;
 
 use crate::config::metadata::{APP_DISPLAY_NAME, VERSION};
-use crate::storage::Database;
+use crate::config::Config;
+use crate::remote::{RemoteManager, RemoteSendOptions};
 use crate::storage::pending_tasks::PendingTaskStatus;
+use crate::storage::Database;
+use crate::targeting::extract_task_target;
+use crate::zerotier::ZeroTierManager;
 
 use super::bootstrap;
 use super::status;
@@ -75,8 +79,52 @@ async fn run_task(
     gateway: &std::sync::Arc<crate::api::gateway::Gateway>,
     input: &str,
 ) -> Result<()> {
+    let (task, node) = extract_task_target(input);
+    if let Some(node) = node {
+        let config = Config::load_or_create()?;
+        let manager = RemoteManager::new(config.clone());
+        let mut result = manager
+            .send_with_options(
+                &task,
+                RemoteSendOptions {
+                    node: Some(node),
+                    ..RemoteSendOptions::default()
+                },
+            )
+            .await;
+        if result.is_err() && config.remote.transports.zerotier.enabled {
+            let _ = ZeroTierManager::new(config.clone()).refresh().await;
+            result = manager
+                .send_with_options(
+                    &task,
+                    RemoteSendOptions {
+                        node: extract_task_target(input).1,
+                        ..RemoteSendOptions::default()
+                    },
+                )
+                .await;
+        }
+
+        match result {
+            Ok(result) => {
+                println!("  {GREEN}Done{RESET}");
+                if let Some(answer) = result.answer.or(result.message) {
+                    println!();
+                    for line in answer.lines() {
+                        println!("  {}", line);
+                    }
+                }
+                println!();
+            }
+            Err(error) => {
+                eprintln!("  Error: {}", error);
+            }
+        }
+        return Ok(());
+    }
+
     println!("  {DIM}Working...{RESET}");
-    let task_id = match gateway.submit_cli(input, None).await {
+    let task_id = match gateway.submit_cli(&task, None).await {
         Ok(task_id) => task_id,
         Err(error) => {
             eprintln!("  Failed to submit task: {}", error);
@@ -122,11 +170,7 @@ async fn print_history(database: &std::sync::Arc<Database>) -> Result<()> {
             crate::storage::TaskStatus::Completed => "done",
             crate::storage::TaskStatus::Failed => "failed",
         };
-        println!(
-            "  - [{}] {}",
-            status,
-            single_line(&task.input, 72)
-        );
+        println!("  - [{}] {}", status, single_line(&task.input, 72));
     }
     println!();
     Ok(())

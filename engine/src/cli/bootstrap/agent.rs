@@ -9,10 +9,12 @@ use crate::api::gateway::WorkspaceLocks;
 use crate::config::Config;
 use crate::llm::router::LLMRouter;
 use crate::memory::conductor::MemorySystem;
-use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
+use crate::policy::PolicyEngine;
+use crate::policy::{
+    active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir,
+};
 use crate::security::rate_limiter::RateLimiter;
 use crate::security::risk_assessor::RiskAssessor;
-use crate::policy::PolicyEngine;
 use crate::storage::{Database, TaskRepository};
 
 use super::plugins;
@@ -61,7 +63,8 @@ async fn build_task_agent_with_role(
 
     let db_pool = database.pool().clone();
 
-    let (providers, local_brain) = providers::build_for_execution_role(&config, execution_role).await?;
+    let (providers, local_brain) =
+        providers::build_for_execution_role(&config, execution_role).await?;
     let router = Arc::new(LLMRouter::with_local_brain(
         providers,
         Arc::new(config.llm.clone()),

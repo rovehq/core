@@ -9,9 +9,9 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::{auth::AuthManager, completion, AppState};
-use crate::cli::extensions;
-use crate::cli::brain::dispatch_family;
 use crate::channels::manager::ChannelManager;
+use crate::cli::brain::dispatch_family;
+use crate::cli::extensions;
 use crate::config::Config;
 use crate::gateway::Task;
 use crate::policy::PolicyManager;
@@ -19,10 +19,11 @@ use crate::remote::RemoteManager;
 use crate::security::approvals;
 use crate::service_install::{ServiceInstallMode, ServiceInstaller};
 use crate::services::{ManagedService, ServiceManager};
+use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
 use sdk::{
-    AuthState, DaemonCapabilities, DaemonHello, NodeLoadSnapshot, NodeSummary,
-    PolicyScope, RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, TaskSource,
+    AuthState, DaemonCapabilities, DaemonHello, NodeLoadSnapshot, NodeSummary, PolicyScope,
+    RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, TaskSource,
 };
 
 #[derive(Serialize)]
@@ -55,6 +56,7 @@ pub struct AuthLoginRequest {
 pub struct CreateTaskRequest {
     pub prompt: Option<String>,
     pub input: Option<String>,
+    pub node: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,14 +127,23 @@ pub struct ZeroTierJoinRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ZeroTierSetupRequest {
+    pub network_id: String,
+    pub api_token_key: Option<String>,
+    pub managed_name_sync: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteHandshakeRequest {
+    pub challenge: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct DispatchBrainUseRequest {
     pub model: String,
 }
 
-pub async fn hello(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn hello(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let auth_manager = AuthManager::new(state.db.clone());
     let config = match Config::load_or_create() {
         Ok(config) => config,
@@ -239,10 +250,7 @@ pub async fn auth_login(
     }
 }
 
-pub async fn auth_status(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn auth_status(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let Some(token) = AuthManager::bearer_token(&headers) else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -251,16 +259,16 @@ pub async fn auth_status(
             .into_response();
     };
 
-    match AuthManager::new(state.db.clone()).status_for_token(&token).await {
+    match AuthManager::new(state.db.clone())
+        .status_for_token(&token)
+        .await
+    {
         Ok(status) => (StatusCode::OK, Json(status)).into_response(),
         Err(error) => json_error_response(StatusCode::UNAUTHORIZED, error),
     }
 }
 
-pub async fn auth_lock(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn auth_lock(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let Some(token) = AuthManager::bearer_token(&headers) else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -311,9 +319,7 @@ pub async fn get_config() -> impl IntoResponse {
     }
 }
 
-pub async fn update_config(
-    Json(payload): Json<UpdateDaemonConfigRequest>,
-) -> impl IntoResponse {
+pub async fn update_config(Json(payload): Json<UpdateDaemonConfigRequest>) -> impl IntoResponse {
     match apply_config_update(payload) {
         Ok(view) => (StatusCode::OK, Json(view)).into_response(),
         Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
@@ -332,17 +338,18 @@ pub async fn list_extensions() -> impl IntoResponse {
 
 pub async fn list_brains() -> impl IntoResponse {
     match dispatch_family::status_view() {
-        Ok(dispatch) => (StatusCode::OK, Json(serde_json::json!({
-            "dispatch": dispatch,
-        })))
-        .into_response(),
+        Ok(dispatch) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "dispatch": dispatch,
+            })),
+        )
+            .into_response(),
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
 
-pub async fn use_dispatch_brain(
-    Json(payload): Json<DispatchBrainUseRequest>,
-) -> impl IntoResponse {
+pub async fn use_dispatch_brain(Json(payload): Json<DispatchBrainUseRequest>) -> impl IntoResponse {
     match dispatch_family::use_model(payload.model.trim()) {
         Ok(()) => match dispatch_family::status_view() {
             Ok(dispatch) => (StatusCode::OK, Json(dispatch)).into_response(),
@@ -370,10 +377,7 @@ pub async fn remove_extension(Path((kind, name)): Path<(String, String)>) -> imp
     }
 }
 
-fn json_error_response(
-    status: StatusCode,
-    error: impl std::fmt::Display,
-) -> Response {
+fn json_error_response(status: StatusCode, error: impl std::fmt::Display) -> Response {
     (
         status,
         Json(serde_json::json!({ "error": error.to_string() })),
@@ -418,9 +422,7 @@ fn parse_secret_backend(value: &str) -> anyhow::Result<crate::config::SecretBack
     }
 }
 
-fn parse_rule_action(
-    value: &str,
-) -> anyhow::Result<approvals::ApprovalRuleAction> {
+fn parse_rule_action(value: &str) -> anyhow::Result<approvals::ApprovalRuleAction> {
     match value.trim().to_ascii_lowercase().as_str() {
         "allow" => Ok(approvals::ApprovalRuleAction::Allow),
         "require_approval" | "require-approval" => {
@@ -444,16 +446,14 @@ fn parse_service_install_mode(value: &str) -> anyhow::Result<ServiceInstallMode>
     }
 }
 
-async fn set_extension_enabled_inner(
-    kind: String,
-    name: String,
-    enabled: bool,
-) -> Response {
+async fn set_extension_enabled_inner(kind: String, name: String, enabled: bool) -> Response {
     match Config::load_or_create() {
-        Ok(config) => match extensions::set_extension_enabled_api(&config, &kind, &name, enabled).await {
-            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
-            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
-        },
+        Ok(config) => {
+            match extensions::set_extension_enabled_api(&config, &kind, &name, enabled).await {
+                Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+                Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+            }
+        }
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -489,7 +489,12 @@ fn apply_config_update(payload: UpdateDaemonConfigRequest) -> anyhow::Result<Dae
     let mut config = Config::load_or_create()?;
     let remote = RemoteManager::new(config.clone());
 
-    if let Some(node_name) = payload.node_name.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(node_name) = payload
+        .node_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         remote.rename(node_name)?;
     }
     if let Some(profile) = payload.profile {
@@ -572,9 +577,7 @@ pub async fn list_approval_rules() -> impl IntoResponse {
     }
 }
 
-pub async fn add_approval_rule(
-    Json(payload): Json<AddApprovalRuleRequest>,
-) -> impl IntoResponse {
+pub async fn add_approval_rule(Json(payload): Json<AddApprovalRuleRequest>) -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => match parse_rule_action(&payload.action) {
             Ok(action) => {
@@ -618,9 +621,42 @@ pub async fn create_task(
     State(state): State<AppState>,
     Json(payload): Json<CreateTaskRequest>,
 ) -> impl IntoResponse {
-    let Some(input) = parse_task_input(payload.input, payload.prompt) else {
+    let Some(raw_input) = parse_task_input(payload.input, payload.prompt) else {
         return invalid_request("Request must include a non-empty `input` or `prompt` field");
     };
+
+    let (input, implicit_node) = extract_task_target(&raw_input);
+    let target_node = payload.node.or(implicit_node);
+
+    if let Some(node) = target_node.filter(|value| !value.trim().is_empty()) {
+        match Config::load_or_create() {
+            Ok(config) => match RemoteManager::new(config)
+                .send_with_options(
+                    &input,
+                    crate::remote::RemoteSendOptions {
+                        node: Some(node),
+                        ..crate::remote::RemoteSendOptions::default()
+                    },
+                )
+                .await
+            {
+                Ok(result) => {
+                    return (
+                        StatusCode::ACCEPTED,
+                        Json(serde_json::json!({
+                            "task_id": result.remote_task_id,
+                            "status": result.status,
+                        })),
+                    )
+                        .into_response();
+                }
+                Err(error) => {
+                    return json_error_response(StatusCode::BAD_REQUEST, error);
+                }
+            },
+            Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        }
+    }
 
     match state.gateway.submit_webui(&input, None).await {
         Ok(task_id) => (
@@ -700,9 +736,11 @@ pub async fn execute_remote_task(
                 if payload.task_id.as_deref().is_none() {
                     return invalid_request("Remote execute requests must include a task_id");
                 }
-                if let Err(error) = RemoteManager::new(config)
-                    .verify_signed_request(&headers, "execute", payload.task_id.as_deref())
-                {
+                if let Err(error) = RemoteManager::new(config).verify_signed_request(
+                    &headers,
+                    "execute",
+                    payload.task_id.as_deref(),
+                ) {
                     return json_error_response(StatusCode::UNAUTHORIZED, error);
                 }
             }
@@ -857,7 +895,34 @@ pub async fn task_status(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
 ) -> impl IntoResponse {
-    completion_response(&task_id, completion::load_completion(&state, &task_id).await)
+    completion_response(
+        &task_id,
+        completion::load_completion(&state, &task_id).await,
+    )
+}
+
+pub async fn remote_task_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(task_id): Path<String>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            if let Err(error) = RemoteManager::new(config).verify_signed_request(
+                &headers,
+                "task_status",
+                Some(&task_id),
+            ) {
+                return json_error_response(StatusCode::UNAUTHORIZED, error);
+            }
+        }
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+
+    completion_response(
+        &task_id,
+        completion::load_completion(&state, &task_id).await,
+    )
 }
 
 pub async fn list_services() -> impl IntoResponse {
@@ -905,9 +970,7 @@ pub async fn service_install_status() -> impl IntoResponse {
     }
 }
 
-pub async fn install_service(
-    Json(payload): Json<InstallServiceRequest>,
-) -> impl IntoResponse {
+pub async fn install_service(Json(payload): Json<InstallServiceRequest>) -> impl IntoResponse {
     let mode = match parse_service_install_mode(&payload.mode) {
         Ok(mode) => mode,
         Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
@@ -922,12 +985,11 @@ pub async fn install_service(
     };
 
     match Config::load_or_create() {
-        Ok(config) => match ServiceInstaller::new(config)
-            .install(
-                mode,
-                profile,
-                payload.port.unwrap_or(crate::info::DEFAULT_PORT),
-            ) {
+        Ok(config) => match ServiceInstaller::new(config).install(
+            mode,
+            profile,
+            payload.port.unwrap_or(crate::info::DEFAULT_PORT),
+        ) {
             Ok(status) => (StatusCode::CREATED, Json(status)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
@@ -1121,12 +1183,15 @@ pub async fn add_policy(Json(payload): Json<PolicyAddRequest>) -> impl IntoRespo
                 }
             };
             match manager.add(payload.name.trim(), scope).await {
-                Ok(path) => (StatusCode::CREATED, Json(serde_json::json!({
-                    "name": payload.name.trim(),
-                    "scope": payload.scope.trim(),
-                    "path": path,
-                })))
-                .into_response(),
+                Ok(path) => (
+                    StatusCode::CREATED,
+                    Json(serde_json::json!({
+                        "name": payload.name.trim(),
+                        "scope": payload.scope.trim(),
+                        "path": path,
+                    })),
+                )
+                    .into_response(),
                 Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
             }
         }
@@ -1139,11 +1204,14 @@ pub async fn remove_policy(Path(name): Path<String>) -> impl IntoResponse {
         Ok(config) => {
             let manager = PolicyManager::new(config, None);
             match manager.remove(&name).await {
-                Ok(path) => (StatusCode::OK, Json(serde_json::json!({
-                    "name": name,
-                    "path": path,
-                })))
-                .into_response(),
+                Ok(path) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "name": name,
+                        "path": path,
+                    })),
+                )
+                    .into_response(),
                 Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
             }
         }
@@ -1172,10 +1240,7 @@ pub async fn remote_status(State(state): State<AppState>) -> impl IntoResponse {
             Ok(mut status) => match current_node_load(&state).await {
                 Ok(load) => {
                     status.load = Some(load);
-                    if let Ok(transports) = ZeroTierManager::new(config)
-                        .transport_records()
-                        .await
-                    {
+                    if let Ok(transports) = ZeroTierManager::new(config).transport_records().await {
                         status.transports = transports;
                     }
                     (StatusCode::OK, Json(status)).into_response()
@@ -1196,6 +1261,33 @@ pub async fn remote_status(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+pub async fn remote_public_status(State(state): State<AppState>) -> impl IntoResponse {
+    remote_status(State(state)).await
+}
+
+pub async fn remote_identity() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match RemoteManager::new(config).identity_status() {
+            Ok(identity) => (StatusCode::OK, Json(identity)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn remote_handshake(Json(payload): Json<RemoteHandshakeRequest>) -> impl IntoResponse {
+    if payload.challenge.trim().is_empty() {
+        return invalid_request("Remote handshake requests must include a non-empty challenge");
+    }
+    match Config::load_or_create() {
+        Ok(config) => match RemoteManager::new(config).sign_handshake(&payload.challenge) {
+            Ok(proof) => (StatusCode::OK, Json(proof)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn zerotier_status() -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => match ZeroTierManager::new(config).status().await {
@@ -1206,15 +1298,83 @@ pub async fn zerotier_status() -> impl IntoResponse {
     }
 }
 
-pub async fn zerotier_join(
-    Json(payload): Json<ZeroTierJoinRequest>,
-) -> impl IntoResponse {
+pub async fn zerotier_join(Json(payload): Json<ZeroTierJoinRequest>) -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => match ZeroTierManager::new(config)
             .join(payload.network_id.as_deref())
             .await
         {
             Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn zerotier_install() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ZeroTierManager::new(config).install().await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn zerotier_uninstall() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ZeroTierManager::new(config).uninstall().await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn zerotier_setup(Json(payload): Json<ZeroTierSetupRequest>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ZeroTierManager::new(config)
+            .setup(
+                &payload.network_id,
+                payload.api_token_key.as_deref(),
+                payload.managed_name_sync.unwrap_or(true),
+            )
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn zerotier_refresh() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ZeroTierManager::new(config).refresh().await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn zerotier_candidates() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ZeroTierManager::new(config).list_candidates().await {
+            Ok(candidates) => (StatusCode::OK, Json(candidates)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn zerotier_trust_candidate(Path(candidate_id): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ZeroTierManager::new(config)
+            .trust_candidate(&candidate_id)
+            .await
+        {
+            Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),

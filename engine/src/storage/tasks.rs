@@ -319,8 +319,7 @@ impl TaskRepository {
         Ok(TaskOutcomeStats {
             recent_failures,
             recent_successes,
-            recent_avg_duration_ms: (duration_count > 0)
-                .then_some(duration_total / duration_count),
+            recent_avg_duration_ms: (duration_count > 0).then_some(duration_total / duration_count),
         })
     }
 

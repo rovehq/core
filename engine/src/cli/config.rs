@@ -15,10 +15,7 @@ pub fn show(config: &Config) -> Result<()> {
 
 pub fn reload() -> Result<()> {
     let config = Config::load_or_create()?;
-    println!(
-        "Reloaded config from {}",
-        Config::config_path()?.display()
-    );
+    println!("Reloaded config from {}", Config::config_path()?.display());
     println!("config_schema_version: {}", config.config_schema_version);
     println!("config_written_by: {}", config.config_written_by);
     println!("profile: {}", config.daemon.profile.as_str());

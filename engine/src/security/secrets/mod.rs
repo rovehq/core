@@ -125,8 +125,10 @@ impl SecretManager {
 
     pub async fn get_secret(&self, key: &str) -> Result<String, EngineError> {
         if let Some((value, source)) = self.lookup_secret(key).await {
-            if matches!(self.configured_backend(), SecretBackend::Auto | SecretBackend::Vault)
-                && !matches!(source, SecretSource::Vault | SecretSource::Memory)
+            if matches!(
+                self.configured_backend(),
+                SecretBackend::Auto | SecretBackend::Vault
+            ) && !matches!(source, SecretSource::Vault | SecretSource::Memory)
             {
                 let _ = self.write_vault_secret(key, &value);
             }
@@ -161,12 +163,10 @@ impl SecretManager {
         match self.configured_backend() {
             SecretBackend::Auto | SecretBackend::Vault => self.write_vault_secret(key, value)?,
             SecretBackend::Keychain => self.write_keychain_secret(key, value)?,
-            SecretBackend::Env => {
-                return Err(EngineError::KeyringError(
-                    "Configured secret backend 'env' is read-only; set environment variables instead"
-                        .to_string(),
-                ))
-            }
+            SecretBackend::Env => return Err(EngineError::KeyringError(
+                "Configured secret backend 'env' is read-only; set environment variables instead"
+                    .to_string(),
+            )),
         }
 
         self.memory_store
@@ -181,8 +181,7 @@ impl SecretManager {
         if matches!(backend, SecretBackend::Auto | SecretBackend::Vault) {
             let _ = self.delete_vault_secret(key);
         }
-        if matches!(backend, SecretBackend::Auto | SecretBackend::Keychain)
-            && !self.skip_keychain()
+        if matches!(backend, SecretBackend::Auto | SecretBackend::Keychain) && !self.skip_keychain()
         {
             let _ = self.delete_keychain_secret(key);
         }
@@ -204,7 +203,9 @@ impl SecretManager {
                 SecretSource::Vault => self.read_vault_secret(key).ok().flatten(),
                 SecretSource::Keychain => self.read_keychain_secret(key),
                 SecretSource::Memory => self.memory_store.read().await.get(key).cloned(),
-                SecretSource::LegacyFallback => self.read_legacy_fallback_secret(key).ok().flatten(),
+                SecretSource::LegacyFallback => {
+                    self.read_legacy_fallback_secret(key).ok().flatten()
+                }
             };
             if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
                 return Some((value, source));
@@ -367,10 +368,18 @@ impl SecretManager {
         let path = self.master_key_path()?;
         if path.exists() {
             let raw = fs::read_to_string(&path).map_err(|error| {
-                EngineError::Config(format!("Failed to read master key '{}': {}", path.display(), error))
+                EngineError::Config(format!(
+                    "Failed to read master key '{}': {}",
+                    path.display(),
+                    error
+                ))
             })?;
             let bytes = hex::decode(raw.trim()).map_err(|error| {
-                EngineError::Config(format!("Invalid master key '{}': {}", path.display(), error))
+                EngineError::Config(format!(
+                    "Invalid master key '{}': {}",
+                    path.display(),
+                    error
+                ))
             })?;
             return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
                 EngineError::Config(format!("Master key '{}' must be 32 bytes", path.display()))
@@ -381,7 +390,11 @@ impl SecretManager {
         OsRng.fill_bytes(&mut key);
         self.ensure_secure_parent(&path)?;
         fs::write(&path, hex::encode(key)).map_err(|error| {
-            EngineError::Config(format!("Failed to write master key '{}': {}", path.display(), error))
+            EngineError::Config(format!(
+                "Failed to write master key '{}': {}",
+                path.display(),
+                error
+            ))
         })?;
         self.lock_down_path(&path)?;
         Ok(key)
@@ -406,14 +419,13 @@ impl SecretManager {
             EngineError::Config(format!("Invalid vault ciphertext for '{}': {}", key, error))
         })?;
         let plaintext = cipher
-            .decrypt(
-                XNonce::from_slice(&nonce_bytes),
-                ciphertext.as_ref(),
-            )
-            .map_err(|error| EngineError::KeyringError(format!("Failed to decrypt secret '{}': {}", key, error)))?;
-        String::from_utf8(plaintext)
-            .map(Some)
-            .map_err(|error| EngineError::KeyringError(format!("Secret '{}' is not UTF-8: {}", key, error)))
+            .decrypt(XNonce::from_slice(&nonce_bytes), ciphertext.as_ref())
+            .map_err(|error| {
+                EngineError::KeyringError(format!("Failed to decrypt secret '{}': {}", key, error))
+            })?;
+        String::from_utf8(plaintext).map(Some).map_err(|error| {
+            EngineError::KeyringError(format!("Secret '{}' is not UTF-8: {}", key, error))
+        })
     }
 
     fn write_vault_secret(&self, key: &str, value: &str) -> Result<(), EngineError> {
@@ -425,7 +437,9 @@ impl SecretManager {
         OsRng.fill_bytes(&mut nonce);
         let ciphertext = cipher
             .encrypt(XNonce::from_slice(&nonce), value.as_bytes())
-            .map_err(|error| EngineError::KeyringError(format!("Failed to encrypt secret '{}': {}", key, error)))?;
+            .map_err(|error| {
+                EngineError::KeyringError(format!("Failed to encrypt secret '{}': {}", key, error))
+            })?;
 
         let timestamp = now_ts();
         let created_at = file
@@ -462,10 +476,18 @@ impl SecretManager {
             return Ok(VaultFile::default());
         }
         let raw = fs::read_to_string(&path).map_err(|error| {
-            EngineError::Config(format!("Failed to read vault '{}': {}", path.display(), error))
+            EngineError::Config(format!(
+                "Failed to read vault '{}': {}",
+                path.display(),
+                error
+            ))
         })?;
         toml::from_str(&raw).map_err(|error| {
-            EngineError::Config(format!("Failed to parse vault '{}': {}", path.display(), error))
+            EngineError::Config(format!(
+                "Failed to parse vault '{}': {}",
+                path.display(),
+                error
+            ))
         })
     }
 
@@ -473,10 +495,18 @@ impl SecretManager {
         let path = self.vault_path()?;
         self.ensure_secure_parent(&path)?;
         let serialized = toml::to_string_pretty(file).map_err(|error| {
-            EngineError::Config(format!("Failed to serialize vault '{}': {}", path.display(), error))
+            EngineError::Config(format!(
+                "Failed to serialize vault '{}': {}",
+                path.display(),
+                error
+            ))
         })?;
         fs::write(&path, serialized).map_err(|error| {
-            EngineError::Config(format!("Failed to write vault '{}': {}", path.display(), error))
+            EngineError::Config(format!(
+                "Failed to write vault '{}': {}",
+                path.display(),
+                error
+            ))
         })?;
         self.lock_down_path(&path)?;
         Ok(())
@@ -529,10 +559,18 @@ impl SecretManager {
         }
 
         let contents = fs::read_to_string(&path).map_err(|error| {
-            EngineError::Config(format!("Failed to read legacy secrets file '{}': {}", path.display(), error))
+            EngineError::Config(format!(
+                "Failed to read legacy secrets file '{}': {}",
+                path.display(),
+                error
+            ))
         })?;
         let secrets: HashMap<String, String> = toml::from_str(&contents).map_err(|error| {
-            EngineError::Config(format!("Failed to parse legacy secrets file '{}': {}", path.display(), error))
+            EngineError::Config(format!(
+                "Failed to parse legacy secrets file '{}': {}",
+                path.display(),
+                error
+            ))
         })?;
         Ok(secrets.get(key).cloned())
     }
@@ -544,7 +582,11 @@ impl SecretManager {
         }
 
         let contents = fs::read_to_string(&path).map_err(|error| {
-            EngineError::Config(format!("Failed to read legacy secrets file '{}': {}", path.display(), error))
+            EngineError::Config(format!(
+                "Failed to read legacy secrets file '{}': {}",
+                path.display(),
+                error
+            ))
         })?;
         let mut secrets: HashMap<String, String> = toml::from_str(&contents).unwrap_or_default();
         secrets.remove(key);
@@ -614,7 +656,10 @@ backend = "{backend}"
         let temp = TempDir::new().expect("temp dir");
         let config_path = configure_temp_root(&temp, "vault");
         let manager = SecretManager::new("rove");
-        manager.set_secret("openai_api_key", "secret-123").await.unwrap();
+        manager
+            .set_secret("openai_api_key", "secret-123")
+            .await
+            .unwrap();
         assert!(manager.has_secret("openai_api_key").await);
         assert_eq!(
             manager.get_secret("openai_api_key").await.unwrap(),
@@ -632,7 +677,10 @@ backend = "{backend}"
         let config_path = configure_temp_root(&temp, "env");
         std::env::set_var("ROVE_SECRET_BACKEND", "env");
         let manager = SecretManager::new("rove");
-        let error = manager.set_secret("openai_api_key", "secret-123").await.unwrap_err();
+        let error = manager
+            .set_secret("openai_api_key", "secret-123")
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("read-only"));
         std::env::remove_var("ROVE_SECRET_BACKEND");
         std::env::remove_var("ROVE_CONFIG_PATH");

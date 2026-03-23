@@ -25,12 +25,12 @@ use crate::builtin_tools::ToolRegistry;
 use crate::conductor::MemorySystem;
 use crate::db::tasks::{TaskRepository, TaskStatus};
 use crate::gateway::{Task, WorkspaceLocks};
-use crate::llm::ToolCall;
 use crate::llm::router::LLMRouter;
+use crate::llm::ToolCall;
+use crate::policy::PolicyEngine;
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::{OperationSource, RiskAssessor};
 use crate::security::secrets::scrub_text;
-use crate::policy::PolicyEngine;
 use sdk::{RemoteExecutionPlan, TaskDomain};
 
 use super::{preferences::PreferencesManager, WorkingMemory};
@@ -374,13 +374,8 @@ impl AgentCore {
         }
 
         let answer = render_planned_task_answer(&step_outputs);
-        self.insert_answer_event(
-            &task_id,
-            &answer,
-            steps.len(),
-            &context.domain_str,
-        )
-        .await?;
+        self.insert_answer_event(&task_id, &answer, steps.len(), &context.domain_str)
+            .await?;
 
         Ok(TaskResult::success(
             task_id.to_string(),

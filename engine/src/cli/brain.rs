@@ -82,7 +82,9 @@ pub(crate) fn stop_local_server() -> Result<()> {
 
 fn parse_target(target: &[String]) -> Result<(BrainFamilyArg, String)> {
     match target {
-        [] => bail!("Brain command needs a target. Example: `rove brain install dispatch bert-tiny`."),
+        [] => {
+            bail!("Brain command needs a target. Example: `rove brain install dispatch bert-tiny`.")
+        }
         [model] => Ok((BrainFamilyArg::Reasoning, model.clone())),
         [family, model, ..] => {
             if let Some(family) = parse_family_name(family) {

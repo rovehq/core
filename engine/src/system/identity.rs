@@ -127,8 +127,9 @@ impl IdentityManager {
 
     fn write_public_record(&self, record: &NodePublicRecord) -> Result<()> {
         let serialized = toml::to_string_pretty(record)?;
-        fs::write(self.public_identity_path(), serialized)
-            .with_context(|| format!("Failed to write {}", self.public_identity_path().display()))?;
+        fs::write(self.public_identity_path(), serialized).with_context(|| {
+            format!("Failed to write {}", self.public_identity_path().display())
+        })?;
         lock_down_path(&self.public_identity_path())?;
         Ok(())
     }
@@ -143,8 +144,9 @@ impl IdentityManager {
     fn load_signing_key(&self) -> Result<SigningKey> {
         let raw = fs::read_to_string(self.private_key_path())
             .with_context(|| format!("Failed to read {}", self.private_key_path().display()))?;
-        let bytes = hex::decode(raw.trim())
-            .with_context(|| format!("Invalid key data in {}", self.private_key_path().display()))?;
+        let bytes = hex::decode(raw.trim()).with_context(|| {
+            format!("Invalid key data in {}", self.private_key_path().display())
+        })?;
         let array = <[u8; 32]>::try_from(bytes.as_slice())
             .context("Expected 32-byte Ed25519 signing key")?;
         Ok(SigningKey::from_bytes(&array))
@@ -164,7 +166,12 @@ fn default_node_name() -> String {
         .or_else(|| std::env::var("HOSTNAME").ok())
         .or_else(|| std::env::var("COMPUTERNAME").ok())
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("rove-node-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]))
+        .unwrap_or_else(|| {
+            format!(
+                "rove-node-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..8]
+            )
+        })
 }
 
 fn identity_root(config: &Config) -> PathBuf {

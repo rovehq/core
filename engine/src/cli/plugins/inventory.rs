@@ -31,11 +31,7 @@ pub async fn handle_inspect(config: &Config, selector: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_list_filtered(
-    config: &Config,
-    format: OutputFormat,
-    kind: &str,
-) -> Result<()> {
+pub async fn handle_list_filtered(config: &Config, format: OutputFormat, kind: &str) -> Result<()> {
     let database = open_database(config).await?;
     let plugins = filter_installed_plugins(&list_installed_plugins(&database).await?, kind);
 

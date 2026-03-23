@@ -11,7 +11,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName, HeaderValue};
+use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
@@ -20,10 +20,9 @@ use crate::config::Config;
 use crate::policy::{infer_domain, PolicyExplainReport, PolicyManager};
 use crate::secrets::SecretManager;
 use crate::system::identity::IdentityManager;
-use crate::system::zerotier::RemoteTransportRecord;
 use sdk::{
     NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, RemoteEnvelope,
-    RemoteExecutionPlan,
+    RemoteExecutionPlan, RemoteTransportRecord,
 };
 
 const HEADER_ORIGIN_NODE_ID: &str = "x-rove-origin-node-id";
@@ -55,6 +54,21 @@ pub struct RemoteStatus {
     pub load: Option<NodeLoadSnapshot>,
     #[serde(default)]
     pub transports: Vec<RemoteTransportRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteIdentityStatus {
+    pub identity: NodeIdentity,
+    pub profile: NodeProfile,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transports: Vec<RemoteTransportRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteHandshakeProof {
+    pub identity: NodeIdentity,
+    pub profile: NodeProfile,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,6 +161,34 @@ impl RemoteManager {
         Ok(self.load_or_init_node_metadata()?.profile)
     }
 
+    pub fn identity_status(&self) -> Result<RemoteIdentityStatus> {
+        let metadata = self.load_or_init_node_metadata()?;
+        Ok(RemoteIdentityStatus {
+            identity: metadata.identity,
+            profile: metadata.profile,
+            transports: Vec::new(),
+        })
+    }
+
+    pub fn sign_handshake(&self, challenge: &str) -> Result<RemoteHandshakeProof> {
+        let metadata = self.load_or_init_node_metadata()?;
+        let signature = IdentityManager::new(self.config.clone())
+            .sign_message(&handshake_payload(challenge))?;
+        Ok(RemoteHandshakeProof {
+            identity: metadata.identity,
+            profile: metadata.profile,
+            signature,
+        })
+    }
+
+    pub fn verify_handshake(challenge: &str, proof: &RemoteHandshakeProof) -> bool {
+        IdentityManager::verify_message(
+            &proof.identity.public_key,
+            &handshake_payload(challenge),
+            &proof.signature,
+        )
+    }
+
     pub fn set_execution_role(&self, execution_role: NodeExecutionRole) -> Result<NodeProfile> {
         let mut metadata = self.load_or_init_node_metadata()?;
         metadata.profile.execution_role = execution_role;
@@ -179,24 +221,25 @@ impl RemoteManager {
     ) -> Result<RemotePeer> {
         let mut peers = self.load_peers()?;
         let (_, endpoint) = resolve_pair_target(target, url)?;
-        let auth_token = token
-            .map(ToOwned::to_owned)
-            .or_else(|| {
-                self.config
-                    .ws_client
-                    .auth_token
-                    .clone()
-                    .filter(|value| !value.trim().is_empty())
-            });
-        let remote_status = self.fetch_pair_status(&endpoint, auth_token.as_deref()).await;
-        let node_name = remote_status
+        let proof = Self::fetch_remote_handshake(&endpoint).await;
+        let remote_status = self.fetch_pair_status(&endpoint).await;
+        let node_name = proof
             .as_ref()
-            .map(|status| status.node.node_name.clone())
+            .map(|proof| proof.identity.node_name.clone())
+            .or_else(|_| {
+                remote_status
+                    .as_ref()
+                    .map(|status| status.node.node_name.clone())
+            })
             .unwrap_or_else(|_| target.to_string());
 
         if peers.iter().any(|peer| {
             peer.identity.node_name.eq_ignore_ascii_case(&node_name)
                 || peer.target.eq_ignore_ascii_case(&endpoint)
+                || proof
+                    .as_ref()
+                    .map(|value| peer.identity.node_id == value.identity.node_id)
+                    .unwrap_or(false)
                 || remote_status
                     .as_ref()
                     .map(|status| peer.identity.node_id == status.node.node_id)
@@ -214,18 +257,28 @@ impl RemoteManager {
         } else {
             None
         };
-        if let Err(error) = &remote_status {
+        if proof.is_err() && remote_status.is_err() {
+            if let Err(error) = &remote_status {
+                tracing::warn!(
+                    target = %endpoint,
+                    error = %error,
+                    "Falling back to compatibility pairing without remote status"
+                );
+            }
+        }
+        if let Err(error) = &proof {
             tracing::warn!(
                 target = %endpoint,
                 error = %error,
-                "Falling back to compatibility pairing without remote status"
+                "Remote handshake unavailable; pairing with compatibility discovery"
             );
         }
 
         let peer = RemotePeer {
-            identity: remote_status
+            identity: proof
                 .as_ref()
-                .map(|status| status.node.clone())
+                .map(|proof| proof.identity.clone())
+                .or_else(|_| remote_status.as_ref().map(|status| status.node.clone()))
                 .unwrap_or_else(|_| NodeIdentity {
                     node_id: Uuid::new_v4().to_string(),
                     node_name: if node_name.trim().is_empty() {
@@ -235,10 +288,20 @@ impl RemoteManager {
                     },
                     public_key: Uuid::new_v4().simple().to_string(),
                 }),
-            profile: remote_status
+            profile: proof
                 .as_ref()
-                .map(|status| {
-                    merge_paired_profile(status.profile.clone(), executor_only, tags, capabilities)
+                .map(|proof| {
+                    merge_paired_profile(proof.profile.clone(), executor_only, tags, capabilities)
+                })
+                .or_else(|_| {
+                    remote_status.as_ref().map(|status| {
+                        merge_paired_profile(
+                            status.profile.clone(),
+                            executor_only,
+                            tags,
+                            capabilities,
+                        )
+                    })
                 })
                 .unwrap_or_else(|_| NodeProfile {
                     capabilities: normalize_capabilities(capabilities),
@@ -249,13 +312,70 @@ impl RemoteManager {
                         NodeExecutionRole::Full
                     },
                 }),
-            target: endpoint,
+            target: endpoint.clone(),
             trusted: false,
             auth_secret_key,
-            transports: remote_status
+            transports: proof
                 .as_ref()
-                .map(|status| status.transports.clone())
+                .map(|_| guess_transports_for_endpoint(&endpoint))
+                .or_else(|_| {
+                    remote_status
+                        .as_ref()
+                        .map(|status| status.transports.clone())
+                })
                 .unwrap_or_default(),
+        };
+        peers.push(peer.clone());
+        self.save_peers(&peers)?;
+        Ok(peer)
+    }
+
+    pub fn upsert_verified_peer(
+        &self,
+        identity: NodeIdentity,
+        profile: NodeProfile,
+        target: &str,
+        transports: Vec<RemoteTransportRecord>,
+        auto_trust: bool,
+    ) -> Result<RemotePeer> {
+        let mut peers = self.load_peers()?;
+        if let Some(conflict) = peers.iter().find(|peer| {
+            peer.trusted
+                && peer
+                    .identity
+                    .node_name
+                    .eq_ignore_ascii_case(&identity.node_name)
+                && peer.identity.node_id != identity.node_id
+        }) {
+            bail!(
+                "Refusing to auto-trust '{}': node name already belongs to trusted node '{}'",
+                identity.node_name,
+                conflict.identity.node_id
+            );
+        }
+
+        if let Some(existing) = peers.iter_mut().find(|peer| {
+            peer.identity.node_id == identity.node_id
+                || peer.identity.public_key == identity.public_key
+                || peer.target.eq_ignore_ascii_case(target)
+        }) {
+            existing.identity = identity.clone();
+            existing.profile = profile;
+            existing.target = target.to_string();
+            existing.transports = transports;
+            existing.trusted |= auto_trust;
+            let updated = existing.clone();
+            self.save_peers(&peers)?;
+            return Ok(updated);
+        }
+
+        let peer = RemotePeer {
+            identity,
+            profile,
+            target: target.to_string(),
+            trusted: auto_trust,
+            auth_secret_key: None,
+            transports,
         };
         peers.push(peer.clone());
         self.save_peers(&peers)?;
@@ -291,7 +411,9 @@ impl RemoteManager {
         let mut peers = self.load_peers()?;
         let mut trusted = None;
         for peer in &mut peers {
-            if peer.identity.node_name == name || peer.target == name || peer.identity.node_id == name
+            if peer.identity.node_name == name
+                || peer.target == name
+                || peer.identity.node_id == name
             {
                 peer.trusted = true;
                 trusted = Some(peer.clone());
@@ -320,12 +442,12 @@ impl RemoteManager {
                 ..RemoteSendOptions::default()
             },
         )?;
-        let execution_plan = if matches!(peer.profile.execution_role, NodeExecutionRole::ExecutorOnly)
-        {
-            self.build_executor_plan(prompt, &selection)?
-        } else {
-            None
-        };
+        let execution_plan =
+            if matches!(peer.profile.execution_role, NodeExecutionRole::ExecutorOnly) {
+                self.build_executor_plan(prompt, &selection)?
+            } else {
+                None
+            };
         let has_execution_plan = execution_plan.is_some();
         let coordinator = self.load_or_init_node_metadata()?;
         let envelope = RemoteEnvelope {
@@ -409,12 +531,15 @@ impl RemoteManager {
             execution_plan: execution_plan.clone(),
         };
 
-        let auth_token = self.auth_token_for_peer(&peer).await?;
-        let signed_headers =
-            self.signed_request_headers(&peer.identity.node_id, "execute", Some(&envelope.task_id))?;
+        let signed_headers = self.signed_request_headers(
+            &peer.identity.node_id,
+            "execute",
+            Some(&envelope.task_id),
+        )?;
         let client = Client::new();
+        let auth_token = self.optional_auth_token_for_peer(&peer).await;
         let endpoint = format!(
-            "{}/api/v1/remote/execute",
+            "{}/v1/remote/execute",
             self.peer_endpoint(&peer).trim_end_matches('/')
         );
         let request = RemoteExecuteRequest {
@@ -429,7 +554,10 @@ impl RemoteManager {
             plan: execution_plan,
         };
 
-        let mut execute = client.post(endpoint).bearer_auth(auth_token.clone());
+        let mut execute = client.post(endpoint);
+        if let Some(auth_token) = auth_token.as_deref() {
+            execute = execute.bearer_auth(auth_token);
+        }
         for (name, value) in signed_headers {
             execute = execute.header(&name, value);
         }
@@ -460,7 +588,7 @@ impl RemoteManager {
             .ok_or_else(|| anyhow::anyhow!("Remote daemon did not return a task id"))?;
 
         let (events, completion) = match self
-            .stream_remote_events(&peer, &auth_token, &remote_task_id)
+            .stream_remote_events(&peer, auth_token.as_deref(), &remote_task_id)
             .await
         {
             Ok((events, completion)) => (events, completion),
@@ -473,8 +601,13 @@ impl RemoteManager {
                 );
                 (
                     Vec::new(),
-                    self.poll_remote_completion(&client, &peer, &auth_token, &remote_task_id)
-                        .await?,
+                    self.poll_remote_completion(
+                        &client,
+                        &peer,
+                        auth_token.as_deref(),
+                        &remote_task_id,
+                    )
+                    .await?,
                 )
             }
         };
@@ -544,7 +677,11 @@ impl RemoteManager {
         self.select_peer_preview(peers, prompt, selection, options)
     }
 
-    fn validate_peer_selection(&self, peer: &RemotePeer, options: &RemoteSendOptions) -> Result<()> {
+    fn validate_peer_selection(
+        &self,
+        peer: &RemotePeer,
+        options: &RemoteSendOptions,
+    ) -> Result<()> {
         if !peer.trusted {
             bail!(
                 "Remote node '{}' is paired but not trusted. Run `rove remote trust {}` first.",
@@ -561,7 +698,12 @@ impl RemoteManager {
             );
         }
         for tag in &options.required_tags {
-            if !peer.profile.tags.iter().any(|value| value.eq_ignore_ascii_case(tag)) {
+            if !peer
+                .profile
+                .tags
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(tag))
+            {
                 bail!(
                     "Remote node '{}' does not advertise required tag '{}'.",
                     peer.identity.node_name,
@@ -594,15 +736,16 @@ impl RemoteManager {
         options: &RemoteSendOptions,
     ) -> Result<RemotePeer> {
         let prompt_lower = prompt.to_ascii_lowercase();
-        let live_candidates = self
-            .load_peer_selection_candidates(peers)
-            .await;
+        let live_candidates = self.load_peer_selection_candidates(peers).await;
         let mut candidates = live_candidates
             .into_iter()
             .filter(|peer| peer.peer.trusted)
             .filter(|peer| {
                 options.allow_executor_only
-                    || !matches!(peer.peer.profile.execution_role, NodeExecutionRole::ExecutorOnly)
+                    || !matches!(
+                        peer.peer.profile.execution_role,
+                        NodeExecutionRole::ExecutorOnly
+                    )
             })
             .filter(|peer| {
                 options.required_tags.iter().all(|tag| {
@@ -633,7 +776,8 @@ impl RemoteManager {
                     }
                 }
                 if let Some(workspace_name) = &selection.workspace_name {
-                    if peer.peer
+                    if peer
+                        .peer
                         .profile
                         .tags
                         .iter()
@@ -643,7 +787,8 @@ impl RemoteManager {
                     }
                 }
                 if let Some(domain_tag) = &selection.domain_tag {
-                    if peer.peer
+                    if peer
+                        .peer
                         .profile
                         .tags
                         .iter()
@@ -653,7 +798,8 @@ impl RemoteManager {
                     }
                 }
                 for tag in &selection.policy_tags {
-                    if peer.peer
+                    if peer
+                        .peer
                         .profile
                         .tags
                         .iter()
@@ -663,7 +809,8 @@ impl RemoteManager {
                     }
                 }
                 for capability in &selection.preferred_capabilities {
-                    if peer.peer
+                    if peer
+                        .peer
                         .profile
                         .capabilities
                         .iter()
@@ -800,7 +947,9 @@ impl RemoteManager {
             .into_iter()
             .map(|(_, peer)| peer)
             .next()
-            .ok_or_else(|| anyhow::anyhow!("No trusted remote node matches the requested selection."))
+            .ok_or_else(|| {
+                anyhow::anyhow!("No trusted remote node matches the requested selection.")
+            })
     }
 
     async fn load_peer_selection_candidates(
@@ -823,30 +972,18 @@ impl RemoteManager {
     }
 
     async fn fetch_peer_status(&self, peer: &RemotePeer) -> Result<RemoteStatus> {
-        let auth_token = self.auth_token_for_peer(peer).await?;
-        self.fetch_pair_status(&self.peer_endpoint(peer), Some(&auth_token))
-            .await
+        self.fetch_pair_status(&self.peer_endpoint(peer)).await
     }
 
-    async fn fetch_pair_status(
-        &self,
-        endpoint: &str,
-        auth_token: Option<&str>,
-    ) -> Result<RemoteStatus> {
+    async fn fetch_pair_status(&self, endpoint: &str) -> Result<RemoteStatus> {
         let client = Client::builder()
             .timeout(Duration::from_secs(2))
             .build()
             .context("Failed to build remote status client")?;
         let request = client.get(format!(
-            "{}/api/v1/remote/status",
+            "{}/v1/remote/status/public",
             endpoint.trim_end_matches('/')
         ));
-        let request = if let Some(auth_token) = auth_token.filter(|value| !value.trim().is_empty())
-        {
-            request.bearer_auth(auth_token)
-        } else {
-            request
-        };
         let response = request
             .send()
             .await
@@ -854,21 +991,48 @@ impl RemoteManager {
         parse_remote_status_response(response).await
     }
 
+    pub async fn fetch_remote_handshake(endpoint: &str) -> Result<RemoteHandshakeProof> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .context("Failed to build remote handshake client")?;
+        let challenge = Uuid::new_v4().to_string();
+        let response = client
+            .post(format!(
+                "{}/v1/remote/handshake",
+                endpoint.trim_end_matches('/')
+            ))
+            .json(&serde_json::json!({ "challenge": challenge }))
+            .send()
+            .await
+            .context("Failed to request remote handshake")?;
+        let proof: RemoteHandshakeProof =
+            parse_json_response(response, "Failed to parse remote handshake").await?;
+        if !Self::verify_handshake(&challenge, &proof) {
+            bail!("Remote handshake signature verification failed");
+        }
+        Ok(proof)
+    }
+
     async fn stream_remote_events(
         &self,
         peer: &RemotePeer,
-        auth_token: &str,
+        auth_token: Option<&str>,
         task_id: &str,
     ) -> Result<(Vec<RemoteTaskEvent>, RemoteExecuteResponse)> {
-        let mut request = websocket_task_url(&self.peer_endpoint(peer))?
+        let mut request = websocket_task_url(&self.peer_endpoint(peer), true)?
             .into_client_request()
             .context("Failed to prepare remote WebSocket request")?;
-        let header = HeaderValue::from_str(&format!("Bearer {}", auth_token))
-            .context("Invalid remote bearer token")?;
-        request.headers_mut().insert(AUTHORIZATION, header);
-        for (name, value) in self.signed_request_headers(&peer.identity.node_id, "event_stream", None)? {
-            let header_name =
-                HeaderName::from_bytes(name.as_bytes()).context("Invalid remote signed header name")?;
+        if let Some(auth_token) = auth_token.filter(|value| !value.trim().is_empty()) {
+            let header = HeaderValue::from_str(&format!("Bearer {}", auth_token))
+                .context("Invalid remote bearer token")?;
+            request.headers_mut().insert(AUTHORIZATION, header);
+        }
+        for (name, value) in
+            self.signed_request_headers(&peer.identity.node_id, "event_stream", None)?
+        {
+            let header_name = HeaderName::from_bytes(name.as_bytes())
+                .context("Invalid remote signed header name")?;
             let header_value =
                 HeaderValue::from_str(&value).context("Invalid remote signed header value")?;
             request.headers_mut().insert(header_name, header_value);
@@ -972,20 +1136,27 @@ impl RemoteManager {
         &self,
         client: &Client,
         peer: &RemotePeer,
-        auth_token: &str,
+        auth_token: Option<&str>,
         task_id: &str,
     ) -> Result<RemoteExecuteResponse> {
         let deadline = Instant::now() + Duration::from_secs(120);
         let status_url = format!(
-            "{}/api/v1/tasks/{}",
+            "{}/v1/remote/tasks/{}",
             self.peer_endpoint(peer).trim_end_matches('/'),
             task_id
         );
 
         loop {
-            let response = client
-                .get(&status_url)
-                .bearer_auth(auth_token)
+            let mut request = client.get(&status_url);
+            if let Some(auth_token) = auth_token.filter(|value| !value.trim().is_empty()) {
+                request = request.bearer_auth(auth_token);
+            }
+            for (name, value) in
+                self.signed_request_headers(&peer.identity.node_id, "task_status", Some(task_id))?
+            {
+                request = request.header(&name, value);
+            }
+            let response = request
                 .send()
                 .await
                 .context("Failed to poll remote daemon")?;
@@ -1002,7 +1173,10 @@ impl RemoteManager {
                         answer: None,
                         provider: None,
                         duration_ms: None,
-                        message: Some("Remote task is still running; polling timed out after 120s".to_string()),
+                        message: Some(
+                            "Remote task is still running; polling timed out after 120s"
+                                .to_string(),
+                        ),
                     });
                 }
                 _ => return Ok(completion),
@@ -1010,17 +1184,12 @@ impl RemoteManager {
         }
     }
 
-    async fn auth_token_for_peer(&self, peer: &RemotePeer) -> Result<String> {
+    async fn optional_auth_token_for_peer(&self, peer: &RemotePeer) -> Option<String> {
         if let Some(secret_key) = &peer.auth_secret_key {
             return SecretManager::new(SERVICE_NAME)
                 .get_secret(secret_key)
                 .await
-                .with_context(|| {
-                    format!(
-                        "Missing auth token for remote node '{}'. Pair again with `--token` or restore secret '{}'.",
-                        peer.identity.node_name, secret_key
-                    )
-                });
+                .ok();
         }
 
         self.config
@@ -1028,24 +1197,13 @@ impl RemoteManager {
             .auth_token
             .clone()
             .filter(|token| !token.trim().is_empty())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Remote node '{}' has no stored auth token. Pair again with `--token`.",
-                    peer.identity.node_name
-                )
-            })
     }
 
     fn peer_endpoint(&self, peer: &RemotePeer) -> String {
-        if self.config.remote.transports.zerotier.enabled {
-            if let Some(base_url) = peer
-                .transports
-                .iter()
-                .find(|record| record.kind.eq_ignore_ascii_case("zerotier") && record.reachable)
-                .and_then(|record| record.base_url.clone())
-            {
-                return base_url;
-            }
+        if let Some(base_url) =
+            best_transport_record(&peer.transports).and_then(|record| record.base_url.clone())
+        {
+            return base_url;
         }
         peer.target.clone()
     }
@@ -1079,10 +1237,7 @@ impl RemoteManager {
             ),
             (HEADER_REMOTE_PURPOSE.to_string(), purpose.to_string()),
             (HEADER_REMOTE_NONCE.to_string(), nonce),
-            (
-                HEADER_REMOTE_TIMESTAMP.to_string(),
-                timestamp.to_string(),
-            ),
+            (HEADER_REMOTE_TIMESTAMP.to_string(), timestamp.to_string()),
             (HEADER_REMOTE_SIGNATURE.to_string(), signature),
         ])
     }
@@ -1289,7 +1444,10 @@ impl RemoteManager {
         prompt: &str,
         selection: &mut SelectionContext,
     ) {
-        let Ok(report) = PolicyManager::new(self.config.clone(), None).explain(prompt).await else {
+        let Ok(report) = PolicyManager::new(self.config.clone(), None)
+            .explain(prompt)
+            .await
+        else {
             return;
         };
         let (policy_tags, preferred_tools, preferred_capabilities) =
@@ -1464,9 +1622,15 @@ enum RemoteTaskStreamClientMessage {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RemoteTaskStreamServerMessage {
-    Connected { version: String },
-    Accepted { task_id: String },
-    Progress { message: String },
+    Connected {
+        version: String,
+    },
+    Accepted {
+        task_id: String,
+    },
+    Progress {
+        message: String,
+    },
     Event {
         task_id: String,
         event_type: String,
@@ -1481,7 +1645,9 @@ enum RemoteTaskStreamServerMessage {
         duration_ms: i64,
         iterations: usize,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
     Pong,
 }
 
@@ -1506,9 +1672,11 @@ async fn parse_remote_response(response: reqwest::Response) -> Result<RemoteExec
     if !status_code.is_success() && status_code.as_u16() != 202 {
         bail!(
             "Remote daemon rejected request: {}",
-            parsed
-                .message
-                .unwrap_or_else(|| format!("status {} {}", status_code.as_u16(), parsed.status))
+            parsed.message.unwrap_or_else(|| format!(
+                "status {} {}",
+                status_code.as_u16(),
+                parsed.status
+            ))
         );
     }
     Ok(parsed)
@@ -1532,6 +1700,19 @@ async fn parse_remote_status_response(response: reqwest::Response) -> Result<Rem
     })
 }
 
+async fn parse_json_response<T>(response: reqwest::Response, context: &str) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let status_code = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status_code.is_success() {
+        bail!("{} (status {}): {}", context, status_code, body);
+    }
+    serde_json::from_str(&body)
+        .with_context(|| format!("{} (status {}): {}", context, status_code, body))
+}
+
 fn resolve_pair_target(target: &str, url: Option<&str>) -> Result<(String, String)> {
     match url {
         Some(url) => Ok((target.to_string(), normalize_base_url(url)?)),
@@ -1545,12 +1726,12 @@ fn resolve_pair_target(target: &str, url: Option<&str>) -> Result<(String, Strin
 }
 
 fn normalize_base_url(url: &str) -> Result<String> {
-    let parsed = reqwest::Url::parse(url)
-        .with_context(|| format!("Invalid remote daemon URL '{}'", url))?;
+    let parsed =
+        reqwest::Url::parse(url).with_context(|| format!("Invalid remote daemon URL '{}'", url))?;
     Ok(parsed.as_str().trim_end_matches('/').to_string())
 }
 
-fn websocket_task_url(base_url: &str) -> Result<String> {
+fn websocket_task_url(base_url: &str, remote_route: bool) -> Result<String> {
     let mut url = reqwest::Url::parse(base_url)
         .with_context(|| format!("Invalid remote daemon URL '{}'", base_url))?;
     match url.scheme() {
@@ -1565,7 +1746,11 @@ fn websocket_task_url(base_url: &str) -> Result<String> {
         "ws" | "wss" => {}
         other => bail!("Unsupported remote daemon scheme '{}'", other),
     }
-    url.set_path("/ws/task");
+    url.set_path(if remote_route {
+        "/v1/remote/events/ws"
+    } else {
+        "/ws/task"
+    });
     url.set_query(None);
     url.set_fragment(None);
     Ok(url.to_string())
@@ -1577,6 +1762,64 @@ fn derive_node_name(target: &str) -> String {
         .and_then(|url| url.host_str().map(|host| host.replace('.', "-")))
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| "remote-node".to_string())
+}
+
+fn guess_transports_for_endpoint(endpoint: &str) -> Vec<RemoteTransportRecord> {
+    reqwest::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .map(|address| {
+            vec![RemoteTransportRecord {
+                kind: "direct".to_string(),
+                address: address.clone(),
+                base_url: Some(endpoint.trim_end_matches('/').to_string()),
+                network_id: None,
+                reachable: true,
+                latency_ms: None,
+                last_checked_at: None,
+                last_error: None,
+            }]
+        })
+        .unwrap_or_default()
+}
+
+fn best_transport_record(records: &[RemoteTransportRecord]) -> Option<&RemoteTransportRecord> {
+    records.iter().max_by(|left, right| {
+        transport_score(left)
+            .cmp(&transport_score(right))
+            .then_with(|| {
+                right
+                    .latency_ms
+                    .unwrap_or(u64::MAX)
+                    .cmp(&left.latency_ms.unwrap_or(u64::MAX))
+            })
+            .then_with(|| {
+                left.last_checked_at
+                    .unwrap_or_default()
+                    .cmp(&right.last_checked_at.unwrap_or_default())
+            })
+    })
+}
+
+fn transport_score(record: &RemoteTransportRecord) -> i64 {
+    let mut score = 0_i64;
+    if record.reachable {
+        score += 100;
+    }
+    if record.kind.eq_ignore_ascii_case("zerotier") {
+        score += 20;
+    }
+    if let Some(latency_ms) = record.latency_ms {
+        score -= (latency_ms / 10).min(50) as i64;
+    }
+    if record.last_error.is_some() {
+        score -= 15;
+    }
+    score
+}
+
+fn handshake_payload(challenge: &str) -> Vec<u8> {
+    format!("rove-remote-handshake:{}", challenge).into_bytes()
 }
 
 fn secret_key_fragment(node_name: &str) -> String {
@@ -1640,7 +1883,10 @@ fn default_local_profile(config: &Config) -> NodeProfile {
             "system-execution".to_string(),
         ]),
         tags: vec![std::env::consts::OS.to_string()],
-        execution_role: if matches!(config.daemon.profile, crate::config::DaemonProfile::Headless) {
+        execution_role: if matches!(
+            config.daemon.profile,
+            crate::config::DaemonProfile::Headless
+        ) {
             NodeExecutionRole::ExecutorOnly
         } else {
             NodeExecutionRole::Full
@@ -2135,14 +2381,15 @@ mod tests {
         let nodes = manager.nodes().expect("nodes");
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].identity.node_name, "office-mac");
-        assert_eq!(nodes[0].profile.execution_role, NodeExecutionRole::ExecutorOnly);
-        assert_eq!(nodes[0].profile.tags, vec!["office".to_string()]);
-        assert!(
-            nodes[0]
-                .profile
-                .capabilities
-                .contains(&"system-execution".to_string())
+        assert_eq!(
+            nodes[0].profile.execution_role,
+            NodeExecutionRole::ExecutorOnly
         );
+        assert_eq!(nodes[0].profile.tags, vec!["office".to_string()]);
+        assert!(nodes[0]
+            .profile
+            .capabilities
+            .contains(&"system-execution".to_string()));
     }
 
     #[tokio::test]
@@ -2482,7 +2729,10 @@ auto_tag = ["office-workspace"]
                 None,
                 true,
                 &["office".to_string()],
-                &["shell-execution".to_string(), "system-execution".to_string()],
+                &[
+                    "shell-execution".to_string(),
+                    "system-execution".to_string(),
+                ],
             )
             .await
             .expect("pair");

@@ -26,9 +26,7 @@ impl ManagedService {
             "logging" => Some(Self::Logging),
             "webui" => Some(Self::WebUi),
             "remote" => Some(Self::Remote),
-            "connector-engine" | "connector_engine" | "connectors" => {
-                Some(Self::ConnectorEngine)
-            }
+            "connector-engine" | "connector_engine" | "connectors" => Some(Self::ConnectorEngine),
             _ => None,
         }
     }
@@ -116,7 +114,9 @@ impl ServiceManager {
             }
             ManagedService::ConnectorEngine => {
                 if !enabled && !self.config.mcp.servers.is_empty() {
-                    bail!("Cannot disable connector-engine while configured connectors still exist");
+                    bail!(
+                        "Cannot disable connector-engine while configured connectors still exist"
+                    );
                 }
             }
         }

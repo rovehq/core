@@ -9,13 +9,16 @@ use tracing_subscriber::{
 
 use rove_engine::cli::{
     ActivateTarget, AddTarget, ApprovalsAction, Cli, Command, ConfigAction, DaemonProfileArg,
-    ExtensionAction, ExtensionFacadeAction, ExtensionKindArg, McpAction, ModelAction,
-    OutputFormat, PluginAction, PolicyAction, RemoteAction, RemoteNodeAction,
-    RemoteProfileAction, SecretBackendAction, SecretsAction, ServiceAction, SteeringAction,
+    ExtensionAction, ExtensionFacadeAction, ExtensionKindArg, McpAction, ModelAction, OutputFormat,
+    PluginAction, PolicyAction, RemoteAction, RemoteDiscoverAction, RemoteNodeAction,
+    RemoteProfileAction, RemoteTransportAction, SecretBackendAction, SecretsAction, ServiceAction,
+    SteeringAction,
 };
-use rove_engine::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
-use rove_engine::server;
 use rove_engine::policy::PolicyEngine;
+use rove_engine::policy::{
+    active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir,
+};
+use rove_engine::server;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,6 +43,7 @@ async fn main() -> Result<()> {
         Some(Command::Stop) => rove_engine::cli::daemon::stop()?,
         Some(Command::Task {
             prompt,
+            node,
             yes,
             stream,
             parallel,
@@ -50,6 +54,7 @@ async fn main() -> Result<()> {
             rove_engine::cli::run::handle_run(
                 rove_engine::cli::run::RunRequest {
                     task: prompt.join(" "),
+                    node,
                     auto_approve: yes,
                     stream,
                     parallel,
@@ -78,7 +83,9 @@ async fn main() -> Result<()> {
             handle_plugin(action).await?
         }
         Some(Command::Steer { action, dir }) => {
-            eprintln!("Compatibility alias: `rove steer` remains available, but prefer `rove policy`.");
+            eprintln!(
+                "Compatibility alias: `rove steer` remains available, but prefer `rove policy`."
+            );
             handle_steering(action, dir).await?
         }
         Some(Command::Policy { action, dir }) => {
@@ -91,13 +98,21 @@ async fn main() -> Result<()> {
         }
         Some(Command::Skill { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
-            handle_extension(action, &config, rove_engine::cli::extensions::ExtensionSurface::Skill)
-                .await?;
+            handle_extension(
+                action,
+                &config,
+                rove_engine::cli::extensions::ExtensionSurface::Skill,
+            )
+            .await?;
         }
         Some(Command::System { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
-            handle_extension(action, &config, rove_engine::cli::extensions::ExtensionSurface::System)
-                .await?;
+            handle_extension(
+                action,
+                &config,
+                rove_engine::cli::extensions::ExtensionSurface::System,
+            )
+            .await?;
         }
         Some(Command::Connector { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
@@ -105,8 +120,12 @@ async fn main() -> Result<()> {
         }
         Some(Command::Channel { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
-            handle_extension(action, &config, rove_engine::cli::extensions::ExtensionSurface::Channel)
-                .await?;
+            handle_extension(
+                action,
+                &config,
+                rove_engine::cli::extensions::ExtensionSurface::Channel,
+            )
+            .await?;
         }
         Some(Command::Service { action }) => handle_service(action).await?,
         Some(Command::Remote { action }) => {
@@ -268,6 +287,7 @@ async fn run_daemon(port: u16, profile: Option<DaemonProfileArg>) -> Result<()> 
     gateway.clone().start();
     rove_engine::channels::manager::ChannelManager::new(config.clone())
         .start_enabled(gateway.clone(), database.clone());
+    rove_engine::zerotier::maybe_start_sync_loop(config.clone()).await;
     tracing::info!("{}", rove_engine::info::engine_banner());
     server::start_daemon(
         agent,
@@ -307,7 +327,12 @@ async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>
                         }
                     })
                     .unwrap_or_else(|| "-".to_string());
-                println!("- {} [{}] {}", policy.id, domains, policy.file_path.display());
+                println!(
+                    "- {} [{}] {}",
+                    policy.id,
+                    domains,
+                    policy.file_path.display()
+                );
             }
         }
         SteeringAction::On { name } => {
@@ -345,10 +370,7 @@ async fn handle_steering(action: SteeringAction, dir: Option<std::path::PathBuf>
         }
         SteeringAction::Default => {
             rove_engine::policy::bootstrap_builtins(&policy_dir).await?;
-            println!(
-                "Built-in policy files ready in {}",
-                policy_dir.display()
-            );
+            println!("Built-in policy files ready in {}", policy_dir.display());
         }
     }
 
@@ -463,23 +485,21 @@ async fn handle_extension_facade(
     config: &rove_engine::config::Config,
 ) -> Result<()> {
     match action {
-        ExtensionFacadeAction::New { kind, name } => {
-            match kind {
-                ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
-                    handle_extension(
-                        ExtensionAction::New { name },
-                        config,
-                        extension_surface(kind),
-                    )
-                    .await
-                }
-                ExtensionKindArg::Connector => {
-                    anyhow::bail!(
+        ExtensionFacadeAction::New { kind, name } => match kind {
+            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+                handle_extension(
+                    ExtensionAction::New { name },
+                    config,
+                    extension_surface(kind),
+                )
+                .await
+            }
+            ExtensionKindArg::Connector => {
+                anyhow::bail!(
                         "Connector authoring uses the dedicated surface. Use `rove connector scaffold ...` or `rove connector add ...`."
                     )
-                }
             }
-        }
+        },
         ExtensionFacadeAction::Test {
             kind,
             source,
@@ -570,9 +590,7 @@ async fn handle_extension_facade(
                 )
                 .await
             }
-            ExtensionKindArg::Connector => {
-                handle_mcp(McpAction::Install { source }, config).await
-            }
+            ExtensionKindArg::Connector => handle_mcp(McpAction::Install { source }, config).await,
         },
         ExtensionFacadeAction::Upgrade {
             kind,
@@ -630,9 +648,7 @@ async fn handle_extension_facade(
                 )
                 .await
             }
-            ExtensionKindArg::Connector => {
-                handle_mcp(McpAction::Enable { name }, config).await
-            }
+            ExtensionKindArg::Connector => handle_mcp(McpAction::Enable { name }, config).await,
         },
         ExtensionFacadeAction::Disable { kind, name } => match kind {
             ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
@@ -643,9 +659,7 @@ async fn handle_extension_facade(
                 )
                 .await
             }
-            ExtensionKindArg::Connector => {
-                handle_mcp(McpAction::Disable { name }, config).await
-            }
+            ExtensionKindArg::Connector => handle_mcp(McpAction::Disable { name }, config).await,
         },
         ExtensionFacadeAction::Remove { kind, name } => match kind {
             ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
@@ -656,9 +670,7 @@ async fn handle_extension_facade(
                 )
                 .await
             }
-            ExtensionKindArg::Connector => {
-                handle_mcp(McpAction::Remove { name }, config).await
-            }
+            ExtensionKindArg::Connector => handle_mcp(McpAction::Remove { name }, config).await,
         },
     }
 }
@@ -755,7 +767,11 @@ async fn handle_service(action: ServiceAction) -> Result<()> {
         ServiceAction::InstallStatus => {
             rove_engine::cli::service::install_status(&config)?;
         }
-        ServiceAction::Install { mode, profile, port } => {
+        ServiceAction::Install {
+            mode,
+            profile,
+            port,
+        } => {
             rove_engine::cli::service::install_service(mode, profile, port, &config)?;
         }
         ServiceAction::Uninstall { mode } => {
@@ -768,6 +784,43 @@ async fn handle_service(action: ServiceAction) -> Result<()> {
 async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Config) -> Result<()> {
     let action = match action {
         RemoteAction::Status => rove_engine::cli::remote::RemoteAction::Status,
+        RemoteAction::Transport { action } => match action {
+            RemoteTransportAction::Install { transport: _ } => {
+                rove_engine::cli::remote::RemoteAction::ZeroTierInstall
+            }
+            RemoteTransportAction::Uninstall { transport: _ } => {
+                rove_engine::cli::remote::RemoteAction::ZeroTierUninstall
+            }
+            RemoteTransportAction::Status { transport: _ } => {
+                rove_engine::cli::remote::RemoteAction::ZeroTierStatus
+            }
+            RemoteTransportAction::Setup {
+                transport: _,
+                network_id,
+                token_key,
+                managed_name_sync,
+            } => rove_engine::cli::remote::RemoteAction::ZeroTierSetup {
+                network_id,
+                token_key,
+                managed_name_sync,
+            },
+            RemoteTransportAction::Join {
+                transport: _,
+                network_id,
+            } => rove_engine::cli::remote::RemoteAction::ZeroTierJoin { network_id },
+            RemoteTransportAction::Refresh { transport: _ } => {
+                rove_engine::cli::remote::RemoteAction::ZeroTierRefresh
+            }
+        },
+        RemoteAction::Discover { action } => match action {
+            RemoteDiscoverAction::List => rove_engine::cli::remote::RemoteAction::DiscoverList,
+            RemoteDiscoverAction::Refresh => {
+                rove_engine::cli::remote::RemoteAction::DiscoverRefresh
+            }
+            RemoteDiscoverAction::Trust { candidate_id } => {
+                rove_engine::cli::remote::RemoteAction::DiscoverTrust(candidate_id)
+            }
+        },
         RemoteAction::Node { action } => match action {
             RemoteNodeAction::List => rove_engine::cli::remote::RemoteAction::Nodes,
             RemoteNodeAction::Rename { name } => {
@@ -791,9 +844,7 @@ async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Confi
             RemoteNodeAction::Unpair { name } => {
                 rove_engine::cli::remote::RemoteAction::Unpair(name)
             }
-            RemoteNodeAction::Trust { name } => {
-                rove_engine::cli::remote::RemoteAction::Trust(name)
-            }
+            RemoteNodeAction::Trust { name } => rove_engine::cli::remote::RemoteAction::Trust(name),
         },
         RemoteAction::Profile { action } => match action {
             RemoteProfileAction::Show => rove_engine::cli::remote::RemoteAction::ProfileShow,
@@ -846,9 +897,7 @@ async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Confi
     rove_engine::cli::remote::handle(action, config).await
 }
 
-fn extension_surface(
-    kind: ExtensionKindArg,
-) -> rove_engine::cli::extensions::ExtensionSurface {
+fn extension_surface(kind: ExtensionKindArg) -> rove_engine::cli::extensions::ExtensionSurface {
     match kind {
         ExtensionKindArg::Skill => rove_engine::cli::extensions::ExtensionSurface::Skill,
         ExtensionKindArg::System => rove_engine::cli::extensions::ExtensionSurface::System,

@@ -4,9 +4,11 @@ use tracing::debug;
 
 use crate::gateway::Task;
 use crate::llm::Message;
-use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
-use crate::risk_assessor::RiskTier;
 use crate::policy::types::MergedDirectives;
+use crate::policy::{
+    active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir,
+};
+use crate::risk_assessor::RiskTier;
 use sdk::{Complexity, Route, TaskDomain};
 
 use super::AgentCore;
@@ -150,8 +152,7 @@ impl AgentCore {
                 .push("cargo clippy".to_string());
         }
 
-        if task_input_lower.contains("test")
-            && self.policy_file_contains("code.toml", "cargo test")
+        if task_input_lower.contains("test") && self.policy_file_contains("code.toml", "cargo test")
         {
             self.policy_after_write_commands
                 .push("cargo test".to_string());

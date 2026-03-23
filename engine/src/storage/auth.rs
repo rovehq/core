@@ -116,13 +116,15 @@ impl AuthRepository {
         let now = now_ts()?;
         let expires_at = (now + idle_timeout_secs).min(existing.absolute_expires_at);
 
-        sqlx::query("UPDATE auth_sessions SET last_seen_at = ?, expires_at = ? WHERE session_id = ?")
-            .bind(now)
-            .bind(expires_at)
-            .bind(session_id)
-            .execute(&self.pool)
-            .await
-            .context("Failed to touch auth session")?;
+        sqlx::query(
+            "UPDATE auth_sessions SET last_seen_at = ?, expires_at = ? WHERE session_id = ?",
+        )
+        .bind(now)
+        .bind(expires_at)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await
+        .context("Failed to touch auth session")?;
 
         self.get_session(session_id).await
     }
@@ -158,7 +160,8 @@ impl AuthRepository {
             .execute(&self.pool)
             .await
             .context("Failed to clear reauth table")?;
-        self.record_event("all_sessions_revoked", None, None).await?;
+        self.record_event("all_sessions_revoked", None, None)
+            .await?;
         Ok(())
     }
 

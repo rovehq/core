@@ -142,7 +142,8 @@ impl StaticConfigHandle {
             "config.written_by_version".to_string(),
             json!(snapshot.metadata.written_by_version),
         );
-        self.values.insert("daemon.profile".to_string(), json!(snapshot.daemon.profile));
+        self.values
+            .insert("daemon.profile".to_string(), json!(snapshot.daemon.profile));
         self.values
             .insert("core.workspace".to_string(), json!(snapshot.core.workspace));
         self.values
@@ -151,10 +152,14 @@ impl StaticConfigHandle {
             .insert("core.log_level".to_string(), json!(snapshot.core.log_level));
         self.values
             .insert("approvals.mode".to_string(), json!(snapshot.approvals.mode));
-        self.values
-            .insert("llm.default_provider".to_string(), json!(snapshot.llm.default_provider));
-        self.values
-            .insert("secrets.backend".to_string(), json!(snapshot.secrets.backend));
+        self.values.insert(
+            "llm.default_provider".to_string(),
+            json!(snapshot.llm.default_provider),
+        );
+        self.values.insert(
+            "secrets.backend".to_string(),
+            json!(snapshot.secrets.backend),
+        );
         self.values.insert(
             "services.webui.enabled".to_string(),
             json!(snapshot.services.webui_enabled),

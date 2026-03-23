@@ -5,14 +5,15 @@ pub mod cli;
 pub mod config;
 pub mod llm;
 pub mod memory;
-pub mod policy;
 pub mod platform;
+pub mod policy;
 pub mod prompt;
 pub mod runtime;
 pub mod security;
 pub mod steering;
 pub mod storage;
 pub mod system;
+pub mod targeting;
 pub mod tools;
 
 pub use api::gateway;

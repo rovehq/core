@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use extism::{Manifest as ExtismManifest, Plugin, Wasm};
-use serde_json::{Map, Value};
 use sdk::{
     AgentHandle, AgentHandleImpl, BusHandle, BusHandleImpl, ConfigHandle, ConfigHandleImpl,
     CoreContext, CoreTool, CryptoHandle, CryptoHandleImpl, DbHandle, DbHandleImpl, EngineError,
     NetworkHandle, NetworkHandleImpl, ToolInput,
 };
+use serde_json::{Map, Value};
 
 use crate::runtime::{DeclaredTool, PluginType, ToolCatalog};
 
@@ -267,9 +267,10 @@ fn call_native_tool(artifact: &Path, tool_name: &str, payload: &Value) -> Result
     } else {
         bail!(
             "{}",
-            output
-                .error
-                .unwrap_or_else(|| format!("native tool '{}' returned an unspecified error", tool_name))
+            output.error.unwrap_or_else(|| format!(
+                "native tool '{}' returned an unspecified error",
+                tool_name
+            ))
         );
     }
 }
@@ -277,10 +278,13 @@ fn call_native_tool(artifact: &Path, tool_name: &str, payload: &Value) -> Result
 fn load_native_tool(artifact: &Path) -> Result<Box<dyn CoreTool>> {
     let library = unsafe { libloading::Library::new(artifact) }
         .with_context(|| format!("Failed to load native artifact '{}'", artifact.display()))?;
-    let create_tool: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn CoreTool> = unsafe {
-        library.get(b"create_tool")
-    }
-    .with_context(|| format!("Native artifact '{}' does not export create_tool", artifact.display()))?;
+    let create_tool: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn CoreTool> =
+        unsafe { library.get(b"create_tool") }.with_context(|| {
+            format!(
+                "Native artifact '{}' does not export create_tool",
+                artifact.display()
+            )
+        })?;
     let ptr = unsafe { create_tool() };
     if ptr.is_null() {
         bail!(

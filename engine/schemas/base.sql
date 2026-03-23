@@ -88,6 +88,29 @@ CREATE TABLE IF NOT EXISTS installed_plugins (
 CREATE INDEX IF NOT EXISTS idx_installed_plugins_type
   ON installed_plugins(plugin_type, enabled);
 
+CREATE TABLE IF NOT EXISTS remote_discovery_candidates (
+    candidate_id TEXT PRIMARY KEY,
+    transport_kind TEXT NOT NULL,
+    network_id TEXT,
+    member_id TEXT NOT NULL,
+    member_name TEXT,
+    node_name_hint TEXT,
+    node_identity_json TEXT NOT NULL DEFAULT 'null',
+    node_profile_json TEXT NOT NULL DEFAULT 'null',
+    assigned_addresses_json TEXT NOT NULL DEFAULT '[]',
+    transports_json TEXT NOT NULL DEFAULT '[]',
+    last_seen_at INTEGER NOT NULL,
+    controller_access INTEGER NOT NULL DEFAULT 0,
+    paired_node_name TEXT,
+    trusted INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_discovery_transport
+  ON remote_discovery_candidates(transport_kind, network_id, last_seen_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_remote_discovery_node_name
+  ON remote_discovery_candidates(node_name_hint, member_name);
+
 -- 3. Secrets Cache
 CREATE TABLE IF NOT EXISTS secrets_cache (
     key TEXT PRIMARY KEY,

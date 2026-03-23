@@ -116,11 +116,7 @@ impl PolicyEngine {
 
             for dir in &dirs_clone {
                 if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
-                    error!(
-                        "Failed to watch policy directory {}: {}",
-                        dir.display(),
-                        e
-                    );
+                    error!("Failed to watch policy directory {}: {}", dir.display(), e);
                 } else {
                     info!("Watching for policy changes in {}", dir.display());
                 }

@@ -293,19 +293,17 @@ impl PendingTaskRepository {
     }
 
     pub async fn queue_stats(&self) -> Result<PendingQueueStats> {
-        let pending: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pending_tasks WHERE status = 'pending'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .context("Failed to count pending tasks")?;
+        let pending: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pending_tasks WHERE status = 'pending'")
+                .fetch_one(&self.pool)
+                .await
+                .context("Failed to count pending tasks")?;
 
-        let running: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pending_tasks WHERE status = 'running'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .context("Failed to count running tasks")?;
+        let running: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pending_tasks WHERE status = 'running'")
+                .fetch_one(&self.pool)
+                .await
+                .context("Failed to count running tasks")?;
 
         Ok(PendingQueueStats {
             pending: pending.max(0) as u64,

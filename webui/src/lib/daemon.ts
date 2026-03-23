@@ -112,6 +112,34 @@ export interface RemoteTransportRecord {
   base_url?: string | null;
   network_id?: string | null;
   reachable: boolean;
+  latency_ms?: number | null;
+  last_checked_at?: number | null;
+  last_error?: string | null;
+}
+
+export interface RemoteDiscoveryCandidate {
+  candidate_id: string;
+  transport_kind: string;
+  network_id?: string | null;
+  member_id: string;
+  member_name?: string | null;
+  node_name_hint?: string | null;
+  identity?: {
+    node_id: string;
+    node_name: string;
+    public_key: string;
+  } | null;
+  profile?: {
+    capabilities: string[];
+    tags: string[];
+    execution_role: NodeRole;
+  } | null;
+  assigned_addresses: string[];
+  last_seen_at: number;
+  controller_access: boolean;
+  paired_node_name?: string | null;
+  trusted: boolean;
+  transports: RemoteTransportRecord[];
 }
 
 export interface ExtensionRecord {
@@ -190,6 +218,7 @@ export interface ApprovalRulesFile {
 
 export interface ZeroTierStatus {
   enabled: boolean;
+  installed: boolean;
   configured: boolean;
   token_configured: boolean;
   service_url: string;
@@ -197,11 +226,15 @@ export interface ZeroTierStatus {
   managed_name_sync: boolean;
   service_online: boolean;
   joined: boolean;
+  controller_access: boolean;
   node_id?: string | null;
   network_name?: string | null;
   network_status?: string | null;
   assigned_addresses: string[];
   transport_records: RemoteTransportRecord[];
+  last_sync_at?: number | null;
+  candidate_count: number;
+  sync_state: string;
   message?: string | null;
 }
 
@@ -482,6 +515,29 @@ export class RoveDaemonClient {
     return this.request<ZeroTierStatus>('/v1/remote/transports/zerotier');
   }
 
+  async zeroTierInstall(): Promise<ZeroTierStatus> {
+    return this.request<ZeroTierStatus>('/v1/remote/transports/zerotier/install', {
+      method: 'POST',
+    });
+  }
+
+  async zeroTierUninstall(): Promise<ZeroTierStatus> {
+    return this.request<ZeroTierStatus>('/v1/remote/transports/zerotier/uninstall', {
+      method: 'POST',
+    });
+  }
+
+  async zeroTierSetup(input: {
+    network_id: string;
+    api_token_key?: string;
+    managed_name_sync?: boolean;
+  }): Promise<ZeroTierStatus> {
+    return this.request<ZeroTierStatus>('/v1/remote/transports/zerotier/setup', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
   async zeroTierJoin(networkId?: string): Promise<ZeroTierStatus> {
     return this.request<ZeroTierStatus>('/v1/remote/transports/zerotier', {
       method: 'POST',
@@ -489,9 +545,25 @@ export class RoveDaemonClient {
     });
   }
 
+  async zeroTierRefresh(): Promise<ZeroTierStatus> {
+    return this.request<ZeroTierStatus>('/v1/remote/transports/zerotier/refresh', {
+      method: 'POST',
+    });
+  }
+
+  async listRemoteDiscovery(): Promise<RemoteDiscoveryCandidate[]> {
+    return this.request<RemoteDiscoveryCandidate[]>('/v1/remote/discover');
+  }
+
+  async trustRemoteCandidate(candidateId: string): Promise<RemoteDiscoveryCandidate> {
+    return this.request<RemoteDiscoveryCandidate>(`/v1/remote/discover/${encodeURIComponent(candidateId)}/trust`, {
+      method: 'POST',
+    });
+  }
+
   async createTask(
     input: string,
-    options?: { parallel?: boolean; isolate?: 'none' | 'worktree' | 'snapshot' },
+    options?: { parallel?: boolean; isolate?: 'none' | 'worktree' | 'snapshot'; node?: string },
   ): Promise<CreateTaskResponse> {
     return this.request<CreateTaskResponse>('/v1/tasks', {
       method: 'POST',
@@ -499,6 +571,7 @@ export class RoveDaemonClient {
         input,
         parallel: options?.parallel ?? false,
         isolate: options?.isolate,
+        node: options?.node,
       }),
     });
   }

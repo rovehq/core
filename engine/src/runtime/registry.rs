@@ -14,8 +14,8 @@ use crate::config::Config;
 use crate::runtime::{
     FilesystemTool, McpSpawner, NativeRuntime, TerminalTool, VisionTool, WasmRuntime,
 };
-use crate::security::command_executor::CommandExecutor;
 use crate::security::approvals;
+use crate::security::command_executor::CommandExecutor;
 use crate::security::injection_detector::InjectionDetector;
 use crate::security::risk_assessor::{
     classify_terminal_command, Operation, OperationSource, RiskAssessor, RiskTier,
@@ -462,7 +462,10 @@ impl ToolRegistry {
         }
 
         if should_use_daemon_approval(source)
-            || matches!(self.config.daemon.profile, crate::config::DaemonProfile::Headless)
+            || matches!(
+                self.config.daemon.profile,
+                crate::config::DaemonProfile::Headless
+            )
         {
             let approved = approvals::request_approval(
                 task_id,
@@ -515,15 +518,16 @@ impl ToolRegistry {
         }
 
         if should_use_daemon_approval(source)
-            || matches!(self.config.daemon.profile, crate::config::DaemonProfile::Headless)
+            || matches!(
+                self.config.daemon.profile,
+                crate::config::DaemonProfile::Headless
+            )
         {
             let approved = approvals::request_approval(
                 task_id,
                 tool_name,
                 2,
-                format!(
-                    "Approve Tier 2 operation `{tool_name}`. Explicit approval is required."
-                ),
+                format!("Approve Tier 2 operation `{tool_name}`. Explicit approval is required."),
                 None,
                 false,
             )

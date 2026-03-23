@@ -13,22 +13,28 @@ use uuid::Uuid;
 
 use crate::agent::AgentCore;
 use crate::api::gateway::{Gateway, GatewayConfig, Task, WorkspaceLocks};
-use crate::cli::{daemon, TaskIsolationArg};
 use crate::cli::database_path::database_path;
+use crate::cli::{daemon, TaskIsolationArg};
 use crate::config::Config;
 use crate::llm::router::LLMRouter;
 use crate::memory::conductor::MemorySystem;
-use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
+use crate::policy::PolicyEngine;
+use crate::policy::{
+    active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir,
+};
+use crate::remote::{RemoteManager, RemoteSendOptions};
 use crate::security::rate_limiter::RateLimiter;
 use crate::security::risk_assessor::RiskAssessor;
-use crate::policy::PolicyEngine;
 use crate::storage::{Database, PendingTaskStatus, TaskRepository};
+use crate::targeting::extract_task_target;
+use crate::zerotier::ZeroTierManager;
 
 use super::output::{OutputFormat, TaskView};
 use super::task_view::{self, DispatchSummary, TaskSuccess};
 
 pub struct RunRequest {
     pub task: String,
+    pub node: Option<String>,
     pub auto_approve: bool,
     pub stream: bool,
     pub parallel: bool,
@@ -42,6 +48,8 @@ pub async fn handle_run(request: RunRequest, config: &Config) -> Result<()> {
     if let Ok(current_dir) = std::env::current_dir() {
         runtime_config.core.workspace = current_dir;
     }
+    let (task, implicit_node) = extract_task_target(&request.task);
+    let requested_node = request.node.clone().or(implicit_node);
     if request.auto_approve {
         runtime_config.security.confirm_tier1 = false;
         runtime_config.security.require_explicit_tier2 = false;
@@ -59,16 +67,20 @@ pub async fn handle_run(request: RunRequest, config: &Config) -> Result<()> {
         None => RunIsolation::None,
     };
 
+    if let Some(node) = requested_node {
+        return handle_remote_run(task, &node, &runtime_config, request.format, task_view).await;
+    }
+
     if daemon::is_running().unwrap_or(false)
         && !request.auto_approve
         && !request.parallel
         && request.isolate.is_none()
     {
-        return handle_daemon_run(request.task, &runtime_config, request.format, task_view).await;
+        return handle_daemon_run(task, &runtime_config, request.format, task_view).await;
     }
 
     handle_local_run(
-        request.task,
+        task,
         &runtime_config,
         request.format,
         task_view,
@@ -329,19 +341,8 @@ fn copy_workspace_snapshot(source: &Path, target: &Path) -> Result<()> {
 fn task_likely_writes_workspace(task: &str) -> bool {
     let task = task.to_ascii_lowercase();
     [
-        "write",
-        "edit",
-        "update",
-        "modify",
-        "create",
-        "delete",
-        "remove",
-        "rename",
-        "refactor",
-        "commit",
-        "apply",
-        "fix",
-        "change",
+        "write", "edit", "update", "modify", "create", "delete", "remove", "rename", "refactor",
+        "commit", "apply", "fix", "change",
     ]
     .iter()
     .any(|needle| task.contains(needle))
@@ -412,6 +413,60 @@ async fn handle_daemon_run(
             }
         }
     }
+}
+
+async fn handle_remote_run(
+    task: String,
+    node: &str,
+    runtime_config: &Config,
+    format: OutputFormat,
+    view: TaskView,
+) -> Result<()> {
+    let dispatch = preview_dispatch(&task, view);
+    task_view::print_start(&task, "remote", format, view, dispatch.as_ref())?;
+
+    let manager = RemoteManager::new(runtime_config.clone());
+    let mut result = manager
+        .send_with_options(
+            &task,
+            RemoteSendOptions {
+                node: Some(node.to_string()),
+                ..RemoteSendOptions::default()
+            },
+        )
+        .await;
+
+    if result.is_err() && runtime_config.remote.transports.zerotier.enabled {
+        let _ = ZeroTierManager::new(runtime_config.clone()).refresh().await;
+        result = manager
+            .send_with_options(
+                &task,
+                RemoteSendOptions {
+                    node: Some(node.to_string()),
+                    ..RemoteSendOptions::default()
+                },
+            )
+            .await;
+    }
+
+    let result = result?;
+    task_view::print_success(
+        TaskSuccess {
+            task_id: &result.remote_task_id,
+            answer: result
+                .answer
+                .as_deref()
+                .or(result.message.as_deref())
+                .unwrap_or("Remote task completed"),
+            provider_used: result.provider.as_deref().unwrap_or("remote"),
+            duration_ms: result.duration_ms.unwrap_or(0),
+            iterations: 0,
+            dispatch: dispatch.as_ref(),
+        },
+        format,
+        view,
+    )?;
+    Ok(())
 }
 
 async fn load_policy_engine(config: &Config) -> Option<PolicyEngine> {

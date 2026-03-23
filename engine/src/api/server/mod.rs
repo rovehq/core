@@ -91,7 +91,27 @@ pub async fn start_daemon(
         .route("/api/v1/health", get(api::health_check))
         .route("/v1/hello", get(api::hello))
         .route("/v1/auth/setup", post(api::auth_setup))
-        .route("/v1/auth/login", post(api::auth_login));
+        .route("/v1/auth/login", post(api::auth_login))
+        .route("/v1/remote/status/public", get(api::remote_public_status))
+        .route("/v1/remote/identity", get(api::remote_identity))
+        .route("/v1/remote/handshake", post(api::remote_handshake))
+        .route("/v1/remote/execute", post(api::execute_remote_task))
+        .route("/v1/remote/tasks/:task_id", get(api::remote_task_status))
+        .route("/v1/remote/events/ws", get(ws::task_ws_handler))
+        .route(
+            "/api/v1/remote/status/public",
+            get(api::remote_public_status),
+        )
+        .route("/api/v1/remote/identity", get(api::remote_identity))
+        .route("/api/v1/remote/handshake", post(api::remote_handshake))
+        .route(
+            "/api/v1/remote/execute-public",
+            post(api::execute_remote_task),
+        )
+        .route(
+            "/api/v1/remote/tasks/:task_id",
+            get(api::remote_task_status),
+        );
 
     // Routes that require daemon session authentication
     let protected = Router::new()
@@ -104,30 +124,73 @@ pub async fn start_daemon(
         .route("/v1/brains", get(api::list_brains))
         .route("/v1/brains/dispatch/use", post(api::use_dispatch_brain))
         .route("/v1/extensions", get(api::list_extensions))
-        .route("/v1/extensions/:kind/:name/enable", post(api::enable_extension))
-        .route("/v1/extensions/:kind/:name/disable", post(api::disable_extension))
+        .route(
+            "/v1/extensions/:kind/:name/enable",
+            post(api::enable_extension),
+        )
+        .route(
+            "/v1/extensions/:kind/:name/disable",
+            post(api::disable_extension),
+        )
         .route("/v1/extensions/:kind/:name", delete(api::remove_extension))
-        .route("/v1/policies", get(api::list_policies).post(api::add_policy))
+        .route(
+            "/v1/policies",
+            get(api::list_policies).post(api::add_policy),
+        )
         .route("/v1/policies/active", get(api::active_policies))
         .route("/v1/policies/explain", post(api::explain_policy))
         .route("/v1/policies/:name/enable", post(api::enable_policy))
         .route("/v1/policies/:name/disable", post(api::disable_policy))
         .route("/v1/policies/:name", delete(api::remove_policy))
         .route("/v1/approvals", get(api::list_approvals))
-        .route("/v1/approvals/mode", get(api::get_approval_mode).post(api::update_approval_mode))
-        .route("/v1/approvals/rules", get(api::list_approval_rules).post(api::add_approval_rule))
+        .route(
+            "/v1/approvals/mode",
+            get(api::get_approval_mode).post(api::update_approval_mode),
+        )
+        .route(
+            "/v1/approvals/rules",
+            get(api::list_approval_rules).post(api::add_approval_rule),
+        )
         .route("/v1/approvals/rules/:id", delete(api::remove_approval_rule))
         .route("/v1/approvals/:id/resolve", post(api::resolve_approval))
         .route("/v1/services", get(api::list_services))
         .route("/v1/services/:name", get(api::service_status))
         .route("/v1/services/:name/enable", post(api::enable_service))
         .route("/v1/services/:name/disable", post(api::disable_service))
-        .route("/v1/services/install/status", get(api::service_install_status))
+        .route(
+            "/v1/services/install/status",
+            get(api::service_install_status),
+        )
         .route("/v1/services/install", post(api::install_service))
         .route("/v1/services/install/:mode", delete(api::uninstall_service))
         .route("/v1/remote/status", get(api::remote_status))
         .route("/v1/remote/nodes", get(api::remote_nodes))
-        .route("/v1/remote/transports/zerotier", get(api::zerotier_status).post(api::zerotier_join))
+        .route(
+            "/v1/remote/transports/zerotier",
+            get(api::zerotier_status).post(api::zerotier_join),
+        )
+        .route(
+            "/v1/remote/transports/zerotier/install",
+            post(api::zerotier_install),
+        )
+        .route(
+            "/v1/remote/transports/zerotier/uninstall",
+            post(api::zerotier_uninstall),
+        )
+        .route(
+            "/v1/remote/transports/zerotier/setup",
+            post(api::zerotier_setup),
+        )
+        .route(
+            "/v1/remote/transports/zerotier/refresh",
+            post(api::zerotier_refresh),
+        )
+        .route("/v1/remote/discover", get(api::zerotier_candidates))
+        .route("/v1/remote/discover/refresh", post(api::zerotier_refresh))
+        .route(
+            "/v1/remote/discover/:candidate_id/trust",
+            post(api::zerotier_trust_candidate),
+        )
         .route("/v1/remote/pair", post(api::remote_pair))
         .route("/v1/remote/nodes/:name/trust", post(api::remote_trust))
         .route("/v1/remote/nodes/:name", delete(api::remote_unpair))
@@ -145,14 +208,48 @@ pub async fn start_daemon(
         .route("/api/v1/services/:name", get(api::service_status))
         .route("/api/v1/services/:name/enable", post(api::enable_service))
         .route("/api/v1/services/:name/disable", post(api::disable_service))
-        .route("/api/v1/services/install/status", get(api::service_install_status))
+        .route(
+            "/api/v1/services/install/status",
+            get(api::service_install_status),
+        )
         .route("/api/v1/services/install", post(api::install_service))
-        .route("/api/v1/services/install/:mode", delete(api::uninstall_service))
+        .route(
+            "/api/v1/services/install/:mode",
+            delete(api::uninstall_service),
+        )
         .route("/api/v1/channels", get(api::list_channels))
         .route("/api/v1/remote/execute", post(api::execute_remote_task))
         .route("/api/v1/remote/status", get(api::remote_status))
         .route("/api/v1/remote/nodes", get(api::remote_nodes))
-        .route("/api/v1/remote/transports/zerotier", get(api::zerotier_status).post(api::zerotier_join))
+        .route(
+            "/api/v1/remote/transports/zerotier",
+            get(api::zerotier_status).post(api::zerotier_join),
+        )
+        .route(
+            "/api/v1/remote/transports/zerotier/install",
+            post(api::zerotier_install),
+        )
+        .route(
+            "/api/v1/remote/transports/zerotier/uninstall",
+            post(api::zerotier_uninstall),
+        )
+        .route(
+            "/api/v1/remote/transports/zerotier/setup",
+            post(api::zerotier_setup),
+        )
+        .route(
+            "/api/v1/remote/transports/zerotier/refresh",
+            post(api::zerotier_refresh),
+        )
+        .route("/api/v1/remote/discover", get(api::zerotier_candidates))
+        .route(
+            "/api/v1/remote/discover/refresh",
+            post(api::zerotier_refresh),
+        )
+        .route(
+            "/api/v1/remote/discover/:candidate_id/trust",
+            post(api::zerotier_trust_candidate),
+        )
         .route("/api/v1/remote/pair", post(api::remote_pair))
         .route("/api/v1/remote/nodes/:name/trust", post(api::remote_trust))
         .route("/api/v1/remote/nodes/:name", delete(api::remote_unpair))
@@ -191,8 +288,7 @@ pub async fn start_daemon(
     if tls_status.enabled {
         info!(
             "Localhost TLS enabled using cert '{}' and key '{}'",
-            tls_status.cert_path,
-            tls_status.key_path
+            tls_status.cert_path, tls_status.key_path
         );
         let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
             tls_status.cert_path,

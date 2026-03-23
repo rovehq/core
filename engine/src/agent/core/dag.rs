@@ -138,10 +138,7 @@ impl AgentDagExecutor {
             None
         };
         let result = match manager
-            .send_with_options(
-                &prompt,
-                remote_send_options_for_step(step, execution_plan),
-            )
+            .send_with_options(&prompt, remote_send_options_for_step(step, execution_plan))
             .await
         {
             Ok(result) => result,
@@ -449,10 +446,16 @@ fn build_remote_step_prompt(step: &PlanStep, dependency_context: &str) -> String
     };
     let mut parts = vec![role_prefix.to_string(), step.description.clone()];
     if !dependency_context.trim().is_empty() {
-        parts.push(format!("Dependency context:\n{}", dependency_context.trim()));
+        parts.push(format!(
+            "Dependency context:\n{}",
+            dependency_context.trim()
+        ));
     }
     if !step.expected_outcome.trim().is_empty() {
-        parts.push(format!("Expected outcome: {}", step.expected_outcome.trim()));
+        parts.push(format!(
+            "Expected outcome: {}",
+            step.expected_outcome.trim()
+        ));
     }
     parts.join("\n\n")
 }
@@ -655,12 +658,12 @@ fn is_destructive_schema(schema: &ToolSchema) -> bool {
 mod tests {
     use super::*;
     use crate::builtin_tools::ToolRegistry;
+    use crate::conductor::StepType;
     use crate::config::{Config, LLMConfig};
     use crate::db::Database;
     use crate::gateway::WorkspaceLocks;
     use crate::llm::router::LLMRouter;
     use crate::storage::TaskRepository;
-    use crate::conductor::StepType;
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -792,7 +795,10 @@ mod tests {
                 None,
                 true,
                 &["workspace".to_string()],
-                &["remote-execution".to_string(), "system-execution".to_string()],
+                &[
+                    "remote-execution".to_string(),
+                    "system-execution".to_string(),
+                ],
             )
             .await
             .expect("pair");
@@ -823,8 +829,7 @@ mod tests {
         let execute_request = requests
             .iter()
             .find(|request| {
-                request.method.as_str() == "POST"
-                    && request.url.path() == "/api/v1/remote/execute"
+                request.method.as_str() == "POST" && request.url.path() == "/api/v1/remote/execute"
             })
             .expect("remote execute request");
         let request_body: serde_json::Value =
@@ -842,8 +847,12 @@ mod tests {
             .get_agent_events(&parent_task_id.to_string())
             .await
             .expect("events");
-        assert!(events.iter().any(|event| event.event_type == "remote_delegate"));
-        assert!(events.iter().any(|event| event.event_type == "remote_result"));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "remote_delegate"));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "remote_result"));
     }
 
     #[tokio::test]
@@ -912,18 +921,15 @@ mod tests {
         let execute_request = requests
             .iter()
             .find(|request| {
-                request.method.as_str() == "POST"
-                    && request.url.path() == "/api/v1/remote/execute"
+                request.method.as_str() == "POST" && request.url.path() == "/api/v1/remote/execute"
             })
             .expect("remote execute request");
         let request_body: serde_json::Value =
             serde_json::from_slice(&execute_request.body).expect("request body");
-        assert!(
-            request_body
-                .get("plan")
-                .map(serde_json::Value::is_null)
-                .unwrap_or(true)
-        );
+        assert!(request_body
+            .get("plan")
+            .map(serde_json::Value::is_null)
+            .unwrap_or(true));
     }
 
     #[tokio::test]
@@ -992,17 +998,14 @@ mod tests {
         let execute_request = requests
             .iter()
             .find(|request| {
-                request.method.as_str() == "POST"
-                    && request.url.path() == "/api/v1/remote/execute"
+                request.method.as_str() == "POST" && request.url.path() == "/api/v1/remote/execute"
             })
             .expect("remote execute request");
         let request_body: serde_json::Value =
             serde_json::from_slice(&execute_request.body).expect("request body");
-        assert!(
-            request_body
-                .get("plan")
-                .map(serde_json::Value::is_null)
-                .unwrap_or(true)
-        );
+        assert!(request_body
+            .get("plan")
+            .map(serde_json::Value::is_null)
+            .unwrap_or(true));
     }
 }

@@ -229,7 +229,9 @@ async fn print_official_systems(config: &Config) -> Result<()> {
 
     let custom = installed
         .iter()
-        .filter(|plugin| plugin_public_kind(plugin) == "system" && !is_official_system_id(&plugin.id))
+        .filter(|plugin| {
+            plugin_public_kind(plugin) == "system" && !is_official_system_id(&plugin.id)
+        })
         .cloned()
         .collect::<Vec<_>>();
     if !custom.is_empty() {
@@ -239,7 +241,11 @@ async fn print_official_systems(config: &Config) -> Result<()> {
             println!(
                 "- {} [{}] version={}",
                 plugin.name,
-                if plugin.enabled { "enabled" } else { "disabled" },
+                if plugin.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
                 plugin.version
             );
         }
@@ -323,7 +329,10 @@ async fn remove_official_system(config: &Config, name: &str) -> Result<()> {
         let install_dir = installed_system_dir(config, &plugin.id);
         if install_dir.exists() {
             fs::remove_dir_all(&install_dir).with_context(|| {
-                format!("Failed to remove installed system directory '{}'", install_dir.display())
+                format!(
+                    "Failed to remove installed system directory '{}'",
+                    install_dir.display()
+                )
             })?;
         }
         println!("Removed system '{}'.", name);
@@ -747,15 +756,19 @@ fn system_tools(id: &str) -> Vec<serde_json::Value> {
             json!({"name":"list_dir","description":"List files in a directory.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]},"domains":["filesystem","read","all"]}),
             json!({"name":"file_exists","description":"Check whether a path exists.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]},"domains":["filesystem","read","all"]}),
         ],
-        "terminal" => vec![json!({"name":"run_command","description":"Execute an allowed terminal command.","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]},"domains":["shell","git","code","all"]})],
-        "vision" => vec![json!({"name":"capture_screen","description":"Capture a screenshot.","parameters":{"type":"object","properties":{"output_file":{"type":"string"}}},"domains":["vision","all"]})],
+        "terminal" => vec![
+            json!({"name":"run_command","description":"Execute an allowed terminal command.","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]},"domains":["shell","git","code","all"]}),
+        ],
+        "vision" => vec![
+            json!({"name":"capture_screen","description":"Capture a screenshot.","parameters":{"type":"object","properties":{"output_file":{"type":"string"}}},"domains":["vision","all"]}),
+        ],
         _ => Vec::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{official_system, official_registry_dir, system_state};
+    use super::{official_registry_dir, official_system, system_state};
     use crate::config::Config;
     use crate::storage::InstalledPlugin;
 
@@ -786,10 +799,7 @@ mod tests {
     #[test]
     fn system_state_prefers_installed_record_over_legacy_flag() {
         let installed = vec![installed_plugin("terminal", false)];
-        assert_eq!(
-            system_state(&installed, "terminal"),
-            "installed-disabled"
-        );
+        assert_eq!(system_state(&installed, "terminal"), "installed-disabled");
 
         let enabled = vec![installed_plugin("terminal", true)];
         assert_eq!(system_state(&enabled, "terminal"), "installed");

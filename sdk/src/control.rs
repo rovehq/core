@@ -181,6 +181,86 @@ pub struct NodeLoadSnapshot {
     pub recent_avg_duration_ms: Option<i64>,
 }
 
+/// Reachability record for a remote transport path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RemoteTransportRecord {
+    pub kind: String,
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<String>,
+    #[serde(default)]
+    pub reachable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_checked_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+/// Persisted discovery candidate for remote transports such as ZeroTier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RemoteDiscoveryCandidate {
+    pub candidate_id: String,
+    pub transport_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<String>,
+    pub member_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<NodeIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<NodeProfile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assigned_addresses: Vec<String>,
+    pub last_seen_at: i64,
+    #[serde(default)]
+    pub controller_access: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired_node_name: Option<String>,
+    #[serde(default)]
+    pub trusted: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transports: Vec<RemoteTransportRecord>,
+}
+
+/// Official remote transport plugin status surface for ZeroTier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ZeroTierStatus {
+    pub enabled: bool,
+    pub installed: bool,
+    pub configured: bool,
+    pub token_configured: bool,
+    pub service_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<String>,
+    pub managed_name_sync: bool,
+    pub service_online: bool,
+    pub joined: bool,
+    pub controller_access: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assigned_addresses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transport_records: Vec<RemoteTransportRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync_at: Option<i64>,
+    pub candidate_count: usize,
+    pub sync_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 /// Envelope sent between remote daemons for coordinated execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteEnvelope {

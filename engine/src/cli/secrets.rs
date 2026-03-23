@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
 
 use crate::cli::SecretBackendArg;
-use crate::config::{Config, SecretBackend};
 use crate::config::metadata::SERVICE_NAME;
+use crate::config::{Config, SecretBackend};
 use crate::security::secrets::SecretManager;
 
 const KNOWN_SECRETS: &[(&str, &str)] = &[

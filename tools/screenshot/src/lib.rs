@@ -93,7 +93,9 @@ impl CoreTool for VisionTool {
 
     fn handle(&self, input: ToolInput) -> Result<ToolOutput, EngineError> {
         let output_file = match input.method.as_str() {
-            "capture_screen" => input.param_str_opt("output_file").unwrap_or_else(|| "screenshot.png".to_string()),
+            "capture_screen" => input
+                .param_str_opt("output_file")
+                .unwrap_or_else(|| "screenshot.png".to_string()),
             other => {
                 return Err(EngineError::ToolError(format!(
                     "Unknown vision method '{}'",
@@ -106,7 +108,9 @@ impl CoreTool for VisionTool {
         let path = runtime
             .block_on(self.capture_screen(&output_file))
             .map_err(|error| EngineError::ToolError(error.to_string()))?;
-        Ok(ToolOutput::json(serde_json::json!(path.display().to_string())))
+        Ok(ToolOutput::json(serde_json::json!(path
+            .display()
+            .to_string())))
     }
 }
 

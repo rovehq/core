@@ -14,6 +14,7 @@ import {
   DispatchBrainView,
   ExtensionRecord,
   PolicyExplainReport,
+  RemoteDiscoveryCandidate,
   PolicySummary,
   RemotePeer,
   RemoteStatus,
@@ -67,6 +68,7 @@ interface RoveStore {
   policyExplain: PolicyExplainReport | null;
   remoteStatus: RemoteStatus | null;
   remoteNodes: RemotePeer[];
+  remoteCandidates: RemoteDiscoveryCandidate[];
   approvalRules: ApprovalRule[];
   approvals: ApprovalRequest[];
   serviceInstall: ServiceInstallStatus | null;
@@ -79,7 +81,7 @@ interface RoveStore {
   lock: () => Promise<void>;
   submitTask: (
     input: string,
-    options?: { parallel?: boolean; isolate?: 'none' | 'worktree' | 'snapshot' },
+    options?: { parallel?: boolean; isolate?: 'none' | 'worktree' | 'snapshot'; node?: string },
   ) => Promise<boolean>;
   refreshTasks: () => Promise<void>;
   refreshServices: () => Promise<void>;
@@ -103,7 +105,15 @@ interface RoveStore {
   installService: (mode: 'login' | 'boot', profile?: 'desktop' | 'headless', port?: number) => Promise<boolean>;
   uninstallService: (mode: 'login' | 'boot') => Promise<boolean>;
   refreshZeroTier: () => Promise<void>;
+  installZeroTier: () => Promise<boolean>;
+  uninstallZeroTier: () => Promise<boolean>;
+  setupZeroTier: (input: {
+    network_id: string;
+    api_token_key?: string;
+    managed_name_sync?: boolean;
+  }) => Promise<boolean>;
   joinZeroTier: (networkId?: string) => Promise<boolean>;
+  trustRemoteCandidate: (candidateId: string) => Promise<boolean>;
   useDispatchBrain: (model: string) => Promise<boolean>;
   setServiceEnabled: (name: string, enabled: boolean) => Promise<boolean>;
   setExtensionEnabled: (kind: string, name: string, enabled: boolean) => Promise<boolean>;
@@ -340,6 +350,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
   policyExplain: null,
   remoteStatus: null,
   remoteNodes: [],
+  remoteCandidates: [],
   approvalRules: [],
   approvals: [],
   serviceInstall: null,
@@ -365,7 +376,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
 
       if (storedToken && (nextState === 'unlocked' || nextState === 'reauth_required')) {
         const authStatus = await daemon.authStatus();
-        const [services, extensions, config, brains, policies, remoteStatus, remoteNodes, approvals, approvalRules, serviceInstall, zeroTier] = await Promise.all([
+        const [services, extensions, config, brains, policies, remoteStatus, remoteNodes, remoteCandidates, approvals, approvalRules, serviceInstall, zeroTier] = await Promise.all([
           daemon.listServices(),
           daemon.listExtensions(),
           daemon.getConfig(),
@@ -373,6 +384,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           daemon.listPolicies(),
           daemon.remoteStatus(),
           daemon.listRemoteNodes(),
+          daemon.listRemoteDiscovery(),
           daemon.listApprovals(),
           daemon.listApprovalRules(),
           daemon.serviceInstallStatus(),
@@ -387,6 +399,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           policies,
           remoteStatus,
           remoteNodes,
+          remoteCandidates,
           approvals,
           approvalRules: approvalRules.rules,
           serviceInstall,
@@ -409,6 +422,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           policyExplain: null,
           remoteStatus: null,
           remoteNodes: [],
+          remoteCandidates: [],
           approvalRules: [],
           approvals: [],
           serviceInstall: null,
@@ -432,6 +446,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         policyExplain: null,
         remoteStatus: null,
         remoteNodes: [],
+        remoteCandidates: [],
         approvalRules: [],
         approvals: [],
         serviceInstall: null,
@@ -507,6 +522,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         policyExplain: null,
         remoteStatus: null,
         remoteNodes: [],
+        remoteCandidates: [],
         approvalRules: [],
         approvals: [],
         serviceInstall: null,
@@ -650,11 +666,12 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
 
   refreshRemote: async () => {
     try {
-      const [remoteStatus, remoteNodes] = await Promise.all([
+      const [remoteStatus, remoteNodes, remoteCandidates] = await Promise.all([
         daemon.remoteStatus(),
         daemon.listRemoteNodes(),
+        daemon.listRemoteDiscovery(),
       ]);
-      set({ remoteStatus, remoteNodes, error: null });
+      set({ remoteStatus, remoteNodes, remoteCandidates, error: null });
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Unable to load remote state' });
     }
@@ -766,10 +783,49 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
 
   refreshZeroTier: async () => {
     try {
-      const zeroTier = await daemon.zeroTierStatus();
-      set({ zeroTier, error: null });
+      const [zeroTier, remoteCandidates] = await Promise.all([
+        daemon.zeroTierStatus(),
+        daemon.listRemoteDiscovery(),
+      ]);
+      set({ zeroTier, remoteCandidates, error: null });
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Unable to load ZeroTier status' });
+    }
+  },
+
+  installZeroTier: async () => {
+    try {
+      const zeroTier = await daemon.zeroTierInstall();
+      set({ zeroTier, error: null });
+      await get().refreshRemote();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to install ZeroTier transport' });
+      return false;
+    }
+  },
+
+  uninstallZeroTier: async () => {
+    try {
+      const zeroTier = await daemon.zeroTierUninstall();
+      set({ zeroTier, remoteCandidates: [], error: null });
+      await get().refreshRemote();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to disable ZeroTier transport' });
+      return false;
+    }
+  },
+
+  setupZeroTier: async (input) => {
+    try {
+      const zeroTier = await daemon.zeroTierSetup(input);
+      set({ zeroTier, error: null });
+      await get().refreshRemote();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to configure ZeroTier transport' });
+      return false;
     }
   },
 
@@ -781,6 +837,18 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
       return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Unable to join ZeroTier network' });
+      return false;
+    }
+  },
+
+  trustRemoteCandidate: async (candidateId) => {
+    try {
+      await daemon.trustRemoteCandidate(candidateId);
+      await get().refreshRemote();
+      await get().refreshZeroTier();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to trust ZeroTier candidate' });
       return false;
     }
   },

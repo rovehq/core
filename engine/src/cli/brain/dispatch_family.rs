@@ -24,8 +24,7 @@ pub async fn install(model: &str, source: Option<&Path>) -> Result<()> {
     validate_artifacts_dir(&source)?;
 
     let root = dispatch_root()?;
-    fs::create_dir_all(&root)
-        .with_context(|| format!("Failed to create '{}'", root.display()))?;
+    fs::create_dir_all(&root).with_context(|| format!("Failed to create '{}'", root.display()))?;
     let destination = root.join(model);
     if destination.exists() {
         fs::remove_dir_all(&destination).with_context(|| {
@@ -89,8 +88,7 @@ pub fn status() -> Result<()> {
     );
     println!(
         "source: {}",
-        view.source
-            .unwrap_or_else(|| "not installed".to_string())
+        view.source.unwrap_or_else(|| "not installed".to_string())
     );
     println!(
         "installed: {}",
@@ -200,8 +198,7 @@ fn write_current_model(root: &Path, model: &str) -> Result<()> {
 fn clear_current_model(root: &Path) -> Result<()> {
     let path = current_model_file(root);
     if path.exists() {
-        fs::remove_file(&path)
-            .with_context(|| format!("Failed to remove '{}'", path.display()))?;
+        fs::remove_file(&path).with_context(|| format!("Failed to remove '{}'", path.display()))?;
     }
     Ok(())
 }
@@ -212,7 +209,9 @@ fn installed_models(root: &Path) -> Result<Vec<String>> {
     }
 
     let mut models = Vec::new();
-    for entry in fs::read_dir(root).with_context(|| format!("Failed to read '{}'", root.display()))? {
+    for entry in
+        fs::read_dir(root).with_context(|| format!("Failed to read '{}'", root.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
         if !path.is_dir() {
@@ -261,10 +260,16 @@ fn default_source_dir() -> Option<PathBuf> {
 
 fn validate_artifacts_dir(path: &Path) -> Result<()> {
     if !path.exists() {
-        bail!("Dispatch artifact directory '{}' does not exist", path.display());
+        bail!(
+            "Dispatch artifact directory '{}' does not exist",
+            path.display()
+        );
     }
     if !path.is_dir() {
-        bail!("Dispatch artifact source '{}' is not a directory", path.display());
+        bail!(
+            "Dispatch artifact source '{}' is not a directory",
+            path.display()
+        );
     }
     for file in REQUIRED_FILES {
         let candidate = path.join(file);
@@ -278,8 +283,8 @@ fn validate_artifacts_dir(path: &Path) -> Result<()> {
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)
         .with_context(|| format!("Failed to create '{}'", destination.display()))?;
-    for entry in fs::read_dir(source)
-        .with_context(|| format!("Failed to read '{}'", source.display()))?
+    for entry in
+        fs::read_dir(source).with_context(|| format!("Failed to read '{}'", source.display()))?
     {
         let entry = entry?;
         let source_path = entry.path();

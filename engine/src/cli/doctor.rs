@@ -6,10 +6,12 @@ use serde_json::json;
 
 use crate::cli::database_path::expand_data_dir;
 use crate::config::Config;
-use crate::policy::{active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir};
 use crate::platform::llama_search_paths;
-use crate::security::crypto::CryptoModule;
 use crate::policy::PolicyEngine;
+use crate::policy::{
+    active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir,
+};
+use crate::security::crypto::CryptoModule;
 use crate::storage::Database;
 use crate::system::daemon::DaemonManager;
 

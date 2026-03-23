@@ -45,8 +45,8 @@ pub use config_handle::{
 pub use control::{
     AuthState, AuthStatus, BrainFamily, DaemonCapabilities, DaemonHello, ExtensionKind,
     NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, NodeSummary, PolicyScope,
-    RemoteEnvelope, RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, ServiceKind,
-    SessionInfo,
+    RemoteDiscoveryCandidate, RemoteEnvelope, RemoteExecutionPlan, RemoteTransportRecord,
+    RunContextId, RunIsolation, RunMode, ServiceKind, SessionInfo, ZeroTierStatus,
 };
 pub use core_tool::{CoreContext, CoreTool};
 pub use crypto_handle::{CryptoHandle, CryptoHandleImpl};

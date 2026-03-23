@@ -85,14 +85,8 @@ impl ServiceInstaller {
         fs::create_dir_all(&logs_dir)
             .with_context(|| format!("Failed to create {}", logs_dir.display()))?;
 
-        let content = render_service_file(
-            mode,
-            &descriptor.label,
-            &binary,
-            port,
-            profile,
-            &logs_dir,
-        );
+        let content =
+            render_service_file(mode, &descriptor.label, &binary, port, profile, &logs_dir);
         fs::write(&descriptor.path, content)
             .with_context(|| format!("Failed to write {}", descriptor.path.display()))?;
         lock_down_service_file(&descriptor.path)?;
@@ -166,8 +160,9 @@ fn service_descriptor(mode: ServiceInstallMode) -> Result<ServiceDescriptor> {
             .join("Library")
             .join("LaunchAgents")
             .join(format!("{}.plist", label)),
-        ServiceInstallMode::Boot => PathBuf::from("/Library/LaunchDaemons")
-            .join(format!("{}.plist", label)),
+        ServiceInstallMode::Boot => {
+            PathBuf::from("/Library/LaunchDaemons").join(format!("{}.plist", label))
+        }
     };
     Ok(ServiceDescriptor { label, path })
 }
@@ -182,8 +177,9 @@ fn service_descriptor(mode: ServiceInstallMode) -> Result<ServiceDescriptor> {
             .join("systemd")
             .join("user")
             .join(format!("{}.service", label)),
-        ServiceInstallMode::Boot => PathBuf::from("/etc/systemd/system")
-            .join(format!("{}.service", label)),
+        ServiceInstallMode::Boot => {
+            PathBuf::from("/etc/systemd/system").join(format!("{}.service", label))
+        }
     };
     Ok(ServiceDescriptor { label, path })
 }
@@ -297,7 +293,11 @@ fn activate_service(mode: ServiceInstallMode, descriptor: &ServiceDescriptor) ->
     )?;
     run_command(
         "/bin/launchctl",
-        &["kickstart", "-k", &format!("{}/{}", domain, descriptor.label)],
+        &[
+            "kickstart",
+            "-k",
+            &format!("{}/{}", domain, descriptor.label),
+        ],
         true,
     )?;
     Ok(())

@@ -48,6 +48,10 @@ pub enum Command {
         /// The task description.
         prompt: Vec<String>,
 
+        /// Explicit remote node target.
+        #[arg(long)]
+        node: Option<String>,
+
         /// Auto-approve destructive actions.
         #[arg(short = 'y', long)]
         yes: bool,
@@ -816,6 +820,16 @@ pub enum ServiceAction {
 pub enum RemoteAction {
     /// Show remote service status for this node.
     Status,
+    /// Manage official remote transports such as ZeroTier.
+    Transport {
+        #[command(subcommand)]
+        action: RemoteTransportAction,
+    },
+    /// Inspect and promote discoverable remote candidates.
+    Discover {
+        #[command(subcommand)]
+        action: RemoteDiscoverAction,
+    },
     /// Manage paired nodes in the remote mesh.
     Node {
         #[command(subcommand)]
@@ -888,6 +902,67 @@ pub enum RemoteAction {
     /// Compatibility alias for `rove remote node trust`.
     #[command(hide = true)]
     Trust { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RemoteTransportAction {
+    /// Install and enable the official ZeroTier transport integration.
+    Install {
+        #[arg(value_enum)]
+        transport: RemoteTransportArg,
+    },
+    /// Disable the official ZeroTier transport integration.
+    Uninstall {
+        #[arg(value_enum)]
+        transport: RemoteTransportArg,
+    },
+    /// Show transport status.
+    Status {
+        #[arg(value_enum)]
+        transport: RemoteTransportArg,
+    },
+    /// Configure transport network settings.
+    Setup {
+        #[arg(value_enum)]
+        transport: RemoteTransportArg,
+
+        #[arg(long = "network")]
+        network_id: String,
+
+        #[arg(long)]
+        token_key: Option<String>,
+
+        #[arg(long, default_value_t = true)]
+        managed_name_sync: bool,
+    },
+    /// Join the configured transport network.
+    Join {
+        #[arg(value_enum)]
+        transport: RemoteTransportArg,
+
+        #[arg(long = "network")]
+        network_id: Option<String>,
+    },
+    /// Force a transport refresh and discovery sync.
+    Refresh {
+        #[arg(value_enum)]
+        transport: RemoteTransportArg,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RemoteDiscoverAction {
+    /// List discovered remote candidates.
+    List,
+    /// Refresh discovery now.
+    Refresh,
+    /// Promote or confirm trust for a discovery candidate.
+    Trust { candidate_id: String },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum RemoteTransportArg {
+    ZeroTier,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1089,7 +1164,9 @@ pub enum ApprovalRuleCommand {
         #[arg(long)]
         effect: Option<String>,
     },
-    Remove { id: String },
+    Remove {
+        id: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

@@ -1,12 +1,11 @@
 use anyhow::{bail, Result};
 
 use crate::cli::{
-    ApprovalModeAction, ApprovalModeArg, ApprovalRuleActionArg, ApprovalRuleCommand, ApprovalsAction,
+    ApprovalModeAction, ApprovalModeArg, ApprovalRuleActionArg, ApprovalRuleCommand,
+    ApprovalsAction,
 };
 use crate::config::{ApprovalMode, Config};
-use crate::security::approvals::{
-    self, ApprovalRule, ApprovalRuleAction, ApprovalRulesFile,
-};
+use crate::security::approvals::{self, ApprovalRule, ApprovalRuleAction, ApprovalRulesFile};
 
 pub fn handle(action: ApprovalsAction, config: &mut Config) -> Result<()> {
     match action {

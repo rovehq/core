@@ -7,8 +7,8 @@ use std::str::FromStr;
 use tracing::{debug, info};
 
 use super::{
-    AuthRepository, InstalledPluginRepository, PendingTaskRepository, PluginRepository, ScheduleRepository,
-    TaskRepository,
+    AuthRepository, InstalledPluginRepository, PendingTaskRepository, PluginRepository,
+    RemoteDiscoveryRepository, ScheduleRepository, TaskRepository,
 };
 
 /// Database connection pool.
@@ -107,11 +107,12 @@ impl Database {
     }
 
     async fn table_exists(&self, table: &str) -> Result<bool> {
-        let row = sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
-            .bind(table)
-            .fetch_optional(&self.pool)
-            .await
-            .with_context(|| format!("Failed to inspect sqlite_master for table '{table}'"))?;
+        let row =
+            sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
+                .bind(table)
+                .fetch_optional(&self.pool)
+                .await
+                .with_context(|| format!("Failed to inspect sqlite_master for table '{table}'"))?;
         Ok(row.is_some())
     }
 
@@ -170,6 +171,10 @@ impl Database {
 
     pub fn schedules(&self) -> ScheduleRepository {
         ScheduleRepository::new(self.pool.clone())
+    }
+
+    pub fn remote_discovery(&self) -> RemoteDiscoveryRepository {
+        RemoteDiscoveryRepository::new(self.pool.clone())
     }
 }
 

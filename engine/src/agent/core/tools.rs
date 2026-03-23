@@ -59,11 +59,7 @@ impl AgentCore {
         }
 
         let tool_call = ToolCall::new(
-            format!(
-                "policy-{}-{}",
-                task_id,
-                self.policy_executed_commands.len()
-            ),
+            format!("policy-{}-{}", task_id, self.policy_executed_commands.len()),
             "run_command",
             serde_json::json!({ "command": command }).to_string(),
         );

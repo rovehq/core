@@ -535,12 +535,10 @@ mod tests {
 
         assert!(published.destination.exists());
         assert!(registry_dir.join("registry.json").exists());
-        assert!(
-            registry_dir
-                .join("sample-skill")
-                .join("index.json")
-                .exists()
-        );
+        assert!(registry_dir
+            .join("sample-skill")
+            .join("index.json")
+            .exists());
     }
 
     #[test]

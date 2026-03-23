@@ -21,9 +21,8 @@
 
 use axum::{
     extract::{
-        Query,
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Query, State,
     },
     http::HeaderMap,
     http::StatusCode,
@@ -105,14 +104,12 @@ pub async fn task_ws_handler(
         let config = match Config::load_or_create() {
             Ok(config) => config,
             Err(error) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error.to_string(),
-                )
-                    .into_response()
+                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
             }
         };
-        if let Err(error) = RemoteManager::new(config).verify_signed_request(&headers, "event_stream", None) {
+        if let Err(error) =
+            RemoteManager::new(config).verify_signed_request(&headers, "event_stream", None)
+        {
             return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
         }
     }
@@ -135,14 +132,12 @@ pub async fn telemetry_handler(
         let config = match Config::load_or_create() {
             Ok(config) => config,
             Err(error) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error.to_string(),
-                )
-                    .into_response()
+                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
             }
         };
-        if let Err(error) = RemoteManager::new(config).verify_signed_request(&headers, "event_stream", None) {
+        if let Err(error) =
+            RemoteManager::new(config).verify_signed_request(&headers, "event_stream", None)
+        {
             return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
         }
     }
@@ -246,7 +241,7 @@ async fn handle_start_task(socket: &mut WebSocket, state: &AppState, input: Stri
     if socket
         .send(Message::Text(accepted.to_text()))
         .await
-    .is_err()
+        .is_err()
     {
         return;
     }

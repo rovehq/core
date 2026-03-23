@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::config::Config;
 use super::{bootstrap_builtins, PolicyEngine, PolicyRecord};
+use crate::config::Config;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PolicySummary {
@@ -39,8 +39,7 @@ pub struct PolicyManager {
 
 impl PolicyManager {
     pub fn new(config: Config, policy_dir_override: Option<PathBuf>) -> Self {
-        let policy_dir =
-            policy_dir_override.unwrap_or_else(|| config.policy.policy_dir().clone());
+        let policy_dir = policy_dir_override.unwrap_or_else(|| config.policy.policy_dir().clone());
         let workspace_dir = config.core.workspace.join(".rove").join("policy");
         let legacy_workspace_dir = config.core.workspace.join(".rove").join("steering");
         Self {
@@ -193,10 +192,8 @@ impl PolicyManager {
     }
 
     async fn load_engine(&self) -> Result<PolicyEngine> {
-        let workspace_dir = active_workspace_policy_dir(
-            &self.workspace_dir,
-            &self.legacy_workspace_dir,
-        );
+        let workspace_dir =
+            active_workspace_policy_dir(&self.workspace_dir, &self.legacy_workspace_dir);
         let engine = PolicyEngine::new_with_workspace(&self.policy_dir, Some(&workspace_dir))
             .await
             .with_context(|| {
@@ -275,7 +272,10 @@ pub fn explain_as_lines(report: &PolicyExplainReport) -> Vec<String> {
     sections.insert("matched_hints", report.matched_hints.clone());
     sections.insert("preferred_providers", report.preferred_providers.clone());
     sections.insert("preferred_tools", report.preferred_tools.clone());
-    sections.insert("verification_commands", report.verification_commands.clone());
+    sections.insert(
+        "verification_commands",
+        report.verification_commands.clone(),
+    );
     sections.insert("memory_tags", report.memory_tags.clone());
 
     for (name, items) in sections {

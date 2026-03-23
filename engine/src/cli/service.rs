@@ -1,8 +1,8 @@
 use anyhow::Result;
 
 use crate::cli::commands::{DaemonProfileArg, ServiceInstallModeArg, ServiceTarget};
-use crate::config::DaemonProfile;
 use crate::config::Config;
+use crate::config::DaemonProfile;
 use crate::service_install::{ServiceInstallMode, ServiceInstaller};
 use crate::services::{ManagedService, ServiceManager, ServiceStatus};
 
@@ -19,7 +19,11 @@ pub fn list(config: &Config) {
         println!(
             "- {} [{}]",
             status.name,
-            if status.enabled { "enabled" } else { "disabled" }
+            if status.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
         );
     }
 }
@@ -94,7 +98,11 @@ fn print_status(status: &ServiceStatus) {
     println!(
         "{}: {}",
         status.name,
-        if status.enabled { "enabled" } else { "disabled" }
+        if status.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
     );
     for (key, value) in &status.details {
         println!("{}: {}", key, value);
@@ -110,7 +118,11 @@ fn print_install_state(label: &str, status: &crate::service_install::ServiceInst
         } else {
             "not installed"
         },
-        if status.supported { "" } else { " (unsupported)" }
+        if status.supported {
+            ""
+        } else {
+            " (unsupported)"
+        }
     );
     if status.supported {
         println!("  path: {}", status.path);

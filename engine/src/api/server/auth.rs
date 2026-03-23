@@ -53,7 +53,12 @@ impl AuthManager {
             return Ok(());
         };
 
-        if config.webui.allowed_origins.iter().any(|allowed| allowed == origin) {
+        if config
+            .webui
+            .allowed_origins
+            .iter()
+            .any(|allowed| allowed == origin)
+        {
             return Ok(());
         }
 
@@ -103,7 +108,12 @@ impl AuthManager {
         self.create_session(headers).await
     }
 
-    pub async fn reauth(&self, token: &str, password: &str, headers: &HeaderMap) -> Result<AuthStatus> {
+    pub async fn reauth(
+        &self,
+        token: &str,
+        password: &str,
+        headers: &HeaderMap,
+    ) -> Result<AuthStatus> {
         self.ensure_origin_allowed(headers)?;
         let validated = self.validate_session(token, true).await?;
 
@@ -117,7 +127,10 @@ impl AuthManager {
 
         self.db
             .auth()
-            .set_reauth(&validated.session.session_id, config.webui.reauth_window_secs as i64)
+            .set_reauth(
+                &validated.session.session_id,
+                config.webui.reauth_window_secs as i64,
+            )
             .await?;
 
         self.status_for_token(token).await
@@ -132,11 +145,7 @@ impl AuthManager {
         Ok(validated.status)
     }
 
-    pub async fn validate_session(
-        &self,
-        token: &str,
-        touch: bool,
-    ) -> Result<ValidatedSession> {
+    pub async fn validate_session(&self, token: &str, touch: bool) -> Result<ValidatedSession> {
         let config = Config::load_or_create()?;
         if config.webui.password_hash.is_none() {
             bail!("Daemon password has not been configured yet");
@@ -147,7 +156,9 @@ impl AuthManager {
         };
 
         let now = now_ts()?;
-        if session.revoked_at.is_some() || session.expires_at <= now || session.absolute_expires_at <= now
+        if session.revoked_at.is_some()
+            || session.expires_at <= now
+            || session.absolute_expires_at <= now
         {
             let _ = self.db.auth().revoke_session(token).await;
             bail!("Session expired");
@@ -163,7 +174,9 @@ impl AuthManager {
         }
 
         let reauth = self.db.auth().get_reauth(token).await?;
-        let reauth_valid = reauth.as_ref().is_some_and(|reauth| reauth.expires_at > now);
+        let reauth_valid = reauth
+            .as_ref()
+            .is_some_and(|reauth| reauth.expires_at > now);
         let state = if session.requires_reauth && !reauth_valid {
             AuthState::ReauthRequired
         } else {
@@ -176,7 +189,7 @@ impl AuthManager {
                 state,
                 idle_expires_in_secs: Some(session.expires_at.saturating_sub(now) as u64),
                 absolute_expires_in_secs: Some(
-                    session.absolute_expires_at.saturating_sub(now) as u64,
+                    session.absolute_expires_at.saturating_sub(now) as u64
                 ),
             },
         })
@@ -215,7 +228,10 @@ impl AuthManager {
             access_token: session.session_id,
             expires_in_secs: config.webui.idle_timeout_secs,
             absolute_expires_in_secs: config.webui.absolute_timeout_secs,
-            reauth_required_for: SENSITIVE_AREAS.iter().map(|value| value.to_string()).collect(),
+            reauth_required_for: SENSITIVE_AREAS
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
         })
     }
 }

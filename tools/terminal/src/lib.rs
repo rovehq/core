@@ -168,8 +168,8 @@ struct CommandExecutor {
 impl CommandExecutor {
     fn new() -> Self {
         let safe_commands = [
-            "git", "cargo", "rustc", "rustfmt", "npm", "npx", "node", "python3", "python",
-            "pip3", "pip", "make", "cmake", "rg", "fd", "bat",
+            "git", "cargo", "rustc", "rustfmt", "npm", "npx", "node", "python3", "python", "pip3",
+            "pip", "make", "cmake", "rg", "fd", "bat",
         ];
 
         let mut allowlist = std::collections::HashSet::new();
@@ -180,12 +180,24 @@ impl CommandExecutor {
                 resolved.insert((*cmd).to_string(), path);
             }
         }
-        Self { allowlist, resolved }
+        Self {
+            allowlist,
+            resolved,
+        }
     }
 
     fn validate(&self, command: &str, args: &[String]) -> Result<(), anyhow::Error> {
         const BLOCKED_SHELLS: &[&str] = &[
-            "bash", "sh", "zsh", "fish", "dash", "cmd", "powershell", "pwsh", "eval", "exec",
+            "bash",
+            "sh",
+            "zsh",
+            "fish",
+            "dash",
+            "cmd",
+            "powershell",
+            "pwsh",
+            "eval",
+            "exec",
         ];
         let command_lower = command.to_lowercase();
         if BLOCKED_SHELLS.contains(&command_lower.as_str()) {
@@ -221,7 +233,9 @@ fn resolve_path(cmd: &str) -> Option<String> {
         .ok()
         .and_then(|output| {
             if output.status.success() {
-                String::from_utf8(output.stdout).ok().map(|s| s.trim().to_string())
+                String::from_utf8(output.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }

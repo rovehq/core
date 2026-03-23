@@ -60,8 +60,11 @@ pub fn generate_plugin_scaffold(
         cargo_toml(&crate_slug, package_name, plugin_type_name, plugin_type),
     )
     .with_context(|| format!("Failed to write '{}'", dir.join("Cargo.toml").display()))?;
-    fs::write(dir.join(".gitignore"), "target/\n*.wasm\n*.so\n*.dylib\n*.dll\n.DS_Store\n")
-        .with_context(|| format!("Failed to write '{}'", dir.join(".gitignore").display()))?;
+    fs::write(
+        dir.join(".gitignore"),
+        "target/\n*.wasm\n*.so\n*.dylib\n*.dll\n.DS_Store\n",
+    )
+    .with_context(|| format!("Failed to write '{}'", dir.join(".gitignore").display()))?;
     fs::write(
         dir.join(MANIFEST_FILE),
         serde_json::to_string_pretty(&manifest_json(package_name, plugin_type_name))?,

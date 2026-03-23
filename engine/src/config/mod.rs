@@ -59,8 +59,8 @@ pub mod memory;
 pub mod metadata;
 pub mod policy;
 pub mod remote;
-pub mod security;
 pub mod secrets;
+pub mod security;
 pub mod steering;
 pub mod telegram;
 pub mod tools;
@@ -79,8 +79,8 @@ pub use memory::*;
 pub use metadata::*;
 pub use policy::*;
 pub use remote::*;
-pub use security::*;
 pub use secrets::*;
+pub use security::*;
 pub use telegram::*;
 pub use tools::*;
 pub use transport::*;
@@ -393,17 +393,23 @@ fn config_to_toml(config: &Config) -> Result<String, toml::ser::Error> {
     table.insert("remote".to_string(), Value::try_from(&config.remote)?);
     table.insert("gateway".to_string(), Value::try_from(&config.gateway)?);
     table.insert("mcp".to_string(), Value::try_from(&config.mcp)?);
-    table.insert("services".to_string(), Value::Table(public_services_table(config)));
-    table.insert("channels".to_string(), Value::Table(public_channels_table(config)));
+    table.insert(
+        "services".to_string(),
+        Value::Table(public_services_table(config)),
+    );
+    table.insert(
+        "channels".to_string(),
+        Value::Table(public_channels_table(config)),
+    );
     insert_public_brain_aliases(&mut table, config)?;
 
     toml::to_string_pretty(&Value::Table(table))
 }
 
 fn normalize_public_aliases(value: &mut Value) -> Result<(), EngineError> {
-    let table = value.as_table_mut().ok_or_else(|| {
-        EngineError::Config("Config root must be a TOML table".to_string())
-    })?;
+    let table = value
+        .as_table_mut()
+        .ok_or_else(|| EngineError::Config("Config root must be a TOML table".to_string()))?;
 
     if !table.contains_key("core") {
         if let Some(kernel) = table.get("kernel").cloned() {
@@ -411,11 +417,7 @@ fn normalize_public_aliases(value: &mut Value) -> Result<(), EngineError> {
         }
     }
 
-    if let Some(services) = table
-        .get("services")
-        .and_then(Value::as_table)
-        .cloned()
-    {
+    if let Some(services) = table.get("services").and_then(Value::as_table).cloned() {
         if !table.contains_key("webui") {
             if let Some(webui) = services.get("webui").cloned() {
                 table.insert("webui".to_string(), webui);
@@ -452,8 +454,9 @@ fn normalize_public_aliases(value: &mut Value) -> Result<(), EngineError> {
     }
 
     if let Some(brains) = table.get("brains").and_then(Value::as_table).cloned() {
-        let has_legacy_shape =
-            brains.contains_key("enabled") || brains.contains_key("fallback") || brains.contains_key("ram_limit_mb");
+        let has_legacy_shape = brains.contains_key("enabled")
+            || brains.contains_key("fallback")
+            || brains.contains_key("ram_limit_mb");
         if !has_legacy_shape {
             if let Some(dispatch) = brains.get("dispatch").cloned() {
                 table.insert("brains".to_string(), dispatch);
@@ -495,7 +498,10 @@ fn public_services_table(config: &Config) -> Map<String, Value> {
         "enabled".to_string(),
         Value::Boolean(!config.core.log_level.eq_ignore_ascii_case("error")),
     );
-    logging.insert("level".to_string(), Value::String(config.core.log_level.clone()));
+    logging.insert(
+        "level".to_string(),
+        Value::String(config.core.log_level.clone()),
+    );
     services.insert("logging".to_string(), Value::Table(logging));
 
     services.insert(
@@ -544,10 +550,7 @@ fn insert_public_brain_aliases(
         .get_mut("brains")
         .and_then(Value::as_table_mut)
         .expect("brains entry must be a TOML table");
-    brains_table.insert(
-        "dispatch".to_string(),
-        Value::try_from(&config.brains)?,
-    );
+    brains_table.insert("dispatch".to_string(), Value::try_from(&config.brains)?);
     Ok(())
 }
 
@@ -624,7 +627,10 @@ auto_unload = true
         assert!(config.webui.enabled);
         assert!(config.ws_client.enabled);
         assert!(config.telegram.enabled);
-        assert_eq!(config.policy.default_policies, vec!["rust-safe".to_string()]);
+        assert_eq!(
+            config.policy.default_policies,
+            vec!["rust-safe".to_string()]
+        );
         assert!(config.brains.enabled);
     }
 
@@ -704,7 +710,10 @@ max_risk_tier = 2
     fn sdk_snapshot_tracks_schema_and_profile() {
         let mut config = Config::default();
         config.core.workspace = std::env::current_dir().expect("cwd");
-        config.core.data_dir = config.core.workspace.join("target/config-tests/sdk-snapshot");
+        config.core.data_dir = config
+            .core
+            .workspace
+            .join("target/config-tests/sdk-snapshot");
         config.daemon.profile = crate::config::DaemonProfile::Headless;
         config.approvals.mode = crate::config::ApprovalMode::Allowlist;
         config.secrets.backend = crate::config::SecretBackend::Vault;
