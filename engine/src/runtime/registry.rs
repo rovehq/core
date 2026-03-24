@@ -254,8 +254,23 @@ impl ToolRegistry {
         lib_path: impl Into<String>,
         domains: Vec<String>,
     ) {
+        let name = name.into();
+        if self
+            .tools
+            .read()
+            .await
+            .get(&name)
+            .is_some_and(|existing| matches!(existing.source, ToolSource::Builtin))
+        {
+            debug!(
+                "Skipping native registration for '{}' because a builtin tool with that name already exists",
+                name
+            );
+            return;
+        }
+
         self.register(ToolSchema {
-            name: name.into(),
+            name,
             description: description.into(),
             parameters,
             source: ToolSource::Native {

@@ -26,9 +26,9 @@ impl BuiltinSelection {
 
     pub fn kernel_defaults() -> Self {
         Self {
-            filesystem: false,
-            terminal: false,
-            vision: false,
+            filesystem: true,
+            terminal: true,
+            vision: true,
         }
     }
 }

@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_build_prefers_installed_official_system_over_legacy_builtin() {
+    async fn runtime_build_prefers_builtin_core_tools_over_installed_official_system() {
         let workspace = TempDir::new().expect("workspace");
         let data = TempDir::new().expect("data");
         let database = Database::new(&data.path().join("runtime-system.db"))
@@ -513,7 +513,7 @@ mod tests {
         let runtime = RuntimeManager::build(&database, &config)
             .await
             .expect("runtime manager");
-        assert!(runtime.registry.terminal.is_none());
+        assert!(runtime.registry.terminal.is_some());
 
         let schema = runtime
             .registry
@@ -524,12 +524,12 @@ mod tests {
             .expect("run_command schema");
         assert!(matches!(
             schema.source,
-            crate::runtime::registry::ToolSource::Native { .. }
+            crate::runtime::registry::ToolSource::Builtin
         ));
     }
 
     #[tokio::test]
-    async fn runtime_build_does_not_register_legacy_system_builtins_without_installs() {
+    async fn runtime_build_registers_builtin_core_tools_even_without_installs() {
         let workspace = TempDir::new().expect("workspace");
         let data = TempDir::new().expect("data");
         let database = Database::new(&data.path().join("runtime-no-builtins.db"))
@@ -548,12 +548,12 @@ mod tests {
             .expect("runtime manager");
         let schemas = runtime.registry.schemas_for("all").await;
 
-        assert!(runtime.registry.fs.is_none());
-        assert!(runtime.registry.terminal.is_none());
-        assert!(runtime.registry.vision.is_none());
-        assert!(!schemas.iter().any(|schema| schema.name == "read_file"));
-        assert!(!schemas.iter().any(|schema| schema.name == "run_command"));
-        assert!(!schemas.iter().any(|schema| schema.name == "capture_screen"));
+        assert!(runtime.registry.fs.is_some());
+        assert!(runtime.registry.terminal.is_some());
+        assert!(runtime.registry.vision.is_some());
+        assert!(schemas.iter().any(|schema| schema.name == "read_file"));
+        assert!(schemas.iter().any(|schema| schema.name == "run_command"));
+        assert!(schemas.iter().any(|schema| schema.name == "capture_screen"));
     }
 
     #[tokio::test]
