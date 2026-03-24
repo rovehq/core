@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
 use std::fs::OpenOptions;
-use std::path::PathBuf;
 use tracing::{error, Level};
 use tracing_subscriber::{
     filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
@@ -128,12 +127,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Channel { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
-            handle_extension(
-                action,
-                &config,
-                rove_engine::cli::extensions::ExtensionSurface::Channel,
-            )
-            .await?;
+            rove_engine::cli::channel::handle_channels(action, &config).await?;
         }
         Some(Command::Service { action }) => handle_service(action).await?,
         Some(Command::Remote { action }) => {
@@ -193,7 +187,7 @@ fn init_logging(
     let default_filter = EnvFilter::new(format!("rove_engine={}", level.as_str().to_lowercase()));
     let console_layer = fmt::layer().with_target(false);
 
-    let log_path = log_file_path();
+    let log_path = rove_engine::logs::log_file_path();
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -270,21 +264,6 @@ fn should_honor_console_env_filter(cli: &Cli) -> bool {
     )
 }
 
-fn log_file_path() -> PathBuf {
-    if let Some(data_dir) = std::env::var_os("ROVE_DATA_DIR").filter(|value| !value.is_empty()) {
-        let data_dir = PathBuf::from(data_dir);
-        if let Some(parent) = data_dir.parent() {
-            return parent.join("rove.log");
-        }
-        return data_dir.join("rove.log");
-    }
-
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".rove")
-        .join("rove.log")
-}
-
 async fn run_daemon(port: u16, profile: Option<DaemonProfileArg>) -> Result<()> {
     let _ = apply_profile_override(profile)?;
     let config = rove_engine::config::Config::load_or_create()?;
@@ -294,7 +273,7 @@ async fn run_daemon(port: u16, profile: Option<DaemonProfileArg>) -> Result<()> 
     let (agent, database, gateway) = rove_engine::cli::bootstrap::init_daemon().await?;
     gateway.clone().start();
     rove_engine::channels::manager::ChannelManager::new(config.clone())
-        .start_enabled(gateway.clone(), database.clone());
+        .start_enabled(agent.clone());
     rove_engine::zerotier::maybe_start_sync_loop(config.clone()).await;
     tracing::info!("{}", rove_engine::info::engine_banner());
     server::start_daemon(

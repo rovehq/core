@@ -35,6 +35,8 @@ pub use security::risk_assessor;
 pub use security::secrets;
 pub use storage as db;
 pub use system::daemon;
+pub use system::factory;
+pub use system::logs;
 pub use system::message_bus;
 pub use system::remote;
 pub use system::service_install;

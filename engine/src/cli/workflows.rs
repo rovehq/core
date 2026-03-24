@@ -6,9 +6,10 @@ use crate::cli::database_path::database_path;
 use crate::cli::run::execute_local_task_request;
 use crate::config::Config;
 use crate::storage::Database;
+use crate::system::factory;
 use crate::system::specs::{allowed_tools, slugify, SpecRepository};
 
-use super::commands::WorkflowAction;
+use super::commands::{WorkflowAction, WorkflowFactoryAction};
 
 pub async fn handle_workflows(action: WorkflowAction, config: &Config) -> Result<()> {
     let repo = SpecRepository::new()?;
@@ -29,6 +30,55 @@ pub async fn handle_workflows(action: WorkflowAction, config: &Config) -> Result
         WorkflowAction::Export { id, path } => export_workflow(&repo, &id, &path),
         WorkflowAction::Import { path } => import_workflow(&repo, &path),
         WorkflowAction::Runs { limit } => list_runs(config, limit).await,
+        WorkflowAction::Factory { action } => handle_factory(action, &repo),
+        WorkflowAction::FromTask { task_id, id, name } => {
+            create_workflow_from_task(&repo, config, &task_id, id.as_deref(), name.as_deref()).await
+        }
+    }
+}
+
+fn handle_factory(action: WorkflowFactoryAction, repo: &SpecRepository) -> Result<()> {
+    match action {
+        WorkflowFactoryAction::Templates => {
+            for template in factory::list_workflow_templates() {
+                println!(
+                    "{}\t{}\t{}",
+                    template.id, template.name, template.description
+                );
+            }
+            Ok(())
+        }
+        WorkflowFactoryAction::Preview {
+            template,
+            id,
+            name,
+            requirement,
+        } => {
+            let spec = factory::preview_workflow(
+                &requirement.join(" "),
+                template.as_deref(),
+                id.as_deref(),
+                name.as_deref(),
+            )?;
+            println!("{}", toml::to_string_pretty(&spec)?);
+            Ok(())
+        }
+        WorkflowFactoryAction::Create {
+            template,
+            id,
+            name,
+            requirement,
+        } => {
+            let spec = factory::create_workflow(
+                repo,
+                &requirement.join(" "),
+                template.as_deref(),
+                id.as_deref(),
+                name.as_deref(),
+            )?;
+            println!("{}", toml::to_string_pretty(&spec)?);
+            Ok(())
+        }
     }
 }
 
@@ -207,5 +257,20 @@ async fn list_runs(config: &Config, limit: i64) -> Result<()> {
             run.run_id, run.workflow_id, run.status, run.input
         );
     }
+    Ok(())
+}
+
+async fn create_workflow_from_task(
+    repo: &SpecRepository,
+    config: &Config,
+    task_id: &str,
+    id: Option<&str>,
+    name: Option<&str>,
+) -> Result<()> {
+    let db = Database::new(&database_path(config))
+        .await
+        .context("Failed to open database for task conversion")?;
+    let spec = factory::workflow_from_task(repo, &db, task_id, id, name).await?;
+    println!("{}", toml::to_string_pretty(&spec)?);
     Ok(())
 }

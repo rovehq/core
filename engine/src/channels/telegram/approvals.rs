@@ -29,6 +29,7 @@ pub(super) async fn resolve_approval(key: &str, approved: bool) {
 }
 
 impl TelegramBot {
+    #[allow(dead_code)]
     pub async fn send_tier1_countdown(
         &self,
         chat_id: i64,
@@ -44,6 +45,7 @@ impl TelegramBot {
         Ok(true)
     }
 
+    #[allow(dead_code)]
     pub async fn request_tier2_approval(
         &self,
         chat_id: i64,

@@ -8,6 +8,7 @@ import {
   DaemonError,
   ExecuteTaskResponse,
   RoveDaemonClient,
+  SpecTemplateSummary,
   WorkflowRunRecord,
   WorkflowSpec,
   WorkflowStepSpec,
@@ -34,8 +35,12 @@ const EMPTY_WORKFLOW: WorkflowSpec = {
 export default function WorkflowsPage() {
   const [workflows, setWorkflows] = useState<WorkflowSpec[]>([]);
   const [agents, setAgents] = useState<AgentSpec[]>([]);
+  const [templates, setTemplates] = useState<SpecTemplateSummary[]>([]);
   const [runs, setRuns] = useState<WorkflowRunRecord[]>([]);
   const [form, setForm] = useState<WorkflowSpec>(EMPTY_WORKFLOW);
+  const [factoryRequirement, setFactoryRequirement] = useState('');
+  const [factoryTemplate, setFactoryTemplate] = useState('one-shot');
+  const [factoryPreview, setFactoryPreview] = useState<WorkflowSpec | null>(null);
   const [runInput, setRunInput] = useState<Record<string, string>>({});
   const [runResult, setRunResult] = useState<Record<string, ExecuteTaskResponse>>({});
   const [loading, setLoading] = useState(true);
@@ -51,14 +56,16 @@ export default function WorkflowsPage() {
     setError(null);
     try {
       const client = daemonClient();
-      const [nextWorkflows, nextAgents, nextRuns] = await Promise.all([
+      const [nextWorkflows, nextAgents, nextRuns, nextTemplates] = await Promise.all([
         client.listWorkflows(),
         client.listAgents(),
         client.listWorkflowRuns(),
+        client.listWorkflowTemplates(),
       ]);
       setWorkflows(nextWorkflows);
       setAgents(nextAgents);
       setRuns(nextRuns);
+      setTemplates(nextTemplates);
       setForm((current) => {
         if (current.id) {
           const updated = nextWorkflows.find((item) => item.id === current.id);
@@ -79,6 +86,46 @@ export default function WorkflowsPage() {
     try {
       const saved = await daemonClient().saveWorkflow(normalizeWorkflow(form));
       setForm(cloneWorkflow(saved));
+      await refresh();
+    } catch (nextError) {
+      setError(formatError(nextError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function previewFactory() {
+    if (!factoryRequirement.trim()) {
+      setError('Factory preview requires a requirement.');
+      return;
+    }
+    setError(null);
+    try {
+      setFactoryPreview(
+        await daemonClient().previewWorkflowFactory({
+          requirement: factoryRequirement.trim(),
+          template_id: factoryTemplate || undefined,
+        }),
+      );
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
+  async function createFromFactory() {
+    if (!factoryRequirement.trim()) {
+      setError('Factory creation requires a requirement.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const created = await daemonClient().createWorkflowFactory({
+        requirement: factoryRequirement.trim(),
+        template_id: factoryTemplate || undefined,
+      });
+      setFactoryPreview(created);
+      setForm(cloneWorkflow(created));
       await refresh();
     } catch (nextError) {
       setError(formatError(nextError));
@@ -145,6 +192,64 @@ export default function WorkflowsPage() {
       </header>
 
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6 space-y-6">
+        <section className="bg-surface rounded-xl p-6 border border-surface2 space-y-5">
+          <div>
+            <h2 className="text-lg font-semibold">Generate Workflow</h2>
+            <p className="text-sm text-gray-400">
+              Convert a requirement into a disabled workflow spec with explicit steps, runtime profile, and tags. This stays in the same structured workflow model the daemon already runs.
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-[220px,1fr]">
+            <Field label="Template">
+              <select
+                value={factoryTemplate}
+                onChange={(event) => setFactoryTemplate(event.target.value)}
+                className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+              >
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Requirement">
+              <textarea
+                value={factoryRequirement}
+                onChange={(event) => setFactoryRequirement(event.target.value)}
+                className="min-h-28 w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                placeholder="Inspect the target node, apply the needed fix, then verify the final state."
+              />
+            </Field>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={() => void previewFactory()}
+              className="rounded-lg border border-surface px-4 py-2 text-sm hover:border-primary"
+            >
+              Preview
+            </button>
+            <button
+              onClick={() => void createFromFactory()}
+              disabled={saving}
+              className="rounded-lg bg-primary px-4 py-2 font-medium hover:bg-primary/80 disabled:bg-surface2 disabled:text-gray-500"
+            >
+              Create Disabled Workflow
+            </button>
+          </div>
+
+          {factoryPreview ? (
+            <div className="rounded-xl border border-surface bg-background/40 p-4">
+              <p className="text-sm text-gray-400">Factory preview</p>
+              <pre className="mt-3 overflow-x-auto text-xs text-gray-300">
+                {JSON.stringify(factoryPreview, null, 2)}
+              </pre>
+            </div>
+          ) : null}
+        </section>
+
         <section className="bg-surface rounded-xl p-6 border border-surface2 space-y-5">
           <div className="flex items-center justify-between gap-3">
             <div>

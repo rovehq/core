@@ -120,8 +120,14 @@ pub async fn start_daemon(
         .route("/v1/auth/reauth", post(api::auth_reauth))
         .route("/v1/config", get(api::get_config).post(api::update_config))
         .route("/v1/config/reload", post(api::reload_config))
+        .route("/v1/overview", get(api::overview))
+        .route("/v1/logs/recent", get(api::recent_logs))
         .route("/v1/tasks", get(api::list_tasks).post(api::create_task))
         .route("/v1/agents", get(api::list_agents).post(api::create_agent))
+        .route("/v1/agents/templates", get(api::list_agent_templates))
+        .route("/v1/agents/factory/preview", post(api::preview_agent_factory))
+        .route("/v1/agents/factory/create", post(api::create_agent_factory))
+        .route("/v1/agents/from-task/:task_id", post(api::create_agent_from_task))
         .route("/v1/agents/runs", get(api::list_agent_runs))
         .route(
             "/v1/agents/:id",
@@ -133,6 +139,19 @@ pub async fn start_daemon(
         .route(
             "/v1/workflows",
             get(api::list_workflows).post(api::create_workflow),
+        )
+        .route("/v1/workflows/templates", get(api::list_workflow_templates))
+        .route(
+            "/v1/workflows/factory/preview",
+            post(api::preview_workflow_factory),
+        )
+        .route(
+            "/v1/workflows/factory/create",
+            post(api::create_workflow_factory),
+        )
+        .route(
+            "/v1/workflows/from-task/:task_id",
+            post(api::create_workflow_from_task),
         )
         .route("/v1/workflows/runs", get(api::list_workflow_runs))
         .route(
@@ -196,6 +215,24 @@ pub async fn start_daemon(
         )
         .route("/v1/services/install", post(api::install_service))
         .route("/v1/services/install/:mode", delete(api::uninstall_service))
+        .route("/v1/channels", get(api::list_channels))
+        .route("/v1/channels/telegram", get(api::telegram_channel_status))
+        .route(
+            "/v1/channels/telegram/setup",
+            post(api::telegram_channel_setup),
+        )
+        .route(
+            "/v1/channels/telegram/enable",
+            post(api::telegram_channel_enable),
+        )
+        .route(
+            "/v1/channels/telegram/disable",
+            post(api::telegram_channel_disable),
+        )
+        .route(
+            "/v1/channels/telegram/test",
+            post(api::telegram_channel_test),
+        )
         .route("/v1/remote/status", get(api::remote_status))
         .route("/v1/remote/nodes", get(api::remote_nodes))
         .route(
@@ -232,7 +269,22 @@ pub async fn start_daemon(
         .route("/api/run", post(api::execute_task))
         .route("/api/v1/execute", post(api::execute_task))
         .route("/api/v1/tasks/:task_id", get(api::task_status))
+        .route("/api/v1/overview", get(api::overview))
+        .route("/api/v1/logs/recent", get(api::recent_logs))
         .route("/api/v1/agents", get(api::list_agents).post(api::create_agent))
+        .route("/api/v1/agents/templates", get(api::list_agent_templates))
+        .route(
+            "/api/v1/agents/factory/preview",
+            post(api::preview_agent_factory),
+        )
+        .route(
+            "/api/v1/agents/factory/create",
+            post(api::create_agent_factory),
+        )
+        .route(
+            "/api/v1/agents/from-task/:task_id",
+            post(api::create_agent_from_task),
+        )
         .route("/api/v1/agents/runs", get(api::list_agent_runs))
         .route(
             "/api/v1/agents/:id",
@@ -244,6 +296,22 @@ pub async fn start_daemon(
         .route(
             "/api/v1/workflows",
             get(api::list_workflows).post(api::create_workflow),
+        )
+        .route(
+            "/api/v1/workflows/templates",
+            get(api::list_workflow_templates),
+        )
+        .route(
+            "/api/v1/workflows/factory/preview",
+            post(api::preview_workflow_factory),
+        )
+        .route(
+            "/api/v1/workflows/factory/create",
+            post(api::create_workflow_factory),
+        )
+        .route(
+            "/api/v1/workflows/from-task/:task_id",
+            post(api::create_workflow_from_task),
         )
         .route("/api/v1/workflows/runs", get(api::list_workflow_runs))
         .route(
@@ -285,6 +353,26 @@ pub async fn start_daemon(
             delete(api::uninstall_service),
         )
         .route("/api/v1/channels", get(api::list_channels))
+        .route(
+            "/api/v1/channels/telegram",
+            get(api::telegram_channel_status),
+        )
+        .route(
+            "/api/v1/channels/telegram/setup",
+            post(api::telegram_channel_setup),
+        )
+        .route(
+            "/api/v1/channels/telegram/enable",
+            post(api::telegram_channel_enable),
+        )
+        .route(
+            "/api/v1/channels/telegram/disable",
+            post(api::telegram_channel_disable),
+        )
+        .route(
+            "/api/v1/channels/telegram/test",
+            post(api::telegram_channel_test),
+        )
         .route("/api/v1/remote/execute", post(api::execute_remote_task))
         .route("/api/v1/remote/status", get(api::remote_status))
         .route("/api/v1/remote/nodes", get(api::remote_nodes))

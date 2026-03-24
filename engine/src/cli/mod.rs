@@ -2,6 +2,7 @@ pub mod agents;
 pub mod approvals;
 pub mod bootstrap;
 pub mod brain;
+pub mod channel;
 pub mod commands;
 pub mod config;
 pub mod daemon;

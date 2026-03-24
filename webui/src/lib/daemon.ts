@@ -303,6 +303,62 @@ export interface WorkflowRunRecord extends SpecRunRecord {
   workflow_id: string;
 }
 
+export interface SpecTemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface ChannelStatus {
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  healthy: boolean;
+  summary: string;
+}
+
+export interface TelegramChannelStatus {
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  token_configured: boolean;
+  can_receive: boolean;
+  allowed_ids: number[];
+  confirmation_chat_id?: number | null;
+  api_base_url?: string | null;
+  default_agent_id?: string | null;
+  default_agent_name?: string | null;
+  doctor: string[];
+}
+
+export interface TelegramChannelTestResponse {
+  ok: boolean;
+  message: string;
+  bot_username?: string | null;
+}
+
+export interface OverviewResponse {
+  config: DaemonConfig;
+  tasks: TaskSummary[];
+  agent_runs: AgentRunRecord[];
+  workflow_runs: WorkflowRunRecord[];
+  approvals: ApprovalRequest[];
+  services: ServiceStatus[];
+  channels: ChannelStatus[];
+  remote?: RemoteStatus | null;
+  extensions: {
+    installed: ExtensionRecord[];
+    updates: ExtensionUpdateRecord[];
+  };
+  counts: {
+    agents: number;
+    workflows: number;
+    extensions: number;
+    pending_approvals: number;
+  };
+  recent_logs: string[];
+}
+
 export interface PolicySummary {
   id: string;
   path: string;
@@ -593,6 +649,14 @@ export class RoveDaemonClient {
     return this.request<ServiceStatus[]>('/v1/services');
   }
 
+  async getOverview(): Promise<OverviewResponse> {
+    return this.request<OverviewResponse>('/v1/overview');
+  }
+
+  async getRecentLogs(): Promise<{ lines: string[] }> {
+    return this.request<{ lines: string[] }>('/v1/logs/recent');
+  }
+
   async serviceInstallStatus(): Promise<ServiceInstallStatus> {
     return this.request<ServiceInstallStatus>('/v1/services/install/status');
   }
@@ -627,6 +691,45 @@ export class RoveDaemonClient {
 
   async setServiceEnabled(name: string, enabled: boolean): Promise<ServiceStatus> {
     return this.request<ServiceStatus>(`/v1/services/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
+      method: 'POST',
+    });
+  }
+
+  async listChannels(): Promise<ChannelStatus[]> {
+    return this.request<ChannelStatus[]>('/v1/channels');
+  }
+
+  async getTelegramChannel(): Promise<TelegramChannelStatus> {
+    return this.request<TelegramChannelStatus>('/v1/channels/telegram');
+  }
+
+  async setupTelegramChannel(input: {
+    token?: string;
+    allowed_ids?: number[];
+    confirmation_chat_id?: number | null;
+    api_base_url?: string | null;
+    default_agent_id?: string | null;
+  }): Promise<TelegramChannelStatus> {
+    return this.request<TelegramChannelStatus>('/v1/channels/telegram/setup', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async enableTelegramChannel(): Promise<TelegramChannelStatus> {
+    return this.request<TelegramChannelStatus>('/v1/channels/telegram/enable', {
+      method: 'POST',
+    });
+  }
+
+  async disableTelegramChannel(): Promise<TelegramChannelStatus> {
+    return this.request<TelegramChannelStatus>('/v1/channels/telegram/disable', {
+      method: 'POST',
+    });
+  }
+
+  async testTelegramChannel(): Promise<TelegramChannelTestResponse> {
+    return this.request<TelegramChannelTestResponse>('/v1/channels/telegram/test', {
       method: 'POST',
     });
   }
@@ -837,6 +940,44 @@ export class RoveDaemonClient {
     return this.request<AgentSpec[]>('/v1/agents');
   }
 
+  async listAgentTemplates(): Promise<SpecTemplateSummary[]> {
+    return this.request<SpecTemplateSummary[]>('/v1/agents/templates');
+  }
+
+  async previewAgentFactory(input: {
+    requirement: string;
+    template_id?: string;
+    id?: string;
+    name?: string;
+  }): Promise<AgentSpec> {
+    return this.request<AgentSpec>('/v1/agents/factory/preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async createAgentFactory(input: {
+    requirement: string;
+    template_id?: string;
+    id?: string;
+    name?: string;
+  }): Promise<AgentSpec> {
+    return this.request<AgentSpec>('/v1/agents/factory/create', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async createAgentFromTask(taskId: string, input?: {
+    id?: string;
+    name?: string;
+  }): Promise<AgentSpec> {
+    return this.request<AgentSpec>(`/v1/agents/from-task/${encodeURIComponent(taskId)}`, {
+      method: 'POST',
+      body: JSON.stringify(input ?? {}),
+    });
+  }
+
   async saveAgent(spec: AgentSpec): Promise<AgentSpec> {
     const path = spec.id ? `/v1/agents/${encodeURIComponent(spec.id)}` : '/v1/agents';
     return this.request<AgentSpec>(path, {
@@ -864,6 +1005,44 @@ export class RoveDaemonClient {
 
   async listWorkflows(): Promise<WorkflowSpec[]> {
     return this.request<WorkflowSpec[]>('/v1/workflows');
+  }
+
+  async listWorkflowTemplates(): Promise<SpecTemplateSummary[]> {
+    return this.request<SpecTemplateSummary[]>('/v1/workflows/templates');
+  }
+
+  async previewWorkflowFactory(input: {
+    requirement: string;
+    template_id?: string;
+    id?: string;
+    name?: string;
+  }): Promise<WorkflowSpec> {
+    return this.request<WorkflowSpec>('/v1/workflows/factory/preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async createWorkflowFactory(input: {
+    requirement: string;
+    template_id?: string;
+    id?: string;
+    name?: string;
+  }): Promise<WorkflowSpec> {
+    return this.request<WorkflowSpec>('/v1/workflows/factory/create', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async createWorkflowFromTask(taskId: string, input?: {
+    id?: string;
+    name?: string;
+  }): Promise<WorkflowSpec> {
+    return this.request<WorkflowSpec>(`/v1/workflows/from-task/${encodeURIComponent(taskId)}`, {
+      method: 'POST',
+      body: JSON.stringify(input ?? {}),
+    });
   }
 
   async saveWorkflow(spec: WorkflowSpec): Promise<WorkflowSpec> {

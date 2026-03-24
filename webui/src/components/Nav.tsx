@@ -8,6 +8,7 @@ const tabs = [
   { href: '/brains', label: 'Brains', icon: '◉' },
   { href: '/policy', label: 'Policy', icon: '⟡' },
   { href: '/remote', label: 'Remote', icon: '⇄' },
+  { href: '/channels', label: 'Channels', icon: '⌁' },
   { href: '/agents', label: 'Agents', icon: '◌' },
   { href: '/workflows', label: 'Workflows', icon: '⋯' },
   { href: '/approvals', label: 'Approvals', icon: '!' },

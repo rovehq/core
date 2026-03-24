@@ -1,7 +1,6 @@
 use anyhow::Result;
 use std::time::Duration;
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 use super::approvals::resolve_approval;
 use super::types::{CallbackQuery, Message};
@@ -75,115 +74,19 @@ impl TelegramBot {
             }
             drop(limits);
 
-            if let (Some(gateway), Some(db)) = (self.gateway.clone(), self.db.clone()) {
-                let _ = self.send_message(chat_id, "Processing your task...").await;
-
-                let bot = self.clone();
-                let confirmation_chat_id = self.confirmation_chat_id;
-                let chat_id_for_task = chat_id;
-                let text_clone = text.clone();
-                let approval_required = requires_telegram_approval(&text_clone);
-
-                tokio::spawn(async move {
-                    if approval_required {
-                        let op_key = format!("telegram-{}", Uuid::new_v4());
-                        let approval_chat = confirmation_chat_id.unwrap_or(chat_id_for_task);
-                        let approval = match bot
-                            .request_tier2_approval(approval_chat, &text_clone, &op_key)
-                            .await
-                        {
-                            Ok(receiver) => receiver,
-                            Err(error) => {
-                                let _ = bot
-                                    .send_message(
-                                        chat_id_for_task,
-                                        &format!("Failed to request approval: {}", error),
-                                    )
-                                    .await;
-                                return;
-                            }
-                        };
-
-                        match tokio::time::timeout(Duration::from_secs(300), approval).await {
-                            Ok(Ok(true)) => {}
-                            Ok(Ok(false)) => {
-                                let _ = bot
-                                    .send_message(chat_id_for_task, "Operation denied.")
-                                    .await;
-                                return;
-                            }
-                            Ok(Err(_)) => {
-                                let _ = bot
-                                    .send_message(chat_id_for_task, "Approval channel closed.")
-                                    .await;
-                                return;
-                            }
-                            Err(_) => {
-                                let _ = bot
-                                    .send_message(chat_id_for_task, "Approval timed out.")
-                                    .await;
-                                return;
-                            }
-                        }
-                    }
-
-                    let task_id = match gateway
-                        .submit_telegram(&text_clone, Some(&chat_id_for_task.to_string()))
-                        .await
-                    {
-                        Ok(id) => id,
-                        Err(error) => {
-                            let _ = bot
-                                .send_message(
-                                    chat_id_for_task,
-                                    &format!("Failed to submit task: {}", error),
-                                )
-                                .await;
-                            return;
-                        }
-                    };
-
-                    let repo = db.pending_tasks();
-                    let tasks = db.tasks();
-                    loop {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        if let Ok(Some(task)) = repo.get_task(&task_id).await {
-                            match task.status {
-                                crate::storage::PendingTaskStatus::Done => {
-                                    let answer = tasks
-                                        .get_latest_answer(&task_id)
-                                        .await
-                                        .ok()
-                                        .flatten()
-                                        .unwrap_or_else(|| "Task completed".to_string());
-                                    let reply =
-                                        format_telegram_reply(bot.secret_manager.scrub(&answer));
-                                    let target_chat =
-                                        confirmation_chat_id.unwrap_or(chat_id_for_task);
-                                    let _ = bot.send_message(target_chat, &reply).await;
-                                    break;
-                                }
-                                crate::storage::PendingTaskStatus::Failed => {
-                                    let error_msg =
-                                        format!("Task failed: {}", task.error.unwrap_or_default());
-                                    let _ = bot.send_message(chat_id_for_task, &error_msg).await;
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                });
-            } else if let Some(agent) = self.agent.clone() {
+            if let (Some(agent), Some(execution_profile)) =
+                (self.agent.clone(), self.execution_profile.clone())
+            {
                 let _ = self.send_message(chat_id, "Processing your task...").await;
 
                 use crate::gateway::Task;
-                let task = Task::build_from_telegram(text.as_str(), None);
+                let task = Task::build_from_telegram(text.as_str(), None)
+                    .with_execution_profile(execution_profile);
                 let bot = self.clone();
                 let confirmation_chat_id = self.confirmation_chat_id;
 
                 tokio::spawn(async move {
-                    let mut agent_guard = agent.lock().await;
+                    let mut agent_guard = agent.write().await;
                     match agent_guard.process_task(task).await {
                         Ok(result) => {
                             let reply =
@@ -202,7 +105,10 @@ impl TelegramBot {
                     }
                 });
             } else if let Err(error) = self
-                .send_message(chat_id, &format!("Task accepted: {}", text))
+                .send_message(
+                    chat_id,
+                    "Telegram is online, but no default Telegram handler agent is configured. Bind one from `rove channel telegram setup --agent <id>` or the WebUI Channels page.",
+                )
                 .await
             {
                 error!("Failed to send reply to {}: {}", chat_id, error);
@@ -269,11 +175,4 @@ fn format_telegram_reply(text: String) -> String {
     } else {
         text
     }
-}
-
-fn requires_telegram_approval(input: &str) -> bool {
-    let input = input.to_ascii_lowercase();
-    ["delete ", "remove ", "rm ", "reset ", "push "]
-        .iter()
-        .any(|pattern| input.contains(pattern))
 }

@@ -10,16 +10,14 @@ mod types;
 use reqwest::Client;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::agent::AgentCore;
 use crate::config::metadata::SERVICE_NAME;
-use crate::db::Database;
-use crate::gateway::Gateway;
 use crate::secrets::SecretManager;
 use types::TelegramRateLimits;
 
-pub type TaskHandler = Arc<Mutex<AgentCore>>;
+pub type TaskHandler = Arc<RwLock<AgentCore>>;
 
 #[derive(Clone)]
 pub struct TelegramBot {
@@ -28,11 +26,10 @@ pub struct TelegramBot {
     client: Client,
     api_base_url: String,
     agent: Option<TaskHandler>,
+    execution_profile: Option<sdk::TaskExecutionProfile>,
     rate_limits: Arc<Mutex<TelegramRateLimits>>,
     confirmation_chat_id: Option<i64>,
     secret_manager: Arc<SecretManager>,
-    gateway: Option<Arc<Gateway>>,
-    db: Option<Arc<Database>>,
 }
 
 impl std::fmt::Debug for TelegramBot {
@@ -55,11 +52,10 @@ impl TelegramBot {
                 .unwrap_or_default(),
             api_base_url: "https://api.telegram.org".to_string(),
             agent: None,
+            execution_profile: None,
             rate_limits: Arc::new(Mutex::new(TelegramRateLimits::new())),
             confirmation_chat_id: None,
             secret_manager: Arc::new(SecretManager::new(SERVICE_NAME)),
-            gateway: None,
-            db: None,
         }
     }
 
@@ -68,9 +64,11 @@ impl TelegramBot {
         self
     }
 
-    pub fn with_gateway(mut self, gateway: Arc<Gateway>, db: Arc<Database>) -> Self {
-        self.gateway = Some(gateway);
-        self.db = Some(db);
+    pub fn with_execution_profile(
+        mut self,
+        execution_profile: sdk::TaskExecutionProfile,
+    ) -> Self {
+        self.execution_profile = Some(execution_profile);
         self
     }
 

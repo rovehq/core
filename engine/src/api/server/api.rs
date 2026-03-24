@@ -9,7 +9,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::{auth::AuthManager, completion, AppState};
-use crate::channels::manager::ChannelManager;
+use crate::channels::manager::{ChannelManager, TelegramSetupInput};
 use crate::cli::brain::dispatch_family;
 use crate::cli::extensions;
 use crate::config::Config;
@@ -19,6 +19,7 @@ use crate::remote::RemoteManager;
 use crate::security::approvals;
 use crate::service_install::{ServiceInstallMode, ServiceInstaller};
 use crate::services::{ManagedService, ServiceManager};
+use crate::system::{factory, logs};
 use crate::specs::{allowed_tools, SpecRepository};
 use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
@@ -65,6 +66,20 @@ pub struct CreateTaskRequest {
 pub struct SpecRunRequest {
     pub prompt: Option<String>,
     pub input: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FactoryGenerateRequest {
+    pub requirement: String,
+    pub template_id: Option<String>,
+    pub id: Option<String>,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FromTaskGenerateRequest {
+    pub id: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,6 +164,16 @@ pub struct ExtensionInstallRequest {
     pub source: String,
     pub registry: Option<String>,
     pub version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramChannelSetupRequest {
+    pub token: Option<String>,
+    #[serde(default)]
+    pub allowed_ids: Vec<i64>,
+    pub confirmation_chat_id: Option<i64>,
+    pub api_base_url: Option<String>,
+    pub default_agent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -340,6 +365,64 @@ pub async fn list_agents() -> impl IntoResponse {
     }
 }
 
+pub async fn list_agent_templates() -> impl IntoResponse {
+    (StatusCode::OK, Json(factory::list_agent_templates())).into_response()
+}
+
+pub async fn preview_agent_factory(
+    Json(payload): Json<FactoryGenerateRequest>,
+) -> impl IntoResponse {
+    match factory::preview_agent(
+        &payload.requirement,
+        payload.template_id.as_deref(),
+        payload.id.as_deref(),
+        payload.name.as_deref(),
+    ) {
+        Ok(spec) => (StatusCode::OK, Json(spec)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn create_agent_factory(
+    Json(payload): Json<FactoryGenerateRequest>,
+) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match factory::create_agent(
+            &repo,
+            &payload.requirement,
+            payload.template_id.as_deref(),
+            payload.id.as_deref(),
+            payload.name.as_deref(),
+        ) {
+            Ok(spec) => (StatusCode::CREATED, Json(spec)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn create_agent_from_task(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+    Json(payload): Json<FromTaskGenerateRequest>,
+) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match factory::agent_from_task(
+            &repo,
+            &state.db,
+            &task_id,
+            payload.id.as_deref(),
+            payload.name.as_deref(),
+        )
+        .await
+        {
+            Ok(spec) => (StatusCode::CREATED, Json(spec)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn get_agent(Path(id): Path<String>) -> impl IntoResponse {
     match SpecRepository::new() {
         Ok(repo) => match repo.load_agent(&id) {
@@ -494,6 +577,68 @@ pub async fn list_workflows() -> impl IntoResponse {
         Ok(repo) => match repo.list_workflows() {
             Ok(items) => (StatusCode::OK, Json(items)).into_response(),
             Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_workflow_templates() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(factory::list_workflow_templates()),
+    )
+        .into_response()
+}
+
+pub async fn preview_workflow_factory(
+    Json(payload): Json<FactoryGenerateRequest>,
+) -> impl IntoResponse {
+    match factory::preview_workflow(
+        &payload.requirement,
+        payload.template_id.as_deref(),
+        payload.id.as_deref(),
+        payload.name.as_deref(),
+    ) {
+        Ok(spec) => (StatusCode::OK, Json(spec)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn create_workflow_factory(
+    Json(payload): Json<FactoryGenerateRequest>,
+) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match factory::create_workflow(
+            &repo,
+            &payload.requirement,
+            payload.template_id.as_deref(),
+            payload.id.as_deref(),
+            payload.name.as_deref(),
+        ) {
+            Ok(spec) => (StatusCode::CREATED, Json(spec)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn create_workflow_from_task(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+    Json(payload): Json<FromTaskGenerateRequest>,
+) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match factory::workflow_from_task(
+            &repo,
+            &state.db,
+            &task_id,
+            payload.id.as_deref(),
+            payload.name.as_deref(),
+        )
+        .await
+        {
+            Ok(spec) => (StatusCode::CREATED, Json(spec)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
@@ -1382,6 +1527,96 @@ pub async fn list_services() -> impl IntoResponse {
     }
 }
 
+pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
+    let config = match Config::load_or_create() {
+        Ok(config) => config,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    let config_view = match daemon_config_view() {
+        Ok(view) => view,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let tasks = match state.db.tasks().get_recent_tasks(20).await {
+        Ok(items) => items,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let agent_runs = match state.db.agent_runs().list_agent_runs(20).await {
+        Ok(items) => items,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let workflow_runs = match state.db.agent_runs().list_workflow_runs(20).await {
+        Ok(items) => items,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let services = ServiceManager::new(config.clone()).list();
+    let channels = match ChannelManager::new(config.clone()).list().await {
+        Ok(items) => items,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let remote = RemoteManager::new(config.clone()).status().ok();
+    let extensions = match extensions::inventory(&config).await {
+        Ok(items) => items,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let extension_updates = match extensions::updates(&config, false).await {
+        Ok(items) => items,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let pending_approvals = approvals::list_pending();
+    let pending_approvals_count = pending_approvals.len();
+    let extension_count = extensions.len();
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let agents = match repo.list_agents() {
+        Ok(items) => items,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let workflows = match repo.list_workflows() {
+        Ok(items) => items,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let recent_logs = match logs::recent_lines(120) {
+        Ok(items) => items,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "config": config_view,
+            "tasks": tasks,
+            "agent_runs": agent_runs,
+            "workflow_runs": workflow_runs,
+            "approvals": pending_approvals,
+            "services": services,
+            "channels": channels,
+            "remote": remote,
+            "extensions": {
+                "installed": extensions,
+                "updates": extension_updates,
+            },
+            "counts": {
+                "agents": agents.len(),
+                "workflows": workflows.len(),
+                "extensions": extension_count,
+                "pending_approvals": pending_approvals_count,
+            },
+            "recent_logs": recent_logs,
+        })),
+    )
+        .into_response()
+}
+
+pub async fn recent_logs() -> impl IntoResponse {
+    match logs::recent_lines(120) {
+        Ok(lines) => (StatusCode::OK, Json(serde_json::json!({ "lines": lines }))).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn service_status(Path(name): Path<String>) -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => {
@@ -1494,14 +1729,77 @@ pub async fn disable_service(Path(name): Path<String>) -> impl IntoResponse {
 pub async fn list_channels() -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => {
-            let channels = ChannelManager::new(config).list();
-            (StatusCode::OK, Json(channels)).into_response()
+            match ChannelManager::new(config).list().await {
+                Ok(channels) => (StatusCode::OK, Json(channels)).into_response(),
+                Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+            }
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": error.to_string() })),
         )
             .into_response(),
+    }
+}
+
+pub async fn telegram_channel_status() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ChannelManager::new(config).telegram_status().await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn telegram_channel_setup(
+    Json(payload): Json<TelegramChannelSetupRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ChannelManager::new(config)
+            .telegram_setup(TelegramSetupInput {
+                token: payload.token,
+                allowed_ids: payload.allowed_ids,
+                confirmation_chat_id: payload.confirmation_chat_id,
+                api_base_url: payload.api_base_url,
+                default_agent_id: payload.default_agent_id,
+            })
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn telegram_channel_enable() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ChannelManager::new(config).telegram_set_enabled(true).await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn telegram_channel_disable() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ChannelManager::new(config).telegram_set_enabled(false).await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn telegram_channel_test() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ChannelManager::new(config).telegram_test().await {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
 

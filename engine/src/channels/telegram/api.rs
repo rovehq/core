@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use super::types::GetUpdatesResponse;
+use super::types::{BotUser, GetMeResponse, GetUpdatesResponse};
 use super::TelegramBot;
 
 impl TelegramBot {
@@ -58,5 +58,23 @@ impl TelegramBot {
 
         self.client.post(&url).json(&req).send().await?;
         Ok(())
+    }
+
+    pub async fn get_me(&self) -> Result<BotUser> {
+        let response = self
+            .client
+            .get(self.api_url("getMe"))
+            .send()
+            .await?
+            .json::<GetMeResponse>()
+            .await?;
+
+        if !response.ok {
+            return Err(anyhow::anyhow!("Telegram API returned ok=false"));
+        }
+
+        response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("Telegram API did not return bot metadata"))
     }
 }

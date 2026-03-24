@@ -88,3 +88,15 @@ pub(super) struct GetUpdatesResponse {
     pub(super) ok: bool,
     pub(super) result: Option<Vec<Update>>,
 }
+
+#[derive(Deserialize, Debug)]
+pub(super) struct GetMeResponse {
+    pub(super) ok: bool,
+    pub(super) result: Option<BotUser>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BotUser {
+    pub id: i64,
+    pub username: Option<String>,
+}

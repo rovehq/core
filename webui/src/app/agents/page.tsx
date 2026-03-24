@@ -9,6 +9,7 @@ import {
   ExecuteTaskResponse,
   RoveDaemonClient,
   AgentRunRecord,
+  SpecTemplateSummary,
   readStoredToken,
 } from '@/lib/daemon';
 
@@ -37,7 +38,11 @@ const EMPTY_AGENT: AgentSpec = {
 export default function AgentsPage() {
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [runs, setRuns] = useState<AgentRunRecord[]>([]);
+  const [templates, setTemplates] = useState<SpecTemplateSummary[]>([]);
   const [form, setForm] = useState<AgentSpec>(EMPTY_AGENT);
+  const [factoryRequirement, setFactoryRequirement] = useState('');
+  const [factoryTemplate, setFactoryTemplate] = useState('general-assistant');
+  const [factoryPreview, setFactoryPreview] = useState<AgentSpec | null>(null);
   const [runInput, setRunInput] = useState<Record<string, string>>({});
   const [runResult, setRunResult] = useState<Record<string, ExecuteTaskResponse>>({});
   const [loading, setLoading] = useState(true);
@@ -53,12 +58,14 @@ export default function AgentsPage() {
     setError(null);
     try {
       const client = daemonClient();
-      const [nextAgents, nextRuns] = await Promise.all([
+      const [nextAgents, nextRuns, nextTemplates] = await Promise.all([
         client.listAgents(),
         client.listAgentRuns(),
+        client.listAgentTemplates(),
       ]);
       setAgents(nextAgents);
       setRuns(nextRuns);
+      setTemplates(nextTemplates);
       setForm((current) => {
         if (current.id) {
           const updated = nextAgents.find((item) => item.id === current.id);
@@ -79,6 +86,48 @@ export default function AgentsPage() {
     try {
       const saved = await daemonClient().saveAgent(normalizeAgent(form));
       setForm(cloneAgent(saved));
+      await refresh();
+    } catch (nextError) {
+      setError(formatError(nextError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function previewFactory() {
+    if (!factoryRequirement.trim()) {
+      setError('Factory preview requires a requirement.');
+      return;
+    }
+
+    setError(null);
+    try {
+      setFactoryPreview(
+        await daemonClient().previewAgentFactory({
+          requirement: factoryRequirement.trim(),
+          template_id: factoryTemplate || undefined,
+        }),
+      );
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
+  async function createFromFactory() {
+    if (!factoryRequirement.trim()) {
+      setError('Factory creation requires a requirement.');
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      const created = await daemonClient().createAgentFactory({
+        requirement: factoryRequirement.trim(),
+        template_id: factoryTemplate || undefined,
+      });
+      setFactoryPreview(created);
+      setForm(cloneAgent(created));
       await refresh();
     } catch (nextError) {
       setError(formatError(nextError));
@@ -136,6 +185,64 @@ export default function AgentsPage() {
       </header>
 
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6 space-y-6">
+        <section className="bg-surface rounded-xl p-6 border border-surface2 space-y-5">
+          <div>
+            <h2 className="text-lg font-semibold">Generate Agent</h2>
+            <p className="text-sm text-gray-400">
+              Turn a requirement into a disabled, explicit agent spec. Generation stays reviewable: instructions, capabilities, channels, approval mode, and placement all land as normal structured fields.
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-[220px,1fr]">
+            <Field label="Template">
+              <select
+                value={factoryTemplate}
+                onChange={(event) => setFactoryTemplate(event.target.value)}
+                className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+              >
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Requirement">
+              <textarea
+                value={factoryRequirement}
+                onChange={(event) => setFactoryRequirement(event.target.value)}
+                className="min-h-28 w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                placeholder="Create a Telegram support agent that can read files, inspect logs, and run safe operational commands."
+              />
+            </Field>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={() => void previewFactory()}
+              className="rounded-lg border border-surface px-4 py-2 text-sm hover:border-primary"
+            >
+              Preview
+            </button>
+            <button
+              onClick={() => void createFromFactory()}
+              disabled={saving}
+              className="rounded-lg bg-primary px-4 py-2 font-medium hover:bg-primary/80 disabled:bg-surface2 disabled:text-gray-500"
+            >
+              Create Disabled Agent
+            </button>
+          </div>
+
+          {factoryPreview ? (
+            <div className="rounded-xl border border-surface bg-background/40 p-4">
+              <p className="text-sm text-gray-400">Factory preview</p>
+              <pre className="mt-3 overflow-x-auto text-xs text-gray-300">
+                {JSON.stringify(factoryPreview, null, 2)}
+              </pre>
+            </div>
+          ) : null}
+        </section>
+
         <section className="bg-surface rounded-xl p-6 border border-surface2 space-y-5">
           <div className="flex items-center justify-between gap-3">
             <div>

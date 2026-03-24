@@ -6,9 +6,10 @@ use crate::cli::database_path::database_path;
 use crate::cli::run::execute_local_task_request;
 use crate::config::Config;
 use crate::storage::Database;
+use crate::system::factory;
 use crate::system::specs::{allowed_tools, slugify, SpecRepository};
 
-use super::commands::AgentAction;
+use super::commands::{AgentAction, AgentFactoryAction};
 
 pub async fn handle_agents(action: AgentAction, config: &Config) -> Result<()> {
     let repo = SpecRepository::new()?;
@@ -49,6 +50,55 @@ pub async fn handle_agents(action: AgentAction, config: &Config) -> Result<()> {
         AgentAction::Export { id, path } => export_agent(&repo, &id, &path),
         AgentAction::Import { path } => import_agent(&repo, &path),
         AgentAction::Runs { limit } => list_runs(config, limit).await,
+        AgentAction::Factory { action } => handle_factory(action, &repo),
+        AgentAction::FromTask { task_id, id, name } => {
+            create_agent_from_task(&repo, config, &task_id, id.as_deref(), name.as_deref()).await
+        }
+    }
+}
+
+fn handle_factory(action: AgentFactoryAction, repo: &SpecRepository) -> Result<()> {
+    match action {
+        AgentFactoryAction::Templates => {
+            for template in factory::list_agent_templates() {
+                println!(
+                    "{}\t{}\t{}",
+                    template.id, template.name, template.description
+                );
+            }
+            Ok(())
+        }
+        AgentFactoryAction::Preview {
+            template,
+            id,
+            name,
+            requirement,
+        } => {
+            let spec = factory::preview_agent(
+                &requirement.join(" "),
+                template.as_deref(),
+                id.as_deref(),
+                name.as_deref(),
+            )?;
+            println!("{}", toml::to_string_pretty(&spec)?);
+            Ok(())
+        }
+        AgentFactoryAction::Create {
+            template,
+            id,
+            name,
+            requirement,
+        } => {
+            let spec = factory::create_agent(
+                repo,
+                &requirement.join(" "),
+                template.as_deref(),
+                id.as_deref(),
+                name.as_deref(),
+            )?;
+            println!("{}", toml::to_string_pretty(&spec)?);
+            Ok(())
+        }
     }
 }
 
@@ -181,5 +231,20 @@ async fn list_runs(config: &Config, limit: i64) -> Result<()> {
             run.run_id, run.agent_id, run.status, run.input
         );
     }
+    Ok(())
+}
+
+async fn create_agent_from_task(
+    repo: &SpecRepository,
+    config: &Config,
+    task_id: &str,
+    id: Option<&str>,
+    name: Option<&str>,
+) -> Result<()> {
+    let db = Database::new(&database_path(config))
+        .await
+        .context("Failed to open database for task conversion")?;
+    let spec = factory::agent_from_task(repo, &db, task_id, id, name).await?;
+    println!("{}", toml::to_string_pretty(&spec)?);
     Ok(())
 }

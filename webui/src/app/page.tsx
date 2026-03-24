@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
-import { DEFAULT_DAEMON_PORT } from '@/lib/daemon';
+import {
+  DEFAULT_DAEMON_PORT,
+  OverviewResponse,
+  readStoredToken,
+  RoveDaemonClient,
+} from '@/lib/daemon';
 import { useRoveStore } from '@/stores/roveStore';
 
 export default function MessagesPage() {
@@ -31,6 +36,8 @@ export default function MessagesPage() {
   const [mode, setMode] = useState('local_only');
   const [portInput, setPortInput] = useState(String(DEFAULT_DAEMON_PORT));
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [overview, setOverview] = useState<OverviewResponse | null>(null);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
 
   useEffect(() => {
     void initialize();
@@ -40,6 +47,12 @@ export default function MessagesPage() {
     setPortInput(String(daemonPort ?? DEFAULT_DAEMON_PORT));
   }, [daemonPort]);
 
+  useEffect(() => {
+    if (appState === 'unlocked') {
+      void refreshOverview();
+    }
+  }, [appState]);
+
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!input.trim() || isSubmitting) return;
@@ -47,9 +60,32 @@ export default function MessagesPage() {
     setIsSubmitting(true);
     if (await submitTask(input.trim())) {
       setInput('');
+      void refreshOverview();
     }
     setIsSubmitting(false);
   };
+
+  async function refreshOverview() {
+    try {
+      setOverviewError(null);
+      setOverview(await daemonClient().getOverview());
+    } catch (nextError) {
+      setOverviewError(nextError instanceof Error ? nextError.message : String(nextError));
+    }
+  }
+
+  async function convertTask(kind: 'agent' | 'workflow', taskId: string) {
+    try {
+      if (kind === 'agent') {
+        await daemonClient().createAgentFromTask(taskId);
+      } else {
+        await daemonClient().createWorkflowFromTask(taskId);
+      }
+      await refreshOverview();
+    } catch (nextError) {
+      setOverviewError(nextError instanceof Error ? nextError.message : String(nextError));
+    }
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && e.ctrlKey) {
@@ -72,6 +108,16 @@ export default function MessagesPage() {
     if (ms < 1000) return `${ms}ms`;
     return `${(ms / 1000).toFixed(1)}s`;
   };
+
+  const recentTasks = overview?.tasks ?? tasks.map((task) => ({
+    id: task.id,
+    input: task.input,
+    status: task.status,
+    provider_used: task.providerUsed,
+    duration_ms: task.durationMs,
+    created_at: task.createdAt,
+    completed_at: task.completedAt,
+  }));
 
   if (appState === 'checking') {
     return <FullScreenMessage title="Connecting to Rove" body="Probing the local daemon and restoring your session." />;
@@ -257,8 +303,8 @@ export default function MessagesPage() {
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6">
         <div className="grid gap-4 md:grid-cols-3">
           <SummaryCard label="Brains" value={hello?.capabilities.brains.join(', ') || 'dispatch'} />
-          <SummaryCard label="Services" value={hello?.capabilities.services.join(', ') || 'none'} />
-          <SummaryCard label="Extensions" value={String(hello?.capabilities.extensions.length ?? 0)} />
+          <SummaryCard label="Agents" value={String(overview?.counts.agents ?? 0)} />
+          <SummaryCard label="Workflows" value={String(overview?.counts.workflows ?? 0)} />
         </div>
 
         <section className="rounded-xl border border-surface2 bg-surface p-4">
@@ -301,23 +347,176 @@ export default function MessagesPage() {
           <ErrorBanner error={error} onDismiss={clearError} />
         </section>
 
+        <section className="grid gap-4 xl:grid-cols-2">
+          <DashboardPanel
+            title="Approvals"
+            subtitle="Pending approvals and current control-plane channels."
+            actionLabel="Refresh"
+            onAction={() => void refreshOverview()}
+          >
+            {overview?.approvals?.length ? (
+              <div className="space-y-3">
+                {overview.approvals.slice(0, 6).map((approval) => (
+                  <div key={approval.id} className="rounded-lg border border-surface p-3 text-sm">
+                    <div className="font-medium">{approval.summary}</div>
+                    <div className="mt-1 text-gray-500">{approval.id}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState text="No pending approvals." />
+            )}
+          </DashboardPanel>
+
+          <DashboardPanel
+            title="Channels"
+            subtitle="Runtime channel health, bindings, and setup truth."
+            actionLabel="Open"
+            onAction={() => (window.location.href = '/channels')}
+          >
+            {overview?.channels?.length ? (
+              <div className="space-y-3">
+                {overview.channels.map((channel) => (
+                  <div key={channel.name} className="rounded-lg border border-surface p-3 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-medium">{channel.name}</div>
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${channel.healthy ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}`}>
+                        {channel.enabled ? 'enabled' : 'disabled'}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-gray-400">{channel.summary}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState text="No channels configured." />
+            )}
+          </DashboardPanel>
+
+          <DashboardPanel
+            title="Services"
+            subtitle="Login/boot service state and runtime surfaces."
+          >
+            {overview?.services?.length ? (
+              <div className="space-y-3">
+                {overview.services.map((service) => (
+                  <div key={service.name} className="rounded-lg border border-surface p-3 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-medium">{service.name}</div>
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${service.enabled ? 'bg-success/10 text-success' : 'bg-surface2 text-gray-400'}`}>
+                        {service.enabled ? 'enabled' : 'disabled'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState text="No managed services found." />
+            )}
+          </DashboardPanel>
+
+          <DashboardPanel
+            title="Remote"
+            subtitle="Current node identity and mesh status."
+            actionLabel="Open"
+            onAction={() => (window.location.href = '/remote')}
+          >
+            {overview?.remote ? (
+              <div className="space-y-3 text-sm">
+                <div className="rounded-lg border border-surface p-3">
+                  <div className="font-medium">{overview.remote.node.node_name}</div>
+                  <div className="mt-1 text-gray-400">{overview.remote.node.node_id}</div>
+                  <div className="mt-2 text-gray-500">
+                    {overview.remote.paired_nodes} paired nodes · {overview.remote.transports.length} transports
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <EmptyState text="Remote status unavailable." />
+            )}
+          </DashboardPanel>
+
+          <DashboardPanel
+            title="Runs"
+            subtitle="Recent agent and workflow runs."
+          >
+            <div className="space-y-3">
+              {overview?.agent_runs?.slice(0, 4).map((run) => (
+                <div key={run.run_id} className="rounded-lg border border-surface p-3 text-sm">
+                  <div className="font-medium">agent:{run.agent_id}</div>
+                  <div className="mt-1 text-gray-400">{run.status}</div>
+                  <div className="mt-2 text-gray-500">{run.input}</div>
+                </div>
+              ))}
+              {overview?.workflow_runs?.slice(0, 4).map((run) => (
+                <div key={run.run_id} className="rounded-lg border border-surface p-3 text-sm">
+                  <div className="font-medium">workflow:{run.workflow_id}</div>
+                  <div className="mt-1 text-gray-400">{run.status}</div>
+                  <div className="mt-2 text-gray-500">{run.input}</div>
+                </div>
+              ))}
+              {!overview?.agent_runs?.length && !overview?.workflow_runs?.length ? (
+                <EmptyState text="No agent or workflow runs yet." />
+              ) : null}
+            </div>
+          </DashboardPanel>
+
+          <DashboardPanel
+            title="Recent Logs"
+            subtitle="Bounded daemon tail for quick operator diagnosis."
+          >
+            {overview?.recent_logs?.length ? (
+              <pre className="max-h-80 overflow-auto rounded-lg border border-surface bg-background/40 p-3 text-xs text-gray-300">
+                {overview.recent_logs.join('\n')}
+              </pre>
+            ) : (
+              <EmptyState text="No recent daemon logs yet." />
+            )}
+          </DashboardPanel>
+        </section>
+
         <section className="overflow-hidden rounded-xl border border-surface2 bg-surface">
           <div className="border-b border-surface2 p-4">
             <h2 className="text-lg font-semibold">Recent Tasks</h2>
+            {overviewError ? <p className="mt-2 text-sm text-error whitespace-pre-wrap">{overviewError}</p> : null}
           </div>
 
           <div className="max-h-[540px] space-y-4 overflow-y-auto p-4">
-            {tasks.length === 0 ? (
+            {recentTasks.length === 0 ? (
               <div className="rounded-xl border border-dashed border-surface2 p-8 text-center text-gray-500">
                 No tasks yet. Start from the form above after unlocking the daemon.
               </div>
             ) : (
-              tasks.map((task) => (
+              recentTasks.map((task) => (
                 <TaskCard
                   key={task.id}
-                  task={task}
+                  task={{
+                    id: task.id,
+                    input: task.input,
+                    status: task.status,
+                    providerUsed: task.provider_used,
+                    durationMs: task.duration_ms,
+                    createdAt: task.created_at,
+                    completedAt: task.completed_at,
+                  }}
                   getStatusColor={getStatusColor}
                   formatDuration={formatDuration}
+                  actions={
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        onClick={() => void convertTask('agent', task.id)}
+                        className="rounded border border-surface px-2 py-1 text-xs hover:border-primary"
+                      >
+                        Convert To Agent
+                      </button>
+                      <button
+                        onClick={() => void convertTask('workflow', task.id)}
+                        className="rounded border border-surface px-2 py-1 text-xs hover:border-primary"
+                      >
+                        Convert To Workflow
+                      </button>
+                    </div>
+                  }
                 />
               ))
             )}
@@ -332,7 +531,7 @@ export default function MessagesPage() {
   );
 }
 
-function TaskCard({ task, getStatusColor, formatDuration }: {
+function TaskCard({ task, getStatusColor, formatDuration, actions }: {
   task: {
     id: string;
     input: string;
@@ -345,6 +544,7 @@ function TaskCard({ task, getStatusColor, formatDuration }: {
   };
   getStatusColor: (s: string) => string;
   formatDuration: (ms?: number) => string;
+  actions?: React.ReactNode;
 }) {
   return (
     <div className="bg-surface2 rounded-lg p-4 animate-in slide-in-from-top-2">
@@ -356,7 +556,7 @@ function TaskCard({ task, getStatusColor, formatDuration }: {
           </span>
         </div>
         <span className="text-xs text-gray-500">
-          {new Date(task.createdAt).toLocaleTimeString()}
+          {new Date(normalizeEpochMillis(task.createdAt)).toLocaleTimeString()}
         </span>
       </div>
       
@@ -391,6 +591,8 @@ function TaskCard({ task, getStatusColor, formatDuration }: {
       {task.status === 'failed' && (
         <p className="text-error">This task failed. Open history or replay tooling next.</p>
       )}
+
+      {actions}
     </div>
   );
 }
@@ -462,6 +664,44 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+function DashboardPanel({
+  title,
+  subtitle,
+  actionLabel,
+  onAction,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-xl border border-surface2 bg-surface p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">{title}</h2>
+          <p className="text-sm text-gray-400">{subtitle}</p>
+        </div>
+        {actionLabel && onAction ? (
+          <button
+            onClick={onAction}
+            className="rounded-lg border border-surface2 px-3 py-2 text-sm hover:border-primary"
+          >
+            {actionLabel}
+          </button>
+        ) : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return <div className="rounded-lg border border-dashed border-surface p-4 text-sm text-gray-500">{text}</div>;
+}
+
 function StatusPill({
   tone,
   children,
@@ -489,4 +729,12 @@ function formatSeconds(value: number | null | undefined): string {
   const minutes = Math.floor(value / 60);
   const seconds = value % 60;
   return `${minutes}m ${seconds}s`;
+}
+
+function daemonClient() {
+  return new RoveDaemonClient(readStoredToken() ?? undefined);
+}
+
+function normalizeEpochMillis(value: number) {
+  return value < 1_000_000_000_000 ? value * 1000 : value;
 }

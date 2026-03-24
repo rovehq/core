@@ -194,10 +194,10 @@ pub enum Command {
         action: McpAction,
     },
 
-    /// Channel extension management.
+    /// Runtime channel management.
     Channel {
         #[command(subcommand)]
-        action: ExtensionAction,
+        action: ChannelAction,
     },
 
     /// Optional service management.
@@ -841,6 +841,19 @@ pub enum AgentAction {
         #[arg(short, long, default_value_t = 20)]
         limit: i64,
     },
+    /// Preview or create generated agent specs.
+    Factory {
+        #[command(subcommand)]
+        action: AgentFactoryAction,
+    },
+    /// Create a reusable agent from an existing task.
+    FromTask {
+        task_id: String,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -878,6 +891,109 @@ pub enum WorkflowAction {
         #[arg(short, long, default_value_t = 20)]
         limit: i64,
     },
+    /// Preview or create generated workflow specs.
+    Factory {
+        #[command(subcommand)]
+        action: WorkflowFactoryAction,
+    },
+    /// Create a reusable workflow from an existing task.
+    FromTask {
+        task_id: String,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentFactoryAction {
+    /// List built-in agent templates.
+    Templates,
+    /// Preview a generated agent spec without saving it.
+    Preview {
+        #[arg(long)]
+        template: Option<String>,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        requirement: Vec<String>,
+    },
+    /// Create and save a generated disabled agent spec.
+    Create {
+        #[arg(long)]
+        template: Option<String>,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        requirement: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorkflowFactoryAction {
+    /// List built-in workflow templates.
+    Templates,
+    /// Preview a generated workflow spec without saving it.
+    Preview {
+        #[arg(long)]
+        template: Option<String>,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        requirement: Vec<String>,
+    },
+    /// Create and save a generated disabled workflow spec.
+    Create {
+        #[arg(long)]
+        template: Option<String>,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        requirement: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChannelAction {
+    /// List runtime channels and setup state.
+    List,
+    /// Manage Telegram as a first-class channel pack.
+    Telegram {
+        #[command(subcommand)]
+        action: ChannelTelegramAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChannelTelegramAction {
+    /// Show Telegram status and doctor messages.
+    Status,
+    /// Configure Telegram transport and bind the default handler agent.
+    Setup {
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long = "allow-user")]
+        allow_user: Vec<i64>,
+        #[arg(long = "confirmation-chat")]
+        confirmation_chat: Option<i64>,
+        #[arg(long = "api-base-url")]
+        api_base_url: Option<String>,
+        #[arg(long = "agent")]
+        agent: Option<String>,
+    },
+    /// Enable Telegram polling.
+    Enable,
+    /// Disable Telegram polling.
+    Disable,
+    /// Verify Telegram API credentials and connectivity.
+    Test,
+    /// Print doctor guidance for Telegram setup.
+    Doctor,
 }
 
 #[derive(Subcommand, Debug)]
