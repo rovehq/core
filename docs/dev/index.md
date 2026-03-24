@@ -23,6 +23,7 @@ As of March 23, 2026:
 - [`../reports/ROVE_PLATFORM_REPLACE_ALL_2026-03-24.md`](../reports/ROVE_PLATFORM_REPLACE_ALL_2026-03-24.md)
 - [`../reports/ROVE_VS_AWESOME_CLAWS_2026-03-24.md`](../reports/ROVE_VS_AWESOME_CLAWS_2026-03-24.md)
 - [`../reports/ROVE_AWESOME_CLAWS_FULL_MATRIX_2026-03-24.md`](../reports/ROVE_AWESOME_CLAWS_FULL_MATRIX_2026-03-24.md)
+- [`../reports/ROVE_LINK_MATRIX_2026-03-25.md`](../reports/ROVE_LINK_MATRIX_2026-03-25.md)
 - [`../reports/ROVE_ACTUAL_STATE_2026-03-24.md`](../reports/ROVE_ACTUAL_STATE_2026-03-24.md)
 - [`../reports/implementation-status-2026-03-23.md`](../reports/implementation-status-2026-03-23.md)
 - [`../reports/repo-cleanup-2026-03-23.md`](../reports/repo-cleanup-2026-03-23.md)
