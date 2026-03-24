@@ -10,7 +10,7 @@ As of March 23, 2026:
 - one daemon binary supports `desktop` and `headless` profiles
 - policy has replaced steering as the active internal model
 - the hosted WebUI shell talks to a password-protected local daemon
-- system tools are installable extensions rather than legacy built-ins
+- builtin core tools remain authoritative, while system extensions are still installable distribution units
 - remote execution supports signed requests, replay protection, service install
   state, and ZeroTier transport hints
 
@@ -20,6 +20,7 @@ As of March 23, 2026:
 - [`../../engine/README.md`](../../engine/README.md)
 - [`../../webui/README.md`](../../webui/README.md)
 - [`../../engine/how_it_work.mmd`](../../engine/how_it_work.mmd)
+- [`../reports/ROVE_PLATFORM_REPLACE_ALL_2026-03-24.md`](../reports/ROVE_PLATFORM_REPLACE_ALL_2026-03-24.md)
 - [`../reports/implementation-status-2026-03-23.md`](../reports/implementation-status-2026-03-23.md)
 - [`../reports/repo-cleanup-2026-03-23.md`](../reports/repo-cleanup-2026-03-23.md)
 
