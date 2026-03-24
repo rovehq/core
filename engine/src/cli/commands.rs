@@ -28,6 +28,29 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Initialize the local config, database, and spec layout.
+    Init {
+        /// Override the local node name.
+        #[arg(long)]
+        node_name: Option<String>,
+
+        /// Override the default workspace path.
+        #[arg(long, value_name = "DIR")]
+        workspace: Option<PathBuf>,
+
+        /// Override the default data directory.
+        #[arg(long, value_name = "DIR")]
+        data_dir: Option<PathBuf>,
+
+        /// Apply a runtime profile preset.
+        #[arg(long, value_enum)]
+        profile: Option<DaemonProfileArg>,
+
+        /// Enable developer mode in the generated or existing config.
+        #[arg(long)]
+        developer_mode: bool,
+    },
+
     /// Start the Rove daemon in background.
     Start {
         /// Port to bind the server to.
@@ -250,6 +273,32 @@ pub enum Command {
 
     /// Run system diagnostics.
     Doctor,
+
+    /// Tail or follow daemon logs.
+    Logs {
+        #[command(subcommand)]
+        action: LogsAction,
+    },
+
+    /// Export or restore a filesystem-level Rove backup bundle.
+    Backup {
+        #[command(subcommand)]
+        action: BackupAction,
+    },
+
+    /// Restore a filesystem-level Rove backup bundle.
+    Restore {
+        path: PathBuf,
+
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Inspect or import supported external assistant installs.
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
 
     /// Generate or verify signing keys.
     Keys,
@@ -1031,6 +1080,59 @@ pub enum ServiceAction {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum LogsAction {
+    /// Show the most recent daemon log lines.
+    Tail {
+        #[arg(short, long, default_value_t = 120)]
+        lines: usize,
+    },
+    /// Follow the daemon log file for new entries.
+    Follow {
+        #[arg(short, long, default_value_t = 120)]
+        lines: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BackupAction {
+    /// Export config, specs, policy, and database files into a backup directory.
+    Export {
+        #[arg(value_name = "DIR")]
+        path: Option<PathBuf>,
+
+        #[arg(long)]
+        force: bool,
+    },
+    /// Restore config, specs, policy, and database files from a backup directory.
+    Restore {
+        path: PathBuf,
+
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MigrateAction {
+    /// Inspect a supported source install and report what Rove can import.
+    Inspect {
+        #[arg(value_enum)]
+        source: MigrationSourceArg,
+
+        #[arg(long, value_name = "DIR")]
+        path: Option<PathBuf>,
+    },
+    /// Import compatible specs from a supported source install.
+    Import {
+        #[arg(value_enum)]
+        source: MigrationSourceArg,
+
+        #[arg(long, value_name = "DIR")]
+        path: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum RemoteAction {
     /// Show remote service status for this node.
     Status,
@@ -1303,6 +1405,13 @@ pub enum ActivateTarget {
 pub enum DaemonProfileArg {
     Desktop,
     Headless,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum MigrationSourceArg {
+    Openclaw,
+    Zeroclaw,
+    Moltis,
 }
 
 #[derive(Subcommand, Debug)]

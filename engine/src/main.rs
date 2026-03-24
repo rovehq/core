@@ -8,10 +8,10 @@ use tracing_subscriber::{
 
 use rove_engine::cli::{
     ActivateTarget, AddTarget, ApprovalsAction, Cli, Command, ConfigAction, DaemonProfileArg,
-    ExtensionAction, ExtensionFacadeAction, ExtensionKindArg, McpAction, ModelAction, OutputFormat,
-    PluginAction, PolicyAction, RemoteAction, RemoteDiscoverAction, RemoteNodeAction,
-    RemoteProfileAction, RemoteTransportAction, SecretBackendAction, SecretsAction, ServiceAction,
-    SteeringAction,
+    ExtensionAction, ExtensionFacadeAction, ExtensionKindArg, McpAction, ModelAction,
+    OutputFormat, PluginAction, PolicyAction, RemoteAction, RemoteDiscoverAction,
+    RemoteNodeAction, RemoteProfileAction, RemoteTransportAction, SecretBackendAction,
+    SecretsAction, ServiceAction, SteeringAction,
 };
 use rove_engine::policy::PolicyEngine;
 use rove_engine::policy::{
@@ -35,6 +35,22 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => rove_engine::cli::repl::run().await?,
+        Some(Command::Init {
+            node_name,
+            workspace,
+            data_dir,
+            profile,
+            developer_mode,
+        }) => {
+            rove_engine::cli::init::handle_init(
+                node_name,
+                workspace,
+                data_dir,
+                profile,
+                developer_mode,
+            )
+            .await?;
+        }
         Some(Command::Start { port, profile }) => {
             let profile = apply_profile_override(profile)?;
             rove_engine::cli::daemon::start_background(port, profile)?
@@ -160,6 +176,18 @@ async fn main() -> Result<()> {
         Some(Command::Doctor) => {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::doctor::handle_doctor(&config, OutputFormat::Text).await?;
+        }
+        Some(Command::Logs { action }) => {
+            rove_engine::cli::logs::handle_logs(action).await?;
+        }
+        Some(Command::Backup { action }) => {
+            rove_engine::cli::backup::handle_backup(action)?;
+        }
+        Some(Command::Restore { path, force }) => {
+            rove_engine::cli::backup::handle_restore(path, force)?;
+        }
+        Some(Command::Migrate { action }) => {
+            rove_engine::cli::migrate::handle_migrate(action)?;
         }
         Some(Command::Keys) => println!("Use: python3 scripts/generate_keys.py"),
         Some(Command::Update { check }) => {

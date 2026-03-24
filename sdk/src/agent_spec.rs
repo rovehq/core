@@ -43,12 +43,26 @@ pub struct CapabilityRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SpecProvenance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ChannelBinding {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<SpecProvenance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +128,8 @@ pub struct AgentSpec {
     pub ui: AgentUiSchema,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<SpecProvenance>,
 }
 
 impl Default for AgentSpec {
@@ -136,6 +152,7 @@ impl Default for AgentSpec {
             output_contract: None,
             ui: AgentUiSchema::default(),
             tags: Vec::new(),
+            provenance: None,
         }
     }
 }
@@ -176,6 +193,8 @@ pub struct WorkflowSpec {
     pub output_contract: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<SpecProvenance>,
 }
 
 impl Default for WorkflowSpec {
@@ -190,6 +209,7 @@ impl Default for WorkflowSpec {
             runtime_profile: None,
             output_contract: None,
             tags: Vec::new(),
+            provenance: None,
         }
     }
 }

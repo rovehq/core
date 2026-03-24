@@ -294,6 +294,7 @@ impl ChannelManager {
                     kind: "telegram".to_string(),
                     target: Some("default".to_string()),
                     enabled: true,
+                    provenance: None,
                 });
             }
             repo.save_agent(agent)?;

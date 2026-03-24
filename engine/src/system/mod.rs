@@ -1,7 +1,10 @@
+pub mod backup;
 pub mod daemon;
 pub mod factory;
+pub mod health;
 pub mod identity;
 pub mod logs;
+pub mod migrate;
 pub mod message_bus;
 pub mod remote;
 pub mod service_install;

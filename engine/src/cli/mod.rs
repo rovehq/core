@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod approvals;
+pub mod backup;
 pub mod bootstrap;
 pub mod brain;
 pub mod channel;
@@ -10,7 +11,10 @@ pub mod database_path;
 pub mod doctor;
 pub mod extensions;
 pub mod history;
+pub mod init;
+pub mod logs;
 pub mod mcp;
+pub mod migrate;
 pub mod model;
 pub mod output;
 pub mod plugins;

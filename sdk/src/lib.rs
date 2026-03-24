@@ -34,8 +34,8 @@ pub mod brain;
 // Re-export commonly used types
 pub use agent_spec::{
     AgentRunRecord, AgentSpec, AgentTemplate, AgentUiSchema, CapabilityRef, ChannelBinding,
-    NodePlacementPolicy, SpecRunStatus, TaskExecutionProfile, WorkflowRunRecord, WorkflowSpec,
-    WorkflowStepSpec,
+    NodePlacementPolicy, SpecProvenance, SpecRunStatus, TaskExecutionProfile, WorkflowRunRecord,
+    WorkflowSpec, WorkflowStepSpec,
 };
 pub use agent_handle::{AgentHandle, AgentHandleImpl};
 pub use brain::{

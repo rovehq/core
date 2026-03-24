@@ -19,7 +19,7 @@ use crate::remote::RemoteManager;
 use crate::security::approvals;
 use crate::service_install::{ServiceInstallMode, ServiceInstaller};
 use crate::services::{ManagedService, ServiceManager};
-use crate::system::{factory, logs};
+use crate::system::{backup, factory, health, logs, migrate};
 use crate::specs::{allowed_tools, SpecRepository};
 use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
@@ -174,6 +174,23 @@ pub struct TelegramChannelSetupRequest {
     pub confirmation_chat_id: Option<i64>,
     pub api_base_url: Option<String>,
     pub default_agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BackupExportRequest {
+    pub path: Option<String>,
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BackupRestoreRequest {
+    pub path: String,
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MigrationRequest {
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1005,6 +1022,18 @@ fn parse_secret_backend(value: &str) -> anyhow::Result<crate::config::SecretBack
     }
 }
 
+fn parse_migration_source(value: &str) -> anyhow::Result<migrate::MigrationSource> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "openclaw" => Ok(migrate::MigrationSource::OpenClaw),
+        "zeroclaw" => Ok(migrate::MigrationSource::ZeroClaw),
+        "moltis" => Ok(migrate::MigrationSource::Moltis),
+        other => Err(anyhow::anyhow!(
+            "Invalid migration source '{}'. Use openclaw, zeroclaw, or moltis.",
+            other
+        )),
+    }
+}
+
 fn parse_rule_action(value: &str) -> anyhow::Result<approvals::ApprovalRuleAction> {
     match value.trim().to_ascii_lowercase().as_str() {
         "allow" => Ok(approvals::ApprovalRuleAction::Allow),
@@ -1582,6 +1611,10 @@ pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
         Ok(items) => items,
         Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     };
+    let health = match health::collect_snapshot(&config).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
 
     (
         StatusCode::OK,
@@ -1604,6 +1637,7 @@ pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
                 "extensions": extension_count,
                 "pending_approvals": pending_approvals_count,
             },
+            "health": health,
             "recent_logs": recent_logs,
         })),
     )
@@ -1613,6 +1647,97 @@ pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn recent_logs() -> impl IntoResponse {
     match logs::recent_lines(120) {
         Ok(lines) => (StatusCode::OK, Json(serde_json::json!({ "lines": lines }))).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn health_snapshot() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match health::collect_snapshot(&config).await {
+            Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn export_backup(Json(payload): Json<BackupExportRequest>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = backup::BackupManager::new(config);
+            let target = match payload.path {
+                Some(path) => PathBuf::from(path),
+                None => match manager.default_export_path() {
+                    Ok(path) => path,
+                    Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+                },
+            };
+            match manager.export(&target, payload.force.unwrap_or(false)) {
+                Ok(manifest) => (
+                    StatusCode::CREATED,
+                    Json(serde_json::json!({
+                        "path": target.display().to_string(),
+                        "manifest": manifest,
+                    })),
+                )
+                    .into_response(),
+                Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+            }
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn restore_backup(Json(payload): Json<BackupRestoreRequest>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = backup::BackupManager::new(config);
+            let source = PathBuf::from(payload.path);
+            match manager.restore(&source, payload.force.unwrap_or(false)) {
+                Ok(manifest) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "path": source.display().to_string(),
+                        "manifest": manifest,
+                    })),
+                )
+                    .into_response(),
+                Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+            }
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn inspect_migration(
+    Path(source): Path<String>,
+    Json(payload): Json<MigrationRequest>,
+) -> impl IntoResponse {
+    let source = match parse_migration_source(&source) {
+        Ok(source) => source,
+        Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
+    };
+    let root_override = payload.path.as_ref().map(PathBuf::from);
+    match migrate::inspect(source, root_override.as_deref()) {
+        Ok(report) => (StatusCode::OK, Json(report)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn import_migration(
+    Path(source): Path<String>,
+    Json(payload): Json<MigrationRequest>,
+) -> impl IntoResponse {
+    let source = match parse_migration_source(&source) {
+        Ok(source) => source,
+        Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
+    };
+    let root_override = payload.path.as_ref().map(PathBuf::from);
+    match SpecRepository::new() {
+        Ok(repo) => match migrate::import(&repo, source, root_override.as_deref()) {
+            Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }

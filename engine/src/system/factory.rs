@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde::Serialize;
 
 use crate::specs::{slugify, SpecRepository};
@@ -88,6 +89,12 @@ pub fn preview_agent(
             .chain(["generated".to_string(), format!("template:{template}")])
             .collect(),
     );
+    spec.provenance = Some(sdk::SpecProvenance {
+        source: Some("generated".to_string()),
+        import_source: None,
+        notes: Some(format!("Generated from requirement using template {}", template)),
+        imported_at: Some(Utc::now().timestamp()),
+    });
 
     let requirement_lower = requirement.to_ascii_lowercase();
     if requirement_lower.contains("telegram")
@@ -100,6 +107,7 @@ pub fn preview_agent(
             kind: "telegram".to_string(),
             target: Some("default".to_string()),
             enabled: true,
+            provenance: None,
         });
     }
     if mentions_remote_execution(requirement) {
@@ -152,6 +160,12 @@ pub async fn agent_from_task(
             .chain(["from-task".to_string(), format!("task:{task_id}")])
             .collect(),
     );
+    spec.provenance = Some(sdk::SpecProvenance {
+        source: Some("from_task".to_string()),
+        import_source: None,
+        notes: Some(format!("Generated from task {}", task_id)),
+        imported_at: Some(Utc::now().timestamp()),
+    });
     repo.save_agent(&spec)
 }
 
@@ -190,6 +204,12 @@ pub fn preview_workflow(
             .chain(["generated".to_string(), format!("template:{template}")])
             .collect(),
     );
+    spec.provenance = Some(sdk::SpecProvenance {
+        source: Some("generated".to_string()),
+        import_source: None,
+        notes: Some(format!("Generated from requirement using template {}", template)),
+        imported_at: Some(Utc::now().timestamp()),
+    });
     if mentions_remote_execution(requirement) {
         spec.runtime_profile = Some("headless".to_string());
     }
@@ -269,6 +289,12 @@ pub async fn workflow_from_task(
         spec.id = "generated-workflow".to_string();
     }
     spec.tags = dedupe_tags(spec.tags);
+    spec.provenance = Some(sdk::SpecProvenance {
+        source: Some("from_task".to_string()),
+        import_source: None,
+        notes: Some(format!("Generated from task {}", task_id)),
+        imported_at: Some(Utc::now().timestamp()),
+    });
     repo.save_workflow(&spec)
 }
 
@@ -299,6 +325,7 @@ fn agent_template(template_id: &str) -> Result<sdk::AgentSpec> {
                 kind: "telegram".to_string(),
                 target: Some("default".to_string()),
                 enabled: true,
+                provenance: None,
             }],
             runtime_profile: Some("headless".to_string()),
             approval_mode: Some("allowlist".to_string()),

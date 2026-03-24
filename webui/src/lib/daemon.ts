@@ -65,6 +65,45 @@ export interface ServiceInstallStatus {
   boot: ServiceInstallState;
 }
 
+export interface PathHealthStatus {
+  path: string;
+  exists: boolean;
+  writable: boolean;
+}
+
+export interface HealthCheckRecord {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface RuntimeHealthSnapshot {
+  healthy: boolean;
+  initialized: boolean;
+  config_file: PathHealthStatus;
+  workspace: PathHealthStatus;
+  data_dir: PathHealthStatus;
+  database: PathHealthStatus;
+  log_file: PathHealthStatus;
+  policy_dir: PathHealthStatus;
+  node_name: string;
+  profile: string;
+  secret_backend: string;
+  daemon_running: boolean;
+  daemon_pid?: number | null;
+  service_install: ServiceInstallStatus;
+  services: ServiceStatus[];
+  channels: ChannelStatus[];
+  remote?: {
+    enabled: boolean;
+    node_name: string;
+    paired_nodes: number;
+    transport_count: number;
+  } | null;
+  checks: HealthCheckRecord[];
+  issues: string[];
+}
+
 export interface NodeLoadSnapshot {
   pending_tasks: number;
   running_tasks: number;
@@ -229,6 +268,7 @@ export interface ChannelBinding {
   kind: string;
   target?: string | null;
   enabled: boolean;
+  provenance?: SpecProvenance | null;
 }
 
 export interface NodePlacementPolicy {
@@ -261,6 +301,7 @@ export interface AgentSpec {
   output_contract?: string | null;
   ui: AgentUiSchema;
   tags: string[];
+  provenance?: SpecProvenance | null;
 }
 
 export interface WorkflowStepSpec {
@@ -281,6 +322,14 @@ export interface WorkflowSpec {
   runtime_profile?: string | null;
   output_contract?: string | null;
   tags: string[];
+  provenance?: SpecProvenance | null;
+}
+
+export interface SpecProvenance {
+  source?: string | null;
+  import_source?: string | null;
+  notes?: string | null;
+  imported_at?: number | null;
 }
 
 export interface SpecRunRecord {
@@ -356,7 +405,51 @@ export interface OverviewResponse {
     extensions: number;
     pending_approvals: number;
   };
+  health: RuntimeHealthSnapshot;
   recent_logs: string[];
+}
+
+export interface BackupManifest {
+  schema_version: number;
+  created_at: number;
+  rove_version: string;
+  node_name: string;
+  profile: string;
+  secret_backend: string;
+  config_path: string;
+  data_dir: string;
+  included_paths: string[];
+  warnings: string[];
+}
+
+export interface BackupResponse {
+  path: string;
+  manifest: BackupManifest;
+}
+
+export interface MigrationArtifact {
+  kind: string;
+  path: string;
+  supported: boolean;
+  summary: string;
+}
+
+export interface MigrationReport {
+  source: 'openclaw' | 'zeroclaw' | 'moltis';
+  root: string;
+  exists: boolean;
+  config_files: string[];
+  agent_candidates: MigrationArtifact[];
+  workflow_candidates: MigrationArtifact[];
+  detected_channels: string[];
+  warnings: string[];
+}
+
+export interface MigrationImportResult {
+  report: MigrationReport;
+  imported_agents: string[];
+  imported_workflows: string[];
+  warnings: string[];
 }
 
 export interface PolicySummary {
@@ -653,8 +746,46 @@ export class RoveDaemonClient {
     return this.request<OverviewResponse>('/v1/overview');
   }
 
+  async getHealthSnapshot(): Promise<RuntimeHealthSnapshot> {
+    return this.request<RuntimeHealthSnapshot>('/v1/health/snapshot');
+  }
+
   async getRecentLogs(): Promise<{ lines: string[] }> {
     return this.request<{ lines: string[] }>('/v1/logs/recent');
+  }
+
+  async exportBackup(path?: string, force = false): Promise<BackupResponse> {
+    return this.request<BackupResponse>('/v1/backups/export', {
+      method: 'POST',
+      body: JSON.stringify({ path, force }),
+    });
+  }
+
+  async restoreBackup(path: string, force = false): Promise<BackupResponse> {
+    return this.request<BackupResponse>('/v1/backups/restore', {
+      method: 'POST',
+      body: JSON.stringify({ path, force }),
+    });
+  }
+
+  async inspectMigration(
+    source: 'openclaw' | 'zeroclaw' | 'moltis',
+    path?: string,
+  ): Promise<MigrationReport> {
+    return this.request<MigrationReport>(`/v1/migrate/${encodeURIComponent(source)}/inspect`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
+  }
+
+  async importMigration(
+    source: 'openclaw' | 'zeroclaw' | 'moltis',
+    path?: string,
+  ): Promise<MigrationImportResult> {
+    return this.request<MigrationImportResult>(`/v1/migrate/${encodeURIComponent(source)}/import`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
   }
 
   async serviceInstallStatus(): Promise<ServiceInstallStatus> {

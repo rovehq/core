@@ -349,6 +349,62 @@ export default function MessagesPage() {
 
         <section className="grid gap-4 xl:grid-cols-2">
           <DashboardPanel
+            title="Health"
+            subtitle="First-run truth for config, data, database, and service install state."
+            actionLabel="Refresh"
+            onAction={() => void refreshOverview()}
+          >
+            {overview?.health ? (
+              <div className="space-y-3 text-sm">
+                <div className="rounded-lg border border-surface p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-medium">
+                      {overview.health.healthy ? 'Ready' : 'Needs attention'}
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-xs ${overview.health.healthy ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}`}>
+                      {overview.health.profile}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-gray-400">
+                    {overview.health.node_name} · secret backend {overview.health.secret_backend}
+                  </div>
+                </div>
+
+                <div className="grid gap-2 md:grid-cols-2">
+                  <HealthPathRow label="Config" status={overview.health.config_file} />
+                  <HealthPathRow label="Workspace" status={overview.health.workspace} />
+                  <HealthPathRow label="Data" status={overview.health.data_dir} />
+                  <HealthPathRow label="Database" status={overview.health.database} />
+                </div>
+
+                <div className="rounded-lg border border-surface p-3">
+                  <div className="font-medium">Service install</div>
+                  <div className="mt-2 text-gray-400">
+                    login: {overview.health.service_install.login.supported ? (overview.health.service_install.login.installed ? 'installed' : 'not installed') : 'unsupported'}
+                    {' · '}
+                    boot: {overview.health.service_install.boot.supported ? (overview.health.service_install.boot.installed ? 'installed' : 'not installed') : 'unsupported'}
+                  </div>
+                </div>
+
+                {overview.health.issues.length ? (
+                  <div className="rounded-lg border border-warning/30 bg-warning/5 p-3">
+                    <div className="font-medium text-warning">Open issues</div>
+                    <div className="mt-2 space-y-1 text-gray-300">
+                      {overview.health.issues.slice(0, 4).map((issue) => (
+                        <div key={issue}>{issue}</div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState text="No initialization or runtime truth issues detected." />
+                )}
+              </div>
+            ) : (
+              <EmptyState text="Health snapshot unavailable." />
+            )}
+          </DashboardPanel>
+
+          <DashboardPanel
             title="Approvals"
             subtitle="Pending approvals and current control-plane channels."
             actionLabel="Refresh"
@@ -614,6 +670,35 @@ function AuthShell({
         <p className="mt-3 text-sm text-gray-400">{subtitle}</p>
         <div className="mt-8">{children}</div>
       </div>
+    </div>
+  );
+}
+
+function HealthPathRow({
+  label,
+  status,
+}: {
+  label: string;
+  status: {
+    path: string;
+    exists: boolean;
+    writable: boolean;
+  };
+}) {
+  const tone = status.exists && status.writable
+    ? 'bg-success/10 text-success'
+    : 'bg-warning/10 text-warning';
+
+  return (
+    <div className="rounded-lg border border-surface p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="font-medium">{label}</div>
+        <span className={`rounded-full px-2 py-0.5 text-xs ${tone}`}>
+          {status.exists ? 'exists' : 'missing'}
+          {status.writable ? ' · writable' : ' · read-only'}
+        </span>
+      </div>
+      <div className="mt-2 truncate text-xs text-gray-500">{status.path}</div>
     </div>
   );
 }
