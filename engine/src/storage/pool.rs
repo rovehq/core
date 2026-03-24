@@ -7,8 +7,9 @@ use std::str::FromStr;
 use tracing::{debug, info};
 
 use super::{
-    AuthRepository, ExtensionCatalogRepository, InstalledPluginRepository, PendingTaskRepository,
-    PluginRepository, RemoteDiscoveryRepository, ScheduleRepository, TaskRepository,
+    AgentRunRepository, AuthRepository, ExtensionCatalogRepository, InstalledPluginRepository,
+    PendingTaskRepository, PluginRepository, RemoteDiscoveryRepository, ScheduleRepository,
+    TaskRepository,
 };
 
 /// Database connection pool.
@@ -182,6 +183,10 @@ impl Database {
         TaskRepository::new(self.pool.clone())
     }
 
+    pub fn agent_runs(&self) -> AgentRunRepository {
+        AgentRunRepository::new(self.pool.clone())
+    }
+
     pub fn auth(&self) -> AuthRepository {
         AuthRepository::new(self.pool.clone())
     }
@@ -249,6 +254,8 @@ mod tests {
         assert!(tables.contains(&"pending_tasks".to_string()));
         assert!(tables.contains(&"scheduled_tasks".to_string()));
         assert!(tables.contains(&"agent_events".to_string()));
+        assert!(tables.contains(&"agent_runs".to_string()));
+        assert!(tables.contains(&"workflow_runs".to_string()));
 
         db.close().await.unwrap();
     }

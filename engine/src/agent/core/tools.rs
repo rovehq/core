@@ -101,6 +101,7 @@ impl AgentCore {
         task_id: &str,
         tool_call: &ToolCall,
     ) -> Result<ToolExecution> {
+        self.ensure_tool_allowed(&tool_call.name)?;
         let tool_args = self.parse_tool_arguments(task_id, tool_call);
         let tool_tier = self.audit_risk_tier(&tool_call.name, &tool_args)?;
         let approved_by = match tool_tier {
@@ -147,6 +148,23 @@ impl AgentCore {
             );
             serde_json::json!({})
         })
+    }
+
+    fn ensure_tool_allowed(&self, tool_name: &str) -> Result<()> {
+        let Some(profile) = self.current_execution_profile.as_ref() else {
+            return Ok(());
+        };
+        if profile.allowed_tools.is_empty() {
+            return Ok(());
+        }
+        if profile.allowed_tools.iter().any(|allowed| allowed == tool_name) {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "tool '{}' is not allowed for agent '{}'",
+            tool_name,
+            profile.agent_name.as_deref().unwrap_or("unknown")
+        )
     }
 
     async fn dispatch_tool(

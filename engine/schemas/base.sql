@@ -311,6 +311,39 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run
     ON scheduled_tasks(enabled, next_run_at);
 
+-- 7.2 Agent And Workflow Runs
+CREATE TABLE IF NOT EXISTS agent_runs (
+    run_id           TEXT PRIMARY KEY,
+    agent_id         TEXT NOT NULL,
+    task_id          TEXT,
+    workflow_run_id  TEXT,
+    status           TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+    input            TEXT NOT NULL,
+    output           TEXT,
+    error            TEXT,
+    created_at       INTEGER NOT NULL,
+    completed_at     INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_agent
+    ON agent_runs(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_workflow
+    ON agent_runs(workflow_run_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    run_id         TEXT PRIMARY KEY,
+    workflow_id    TEXT NOT NULL,
+    status         TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+    input          TEXT NOT NULL,
+    output         TEXT,
+    error          TEXT,
+    created_at     INTEGER NOT NULL,
+    completed_at   INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow
+    ON workflow_runs(workflow_id, created_at DESC);
+
 -- 8. Knowledge Graph
 CREATE TABLE IF NOT EXISTS graph_nodes (
     id TEXT PRIMARY KEY,

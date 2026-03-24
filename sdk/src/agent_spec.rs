@@ -1,0 +1,261 @@
+use serde::{Deserialize, Serialize};
+
+pub const AGENT_SPEC_SCHEMA_VERSION: u32 = 1;
+pub const WORKFLOW_SPEC_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecRunStatus {
+    Pending,
+    Running,
+    #[default]
+    Completed,
+    Failed,
+}
+
+impl SpecRunStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SpecRunStatus::Pending => "pending",
+            SpecRunStatus::Running => "running",
+            SpecRunStatus::Completed => "completed",
+            SpecRunStatus::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "pending" => SpecRunStatus::Pending,
+            "running" => SpecRunStatus::Running,
+            "completed" => SpecRunStatus::Completed,
+            "failed" => SpecRunStatus::Failed,
+            _ => SpecRunStatus::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CapabilityRef {
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ChannelBinding {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodePlacementPolicy {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preferred_nodes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tags: Vec<String>,
+    #[serde(default = "default_true")]
+    pub allow_local: bool,
+    #[serde(default)]
+    pub require_executor: bool,
+}
+
+impl Default for NodePlacementPolicy {
+    fn default() -> Self {
+        Self {
+            preferred_nodes: Vec::new(),
+            required_tags: Vec::new(),
+            allow_local: true,
+            require_executor: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentUiSchema {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSpec {
+    #[serde(default = "default_agent_spec_schema_version")]
+    pub schema_version: u32,
+    pub id: String,
+    pub name: String,
+    pub purpose: String,
+    pub instructions: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<CapabilityRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<ChannelBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_policy: Option<String>,
+    #[serde(default = "default_memory_policy")]
+    pub memory_policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_profile: Option<String>,
+    #[serde(default)]
+    pub node_placement: NodePlacementPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schedules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_contract: Option<String>,
+    #[serde(default)]
+    pub ui: AgentUiSchema,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl Default for AgentSpec {
+    fn default() -> Self {
+        Self {
+            schema_version: AGENT_SPEC_SCHEMA_VERSION,
+            id: String::new(),
+            name: String::new(),
+            purpose: String::new(),
+            instructions: String::new(),
+            enabled: true,
+            capabilities: Vec::new(),
+            channels: Vec::new(),
+            model_policy: None,
+            memory_policy: default_memory_policy(),
+            approval_mode: None,
+            runtime_profile: None,
+            node_placement: NodePlacementPolicy::default(),
+            schedules: Vec::new(),
+            output_contract: None,
+            ui: AgentUiSchema::default(),
+            tags: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentTemplate {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub agent: AgentSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowStepSpec {
+    pub id: String,
+    pub name: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub continue_on_error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowSpec {
+    #[serde(default = "default_workflow_spec_schema_version")]
+    pub schema_version: u32,
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<WorkflowStepSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_contract: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl Default for WorkflowSpec {
+    fn default() -> Self {
+        Self {
+            schema_version: WORKFLOW_SPEC_SCHEMA_VERSION,
+            id: String::new(),
+            name: String::new(),
+            description: String::new(),
+            enabled: true,
+            steps: Vec::new(),
+            runtime_profile: None,
+            output_contract: None,
+            tags: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskExecutionProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    #[serde(default)]
+    pub instructions: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_contract: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRunRecord {
+    pub run_id: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_run_id: Option<String>,
+    pub status: SpecRunStatus,
+    pub input: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRunRecord {
+    pub run_id: String,
+    pub workflow_id: String,
+    pub status: SpecRunStatus,
+    pub input: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_memory_policy() -> String {
+    "default".to_string()
+}
+
+fn default_agent_spec_schema_version() -> u32 {
+    AGENT_SPEC_SCHEMA_VERSION
+}
+
+fn default_workflow_spec_schema_version() -> u32 {
+    WORKFLOW_SPEC_SCHEMA_VERSION
+}

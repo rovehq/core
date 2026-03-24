@@ -28,10 +28,12 @@ impl AgentCore {
         risk_tier: RiskTier,
     ) -> Result<TaskContext> {
         self.memory.clear();
+        self.current_execution_profile = task.execution_profile.clone();
         self.policy_preflight_commands.clear();
         self.policy_after_write_commands.clear();
         self.policy_executed_commands.clear();
         let mut system_prompt = self.tools.system_prompt_for_query(&task.input);
+        self.inject_execution_profile(&mut system_prompt);
         let dispatch_result = self.dispatch_brain.classify(&task.input);
         let domain_name = dispatch_result.domain_label.to_lowercase();
         self.current_task_sensitive = dispatch_result.sensitive;
@@ -71,6 +73,54 @@ impl AgentCore {
             route: dispatch_result.route,
             sensitive: dispatch_result.sensitive,
         })
+    }
+
+    fn inject_execution_profile(&self, system_prompt: &mut String) {
+        let Some(profile) = self.current_execution_profile.as_ref() else {
+            return;
+        };
+        if profile.instructions.trim().is_empty()
+            && profile.allowed_tools.is_empty()
+            && profile.output_contract.is_none()
+        {
+            return;
+        }
+
+        let mut lines = Vec::new();
+        lines.push("You are executing under a saved Rove agent profile.".to_string());
+        if let Some(agent_name) = profile.agent_name.as_ref() {
+            lines.push(format!("Agent: {}", agent_name));
+        }
+        if let Some(purpose) = profile.purpose.as_ref().filter(|value| !value.trim().is_empty()) {
+            lines.push(format!("Purpose: {}", purpose.trim()));
+        }
+        if !profile.instructions.trim().is_empty() {
+            lines.push(String::new());
+            lines.push("Agent instructions:".to_string());
+            lines.push(profile.instructions.trim().to_string());
+        }
+        if !profile.allowed_tools.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Allowed tools: {}",
+                profile.allowed_tools.join(", ")
+            ));
+            lines.push(
+                "Do not call tools outside that set. If you need a missing capability, explain the blocker."
+                    .to_string(),
+            );
+        }
+        if let Some(output_contract) = profile
+            .output_contract
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(String::new());
+            lines.push("Output contract:".to_string());
+            lines.push(output_contract.trim().to_string());
+        }
+
+        *system_prompt = format!("{}\n\n{}", lines.join("\n"), system_prompt);
     }
 
     async fn apply_policy(

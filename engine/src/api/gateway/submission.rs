@@ -3,6 +3,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::Gateway;
+use crate::security::PromptOverrideDetector;
 
 impl Gateway {
     pub async fn submit_cli(&self, input: &str, password: Option<&str>) -> anyhow::Result<String> {
@@ -74,7 +75,10 @@ impl Gateway {
         let task_id = Uuid::new_v4();
         let repo = self.db.pending_tasks();
 
-        let safe_input = if let Some(warning) = self.injection_detector.scan(input) {
+        let guarded_input = PromptOverrideDetector::new()
+            .map(|detector| detector.guard_input(input))
+            .unwrap_or_else(|_| input.to_string());
+        let safe_input = if let Some(warning) = self.injection_detector.scan(&guarded_input) {
             warn!(
                 task_id = %task_id,
                 source = ?source,
@@ -82,9 +86,9 @@ impl Gateway {
                 position = warning.position,
                 "Injection attempt detected at gateway entry (Layer 1)"
             );
-            self.injection_detector.sanitize(input)
+            self.injection_detector.sanitize(&guarded_input)
         } else {
-            input.to_string()
+            guarded_input
         };
 
         let dispatch = self.dispatch_brain.classify(&safe_input);

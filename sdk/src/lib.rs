@@ -3,6 +3,7 @@
 //! Shared library providing traits, types, and utilities for Rove components.
 //! This crate is used by both the engine and plugins/core-tools.
 
+pub mod agent_spec;
 pub mod agent_handle;
 pub mod bus_handle;
 pub mod config_handle;
@@ -31,6 +32,11 @@ pub mod subagent;
 pub mod brain;
 
 // Re-export commonly used types
+pub use agent_spec::{
+    AgentRunRecord, AgentSpec, AgentTemplate, AgentUiSchema, CapabilityRef, ChannelBinding,
+    NodePlacementPolicy, SpecRunStatus, TaskExecutionProfile, WorkflowRunRecord, WorkflowSpec,
+    WorkflowStepSpec,
+};
 pub use agent_handle::{AgentHandle, AgentHandleImpl};
 pub use brain::{
     Brain, BrainResponse, Complexity, DispatchResult, Message, Route, TaskDomain, ToolSchema,

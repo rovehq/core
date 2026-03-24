@@ -80,6 +80,18 @@ pub enum Command {
         limit: usize,
     },
 
+    /// Manage reusable agent specs.
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+
+    /// Manage reusable workflow specs.
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowAction,
+    },
+
     /// Replay a task and show every recorded step.
     Replay {
         /// Task UUID to replay.
@@ -791,6 +803,80 @@ pub enum BrainAction {
         /// Optional brain family. Reasoning is the default.
         #[arg(long, value_enum)]
         family: Option<BrainFamilyArg>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentAction {
+    /// List saved agents.
+    List,
+    /// Show one saved agent.
+    Show { id: String },
+    /// Create a basic saved agent.
+    Create {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        purpose: Option<String>,
+        #[arg(long)]
+        instructions: Option<String>,
+        #[arg(long = "tool")]
+        tool: Vec<String>,
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Enable an agent.
+    Enable { id: String },
+    /// Disable an agent.
+    Disable { id: String },
+    /// Run a saved agent once.
+    Run { id: String, prompt: Vec<String> },
+    /// Export an agent spec to a TOML file.
+    Export { id: String, path: PathBuf },
+    /// Import an agent spec from a TOML file.
+    Import { path: PathBuf },
+    /// Show recent agent runs.
+    Runs {
+        #[arg(short, long, default_value_t = 20)]
+        limit: i64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorkflowAction {
+    /// List saved workflows.
+    List,
+    /// Show one saved workflow.
+    Show { id: String },
+    /// Create a basic workflow.
+    Create {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long = "step")]
+        step: Vec<String>,
+        #[arg(long = "agent")]
+        agent: Vec<String>,
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Enable a workflow.
+    Enable { id: String },
+    /// Disable a workflow.
+    Disable { id: String },
+    /// Run a saved workflow once.
+    Run { id: String, input: Vec<String> },
+    /// Export a workflow spec to a TOML file.
+    Export { id: String, path: PathBuf },
+    /// Import a workflow spec from a TOML file.
+    Import { path: PathBuf },
+    /// Show recent workflow runs.
+    Runs {
+        #[arg(short, long, default_value_t = 20)]
+        limit: i64,
     },
 }
 

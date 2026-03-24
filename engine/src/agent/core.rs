@@ -15,6 +15,7 @@ mod tests;
 mod tools;
 
 use anyhow::{Context, Result};
+use sdk::TaskExecutionProfile;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
@@ -57,6 +58,7 @@ pub struct AgentCore {
     workspace_locks: Arc<WorkspaceLocks>,
     background_jobs: Vec<JoinHandle<()>>,
     current_task_sensitive: bool,
+    current_execution_profile: Option<TaskExecutionProfile>,
     policy_preflight_commands: Vec<String>,
     policy_after_write_commands: Vec<String>,
     policy_executed_commands: HashSet<String>,
@@ -94,6 +96,7 @@ impl AgentCore {
             workspace_locks,
             background_jobs: Vec::new(),
             current_task_sensitive: false,
+            current_execution_profile: None,
             policy_preflight_commands: Vec::new(),
             policy_after_write_commands: Vec::new(),
             policy_executed_commands: HashSet::new(),

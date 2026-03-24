@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use brain::dispatch::DispatchBrain;
-use sdk::{RunIsolation, RunMode};
+use sdk::{RunIsolation, RunMode, TaskExecutionProfile};
 use tempfile::TempDir;
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use crate::agent::AgentCore;
+use crate::agent::{AgentCore, TaskResult};
 use crate::api::gateway::{Gateway, GatewayConfig, Task, WorkspaceLocks};
 use crate::cli::database_path::database_path;
 use crate::cli::{daemon, TaskIsolationArg};
@@ -25,6 +25,7 @@ use crate::policy::{
 use crate::remote::{RemoteManager, RemoteSendOptions};
 use crate::security::rate_limiter::RateLimiter;
 use crate::security::risk_assessor::RiskAssessor;
+use crate::security::PromptOverrideDetector;
 use crate::storage::{Database, PendingTaskStatus, TaskRepository};
 use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
@@ -49,6 +50,7 @@ pub async fn handle_run(request: RunRequest, config: &Config) -> Result<()> {
         runtime_config.core.workspace = current_dir;
     }
     let (task, implicit_node) = extract_task_target(&request.task);
+    let task = PromptOverrideDetector::new()?.guard_input(&task);
     let requested_node = request.node.clone().or(implicit_node);
     if request.auto_approve {
         runtime_config.security.confirm_tier1 = false;
@@ -98,6 +100,77 @@ async fn handle_local_run(
     run_mode: RunMode,
     run_isolation: RunIsolation,
 ) -> Result<()> {
+    let task_id = Uuid::new_v4();
+    let dispatch = preview_dispatch(&task, view);
+    task_view::print_start(&task, &task_id.to_string(), format, view, dispatch.as_ref())?;
+    let result = execute_local_task_request_with_id(
+        task.clone(),
+        runtime_config,
+        run_mode,
+        run_isolation,
+        None,
+        task_id,
+    )
+    .await;
+
+    match result {
+        Ok(task_result) => {
+            let completion_dispatch = dispatch.or_else(|| {
+                Some(DispatchSummary::new(
+                    task_result.domain.to_string().to_lowercase(),
+                    infer_complexity_from_iterations(task_result.iterations).to_string(),
+                    task_result.sensitive,
+                    None,
+                    None,
+                ))
+            });
+            task_view::print_success(
+                TaskSuccess {
+                    task_id: &task_result.task_id,
+                    answer: &task_result.answer,
+                    provider_used: &task_result.provider_used,
+                    duration_ms: task_result.duration_ms,
+                    iterations: task_result.iterations,
+                    dispatch: completion_dispatch.as_ref(),
+                },
+                format,
+                    view,
+                )?;
+            Ok(())
+        }
+        Err(error) => {
+            task_view::print_failure(&error, format, view)?;
+            Err(error)
+        }
+    }
+}
+
+pub async fn execute_local_task_request(
+    task: String,
+    runtime_config: &Config,
+    run_mode: RunMode,
+    run_isolation: RunIsolation,
+    execution_profile: Option<TaskExecutionProfile>,
+) -> Result<TaskResult> {
+    execute_local_task_request_with_id(
+        task,
+        runtime_config,
+        run_mode,
+        run_isolation,
+        execution_profile,
+        Uuid::new_v4(),
+    )
+    .await
+}
+
+async fn execute_local_task_request_with_id(
+    task: String,
+    runtime_config: &Config,
+    run_mode: RunMode,
+    run_isolation: RunIsolation,
+    execution_profile: Option<TaskExecutionProfile>,
+    task_id: Uuid,
+) -> Result<TaskResult> {
     let prepared_workspace = prepare_run_workspace(runtime_config, &task, run_mode, run_isolation)?;
     let mut runtime_config = runtime_config.clone();
     runtime_config.core.workspace = prepared_workspace.workspace.clone();
@@ -116,7 +189,6 @@ async fn handle_local_run(
     let rate_limiter = Arc::new(RateLimiter::new(db_pool.clone()));
     let risk_assessor = RiskAssessor::new();
     let task_repo = Arc::new(TaskRepository::new(db_pool.clone()));
-    let event_repo = task_repo.clone();
     let tools = super::bootstrap::build_tools(&database, &runtime_config).await?;
     let policy_engine = load_policy_engine(&runtime_config).await;
     let workspace_locks = Arc::new(WorkspaceLocks::new());
@@ -138,67 +210,21 @@ async fn handle_local_run(
     )?;
     agent.set_memory_system(memory_system);
 
-    let agent_task = Task::build_from_cli_with_context(
-        task.clone(),
+    let mut agent_task = Task::build_from_cli_with_context(
+        task,
         Some(prepared_workspace.workspace.clone()),
         run_mode,
         run_isolation,
-    );
-    let task_id = agent_task.id;
-    let dispatch = preview_dispatch(&task, view);
-    task_view::print_start(&task, &task_id.to_string(), format, view, dispatch.as_ref())?;
+    )
+    .with_id(task_id);
+    if let Some(profile) = execution_profile {
+        agent_task = agent_task.with_execution_profile(profile);
+    }
 
-    let result = {
-        let mut task_future = std::pin::pin!(agent.process_task(agent_task));
-        let mut stream_state = StreamState {
-            last_progress_at: Some(Instant::now()),
-            ..StreamState::default()
-        };
-
-        loop {
-            tokio::select! {
-                result = &mut task_future => break result,
-                _ = sleep(Duration::from_millis(250)), if view.wants_progress() => {
-                    stream_task_events(&event_repo, &task_id.to_string(), &mut stream_state, view).await?;
-                }
-            }
-        }
-    };
-
-    let output = match result {
-        Ok(task_result) => {
-            let completion_dispatch = dispatch.or_else(|| {
-                Some(DispatchSummary::new(
-                    task_result.domain.to_string().to_lowercase(),
-                    infer_complexity_from_iterations(task_result.iterations).to_string(),
-                    task_result.sensitive,
-                    None,
-                    None,
-                ))
-            });
-            task_view::print_success(
-                TaskSuccess {
-                    task_id: &task_result.task_id,
-                    answer: &task_result.answer,
-                    provider_used: &task_result.provider_used,
-                    duration_ms: task_result.duration_ms,
-                    iterations: task_result.iterations,
-                    dispatch: completion_dispatch.as_ref(),
-                },
-                format,
-                view,
-            )?;
-            agent.drain_background_jobs().await;
-            Ok(())
-        }
-        Err(error) => {
-            task_view::print_failure(&error, format, view)?;
-            Err(error)
-        }
-    };
-
+    let result = agent.process_task(agent_task).await;
+    agent.drain_background_jobs().await;
     prepared_workspace.cleanup()?;
-    output
+    result
 }
 
 struct PreparedRunWorkspace {

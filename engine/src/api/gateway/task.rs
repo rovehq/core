@@ -1,5 +1,5 @@
 use chrono::Utc;
-use sdk::{RunContextId, RunIsolation, RunMode, TaskSource};
+use sdk::{RunContextId, RunIsolation, RunMode, TaskExecutionProfile, TaskSource};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -10,6 +10,7 @@ pub struct Task {
     pub id: Uuid,
     pub input: String,
     pub source: TaskSource,
+    pub execution_profile: Option<TaskExecutionProfile>,
     pub risk_tier_override: Option<RiskTier>,
     pub run_context_id: RunContextId,
     pub run_mode: RunMode,
@@ -39,6 +40,7 @@ impl Task {
             id: Uuid::new_v4(),
             input: input.into(),
             source: TaskSource::Cli,
+            execution_profile: None,
             risk_tier_override: None,
             run_context_id: RunContextId(Uuid::new_v4().to_string()),
             run_mode,
@@ -54,6 +56,7 @@ impl Task {
             id: Uuid::new_v4(),
             input: input.into(),
             source: TaskSource::Telegram(String::new()),
+            execution_profile: None,
             risk_tier_override: None,
             run_context_id: RunContextId(Uuid::new_v4().to_string()),
             run_mode: RunMode::Serial,
@@ -69,6 +72,7 @@ impl Task {
             id: Uuid::new_v4(),
             input: input.into(),
             source: TaskSource::WebUI,
+            execution_profile: None,
             risk_tier_override: None,
             run_context_id: RunContextId(Uuid::new_v4().to_string()),
             run_mode: RunMode::Serial,
@@ -77,6 +81,16 @@ impl Task {
             workspace: None,
             created_at: Utc::now().timestamp(),
         }
+    }
+
+    pub fn with_execution_profile(mut self, execution_profile: TaskExecutionProfile) -> Self {
+        self.execution_profile = Some(execution_profile);
+        self
+    }
+
+    pub fn with_id(mut self, id: Uuid) -> Self {
+        self.id = id;
+        self
     }
 }
 

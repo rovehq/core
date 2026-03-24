@@ -121,6 +121,27 @@ pub async fn start_daemon(
         .route("/v1/config", get(api::get_config).post(api::update_config))
         .route("/v1/config/reload", post(api::reload_config))
         .route("/v1/tasks", get(api::list_tasks).post(api::create_task))
+        .route("/v1/agents", get(api::list_agents).post(api::create_agent))
+        .route("/v1/agents/runs", get(api::list_agent_runs))
+        .route(
+            "/v1/agents/:id",
+            get(api::get_agent)
+                .put(api::update_agent)
+                .delete(api::remove_agent),
+        )
+        .route("/v1/agents/:id/run", post(api::run_agent))
+        .route(
+            "/v1/workflows",
+            get(api::list_workflows).post(api::create_workflow),
+        )
+        .route("/v1/workflows/runs", get(api::list_workflow_runs))
+        .route(
+            "/v1/workflows/:id",
+            get(api::get_workflow)
+                .put(api::update_workflow)
+                .delete(api::remove_workflow),
+        )
+        .route("/v1/workflows/:id/run", post(api::run_workflow))
         .route("/v1/brains", get(api::list_brains))
         .route("/v1/brains/dispatch/use", post(api::use_dispatch_brain))
         .route("/v1/extensions", get(api::list_extensions))
@@ -211,6 +232,27 @@ pub async fn start_daemon(
         .route("/api/run", post(api::execute_task))
         .route("/api/v1/execute", post(api::execute_task))
         .route("/api/v1/tasks/:task_id", get(api::task_status))
+        .route("/api/v1/agents", get(api::list_agents).post(api::create_agent))
+        .route("/api/v1/agents/runs", get(api::list_agent_runs))
+        .route(
+            "/api/v1/agents/:id",
+            get(api::get_agent)
+                .put(api::update_agent)
+                .delete(api::remove_agent),
+        )
+        .route("/api/v1/agents/:id/run", post(api::run_agent))
+        .route(
+            "/api/v1/workflows",
+            get(api::list_workflows).post(api::create_workflow),
+        )
+        .route("/api/v1/workflows/runs", get(api::list_workflow_runs))
+        .route(
+            "/api/v1/workflows/:id",
+            get(api::get_workflow)
+                .put(api::update_workflow)
+                .delete(api::remove_workflow),
+        )
+        .route("/api/v1/workflows/:id/run", post(api::run_workflow))
         .route("/api/v1/policy/active", get(api::active_policies))
         .route("/api/v1/steering/active", get(api::active_policies))
         .route("/api/v1/policies", get(api::list_policies))

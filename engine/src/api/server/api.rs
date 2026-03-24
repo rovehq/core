@@ -19,11 +19,13 @@ use crate::remote::RemoteManager;
 use crate::security::approvals;
 use crate::service_install::{ServiceInstallMode, ServiceInstaller};
 use crate::services::{ManagedService, ServiceManager};
+use crate::specs::{allowed_tools, SpecRepository};
 use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
 use sdk::{
-    AuthState, DaemonCapabilities, DaemonHello, NodeLoadSnapshot, NodeSummary, PolicyScope,
-    RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, TaskSource,
+    AgentSpec, AuthState, DaemonCapabilities, DaemonHello, NodeLoadSnapshot, NodeSummary,
+    PolicyScope, RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, SpecRunStatus,
+    TaskExecutionProfile, TaskSource, WorkflowSpec,
 };
 
 #[derive(Serialize)]
@@ -57,6 +59,12 @@ pub struct CreateTaskRequest {
     pub prompt: Option<String>,
     pub input: Option<String>,
     pub node: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SpecRunRequest {
+    pub prompt: Option<String>,
+    pub input: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -320,6 +328,350 @@ pub async fn list_tasks(State(state): State<AppState>) -> impl IntoResponse {
         Ok(tasks) => (StatusCode::OK, Json(tasks)).into_response(),
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
+}
+
+pub async fn list_agents() -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.list_agents() {
+            Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_agent(Path(id): Path<String>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.load_agent(&id) {
+            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::NOT_FOUND, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn create_agent(Json(spec): Json<AgentSpec>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.save_agent(&spec) {
+            Ok(item) => (StatusCode::CREATED, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn update_agent(
+    Path(id): Path<String>,
+    Json(mut spec): Json<AgentSpec>,
+) -> impl IntoResponse {
+    spec.id = id;
+    match SpecRepository::new() {
+        Ok(repo) => match repo.save_agent(&spec) {
+            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn remove_agent(Path(id): Path<String>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.remove_agent(&id) {
+            Ok(true) => StatusCode::NO_CONTENT.into_response(),
+            Ok(false) => json_error_response(
+                StatusCode::NOT_FOUND,
+                anyhow::anyhow!("Agent '{}' was not found", id),
+            ),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_agent_runs(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.agent_runs().list_agent_runs(50).await {
+        Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn run_agent(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<SpecRunRequest>,
+) -> impl IntoResponse {
+    let Some(input) = parse_task_input(payload.input, payload.prompt) else {
+        return invalid_request("Request must include a non-empty `input` or `prompt` field");
+    };
+
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let spec = match repo.load_agent(&id) {
+        Ok(spec) => spec,
+        Err(error) => return json_error_response(StatusCode::NOT_FOUND, error),
+    };
+    if !spec.enabled {
+        return json_error_response(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("Agent '{}' is disabled", spec.id),
+        );
+    }
+
+    let config = match Config::load_or_create() {
+        Ok(config) => config,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    let run_id = Uuid::new_v4().to_string();
+    if let Err(error) = state
+        .db
+        .agent_runs()
+        .start_agent_run(&run_id, &spec.id, None, None, &input)
+        .await
+    {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+
+    let profile = TaskExecutionProfile {
+        agent_id: Some(spec.id.clone()),
+        agent_name: Some(spec.name.clone()),
+        purpose: Some(spec.purpose.clone()),
+        instructions: spec.instructions.clone(),
+        allowed_tools: allowed_tools(&spec),
+        output_contract: spec.output_contract.clone(),
+    };
+
+    match crate::cli::run::execute_local_task_request(
+        input,
+        &config,
+        RunMode::Serial,
+        RunIsolation::None,
+        Some(profile),
+    )
+    .await
+    {
+        Ok(task_result) => {
+            let _ = state
+                .db
+                .agent_runs()
+                .finish_agent_run(
+                    &run_id,
+                    SpecRunStatus::Completed,
+                    Some(&task_result.task_id),
+                    Some(&task_result.answer),
+                    None,
+                )
+                .await;
+            (
+                StatusCode::OK,
+                Json(ExecuteResponse {
+                    success: true,
+                    task_id: Some(task_result.task_id),
+                    status: "completed".to_string(),
+                    answer: Some(task_result.answer),
+                    provider: Some(task_result.provider_used),
+                    duration_ms: Some(task_result.duration_ms),
+                    message: Some(run_id),
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            let _ = state
+                .db
+                .agent_runs()
+                .finish_agent_run(&run_id, SpecRunStatus::Failed, None, None, Some(&error.to_string()))
+                .await;
+            json_error_response(StatusCode::BAD_REQUEST, error)
+        }
+    }
+}
+
+pub async fn list_workflows() -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.list_workflows() {
+            Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_workflow(Path(id): Path<String>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.load_workflow(&id) {
+            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::NOT_FOUND, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn create_workflow(Json(spec): Json<WorkflowSpec>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.save_workflow(&spec) {
+            Ok(item) => (StatusCode::CREATED, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn update_workflow(
+    Path(id): Path<String>,
+    Json(mut spec): Json<WorkflowSpec>,
+) -> impl IntoResponse {
+    spec.id = id;
+    match SpecRepository::new() {
+        Ok(repo) => match repo.save_workflow(&spec) {
+            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn remove_workflow(Path(id): Path<String>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.remove_workflow(&id) {
+            Ok(true) => StatusCode::NO_CONTENT.into_response(),
+            Ok(false) => json_error_response(
+                StatusCode::NOT_FOUND,
+                anyhow::anyhow!("Workflow '{}' was not found", id),
+            ),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_workflow_runs(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.agent_runs().list_workflow_runs(50).await {
+        Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn run_workflow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<SpecRunRequest>,
+) -> impl IntoResponse {
+    let Some(input) = parse_task_input(payload.input, payload.prompt) else {
+        return invalid_request("Request must include a non-empty `input` or `prompt` field");
+    };
+
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let workflow = match repo.load_workflow(&id) {
+        Ok(spec) => spec,
+        Err(error) => return json_error_response(StatusCode::NOT_FOUND, error),
+    };
+    if !workflow.enabled {
+        return json_error_response(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("Workflow '{}' is disabled", workflow.id),
+        );
+    }
+
+    let config = match Config::load_or_create() {
+        Ok(config) => config,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    let run_id = Uuid::new_v4().to_string();
+    if let Err(error) = state
+        .db
+        .agent_runs()
+        .start_workflow_run(&run_id, &workflow.id, &input)
+        .await
+    {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+
+    let mut last_output = input.clone();
+    for step in &workflow.steps {
+        let rendered = step
+            .prompt
+            .replace("{{input}}", &input)
+            .replace("{{last_output}}", &last_output);
+        let profile = match step.agent_id.as_deref() {
+            Some(agent_id) => match repo.load_agent(agent_id) {
+                Ok(spec) => Some(TaskExecutionProfile {
+                    agent_id: Some(spec.id.clone()),
+                    agent_name: Some(spec.name.clone()),
+                    purpose: Some(spec.purpose.clone()),
+                    instructions: spec.instructions.clone(),
+                    allowed_tools: allowed_tools(&spec),
+                    output_contract: spec.output_contract.clone(),
+                }),
+                Err(error) => {
+                    let _ = state
+                        .db
+                        .agent_runs()
+                        .finish_workflow_run(
+                            &run_id,
+                            SpecRunStatus::Failed,
+                            None,
+                            Some(&error.to_string()),
+                        )
+                        .await;
+                    return json_error_response(StatusCode::BAD_REQUEST, error);
+                }
+            },
+            None => None,
+        };
+
+        match crate::cli::run::execute_local_task_request(
+            rendered,
+            &config,
+            RunMode::Serial,
+            RunIsolation::None,
+            profile,
+        )
+        .await
+        {
+            Ok(task_result) => {
+                last_output = task_result.answer;
+            }
+            Err(error) => {
+                let _ = state
+                    .db
+                    .agent_runs()
+                    .finish_workflow_run(
+                        &run_id,
+                        SpecRunStatus::Failed,
+                        None,
+                        Some(&error.to_string()),
+                    )
+                    .await;
+                return json_error_response(StatusCode::BAD_REQUEST, error);
+            }
+        }
+    }
+
+    let _ = state
+        .db
+        .agent_runs()
+        .finish_workflow_run(&run_id, SpecRunStatus::Completed, Some(&last_output), None)
+        .await;
+    (
+        StatusCode::OK,
+        Json(ExecuteResponse {
+            success: true,
+            task_id: None,
+            status: "completed".to_string(),
+            answer: Some(last_output),
+            provider: None,
+            duration_ms: None,
+            message: Some(run_id),
+        }),
+    )
+        .into_response()
 }
 
 pub async fn get_config() -> impl IntoResponse {
@@ -960,6 +1312,7 @@ async fn run_remote_planned_task(
         id: task_id,
         input,
         source,
+        execution_profile: None,
         risk_tier_override: None,
         run_context_id: RunContextId(Uuid::new_v4().to_string()),
         run_mode: RunMode::Serial,

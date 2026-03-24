@@ -19,7 +19,7 @@ use crate::llm::{FinalAnswer, LLMProvider, LLMResponse, Message};
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::RiskAssessor;
 use crate::risk_assessor::RiskTier;
-use sdk::{Complexity, RemoteExecutionPlan, Route, TaskDomain};
+use sdk::{Complexity, RemoteExecutionPlan, Route, TaskDomain, TaskExecutionProfile};
 
 async fn setup_test_agent() -> (TempDir, AgentCore) {
     setup_test_agent_with_providers(vec![], false).await
@@ -201,6 +201,42 @@ async fn test_planned_task_executes_bundled_steps_without_provider() {
     assert!(result.answer.contains("executor payload"));
     assert_eq!(result.provider_used, "executor-plan");
     assert_eq!(result.iterations, 2);
+}
+
+#[tokio::test]
+async fn test_planned_task_enforces_agent_allowed_tools() {
+    let (temp_dir, mut agent) = setup_test_agent_with_providers(vec![], true).await;
+    let file_path = temp_dir.path().join("note.txt");
+    std::fs::write(&file_path, "restricted payload").expect("write fixture");
+
+    let task = Task::build_from_cli("read note.txt")
+        .with_execution_profile(TaskExecutionProfile {
+            agent_id: Some("restricted-reader".to_string()),
+            agent_name: Some("Restricted Reader".to_string()),
+            purpose: Some("read fixture".to_string()),
+            instructions: "Only use the allowed tools.".to_string(),
+            allowed_tools: vec!["write_file".to_string()],
+            output_contract: None,
+        });
+
+    let error = agent
+        .process_planned_task(
+            task,
+            RemoteExecutionPlan::direct(
+                "read fixture note",
+                "read_file",
+                serde_json::json!({ "path": file_path }),
+                Some("general".to_string()),
+            ),
+        )
+        .await
+        .expect_err("restricted agent should reject disallowed tool");
+
+    assert!(
+        error
+            .to_string()
+            .contains("tool 'read_file' is not allowed for agent 'Restricted Reader'")
+    );
 }
 
 #[test]

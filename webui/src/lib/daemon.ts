@@ -219,6 +219,90 @@ export interface DaemonConfig {
   tls_key_path: string;
 }
 
+export interface CapabilityRef {
+  kind: string;
+  name: string;
+  required: boolean;
+}
+
+export interface ChannelBinding {
+  kind: string;
+  target?: string | null;
+  enabled: boolean;
+}
+
+export interface NodePlacementPolicy {
+  preferred_nodes: string[];
+  required_tags: string[];
+  allow_local: boolean;
+  require_executor: boolean;
+}
+
+export interface AgentUiSchema {
+  icon?: string | null;
+  accent?: string | null;
+}
+
+export interface AgentSpec {
+  schema_version: number;
+  id: string;
+  name: string;
+  purpose: string;
+  instructions: string;
+  enabled: boolean;
+  capabilities: CapabilityRef[];
+  channels: ChannelBinding[];
+  model_policy?: string | null;
+  memory_policy: string;
+  approval_mode?: string | null;
+  runtime_profile?: string | null;
+  node_placement: NodePlacementPolicy;
+  schedules: string[];
+  output_contract?: string | null;
+  ui: AgentUiSchema;
+  tags: string[];
+}
+
+export interface WorkflowStepSpec {
+  id: string;
+  name: string;
+  prompt: string;
+  agent_id?: string | null;
+  continue_on_error: boolean;
+}
+
+export interface WorkflowSpec {
+  schema_version: number;
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  steps: WorkflowStepSpec[];
+  runtime_profile?: string | null;
+  output_contract?: string | null;
+  tags: string[];
+}
+
+export interface SpecRunRecord {
+  run_id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  input: string;
+  output?: string | null;
+  error?: string | null;
+  created_at: number;
+  completed_at?: number | null;
+}
+
+export interface AgentRunRecord extends SpecRunRecord {
+  agent_id: string;
+  task_id?: string | null;
+  workflow_run_id?: string | null;
+}
+
+export interface WorkflowRunRecord extends SpecRunRecord {
+  workflow_id: string;
+}
+
 export interface PolicySummary {
   id: string;
   path: string;
@@ -297,6 +381,16 @@ export interface DispatchBrainView {
 export interface CreateTaskResponse {
   task_id: string;
   status: string;
+}
+
+export interface ExecuteTaskResponse {
+  success?: boolean;
+  task_id?: string | null;
+  status: string;
+  answer?: string | null;
+  provider?: string | null;
+  duration_ms?: number | null;
+  message?: string | null;
 }
 
 export type DaemonEvent =
@@ -737,6 +831,64 @@ export class RoveDaemonClient {
         node: options?.node,
       }),
     });
+  }
+
+  async listAgents(): Promise<AgentSpec[]> {
+    return this.request<AgentSpec[]>('/v1/agents');
+  }
+
+  async saveAgent(spec: AgentSpec): Promise<AgentSpec> {
+    const path = spec.id ? `/v1/agents/${encodeURIComponent(spec.id)}` : '/v1/agents';
+    return this.request<AgentSpec>(path, {
+      method: spec.id ? 'PUT' : 'POST',
+      body: JSON.stringify(spec),
+    });
+  }
+
+  async removeAgent(id: string): Promise<void> {
+    await this.request<void>(`/v1/agents/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async runAgent(id: string, input: string): Promise<ExecuteTaskResponse> {
+    return this.request<ExecuteTaskResponse>(`/v1/agents/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ input }),
+    });
+  }
+
+  async listAgentRuns(): Promise<AgentRunRecord[]> {
+    return this.request<AgentRunRecord[]>('/v1/agents/runs');
+  }
+
+  async listWorkflows(): Promise<WorkflowSpec[]> {
+    return this.request<WorkflowSpec[]>('/v1/workflows');
+  }
+
+  async saveWorkflow(spec: WorkflowSpec): Promise<WorkflowSpec> {
+    const path = spec.id ? `/v1/workflows/${encodeURIComponent(spec.id)}` : '/v1/workflows';
+    return this.request<WorkflowSpec>(path, {
+      method: spec.id ? 'PUT' : 'POST',
+      body: JSON.stringify(spec),
+    });
+  }
+
+  async removeWorkflow(id: string): Promise<void> {
+    await this.request<void>(`/v1/workflows/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async runWorkflow(id: string, input: string): Promise<ExecuteTaskResponse> {
+    return this.request<ExecuteTaskResponse>(`/v1/workflows/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ input }),
+    });
+  }
+
+  async listWorkflowRuns(): Promise<WorkflowRunRecord[]> {
+    return this.request<WorkflowRunRecord[]>('/v1/workflows/runs');
   }
 
   connectEvents(onEvent: (event: DaemonEvent) => void): WebSocket {

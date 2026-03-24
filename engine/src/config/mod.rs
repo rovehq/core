@@ -657,6 +657,8 @@ auto_unload = true
         std::fs::create_dir_all(&base).expect("base dir");
         let config_path = base.join("config.toml");
         let mut config = Config::default();
+        config.core.data_dir = base.join("data");
+        std::fs::create_dir_all(&config.core.data_dir).expect("data dir");
         config.core.workspace = base.join("workspace");
         std::fs::create_dir_all(&config.core.workspace).expect("workspace");
         config.webui.enabled = true;

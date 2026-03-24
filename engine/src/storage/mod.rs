@@ -1,3 +1,4 @@
+pub mod agent_runs;
 pub mod auth;
 pub mod extension_catalog;
 pub mod installed_plugins;
@@ -9,6 +10,7 @@ pub mod remote_discovery;
 pub mod schedule;
 pub mod tasks;
 
+pub use agent_runs::AgentRunRepository;
 pub use auth::{AuthEvent, AuthReauth, AuthRepository, AuthSession};
 pub use extension_catalog::{ExtensionCatalogEntry, ExtensionCatalogRepository};
 pub use installed_plugins::{InstalledPlugin, InstalledPluginRepository};

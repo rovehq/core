@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod approvals;
 pub mod bootstrap;
 pub mod brain;
@@ -26,6 +27,7 @@ pub mod task_view;
 pub mod tui;
 pub mod unlock;
 pub mod update;
+pub mod workflows;
 
 pub use commands::*;
 pub use output::{OutputFormat, TaskView};

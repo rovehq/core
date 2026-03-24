@@ -70,6 +70,14 @@ async fn main() -> Result<()> {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::history::handle_history(limit, &config, OutputFormat::Text).await?;
         }
+        Some(Command::Agent { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            rove_engine::cli::agents::handle_agents(action, &config).await?;
+        }
+        Some(Command::Workflow { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            rove_engine::cli::workflows::handle_workflows(action, &config).await?;
+        }
         Some(Command::Replay { task_id }) => {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::replay::handle_replay(task_id, &config, OutputFormat::Text).await?;
