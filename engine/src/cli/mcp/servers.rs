@@ -605,6 +605,9 @@ mod tests {
                 }"#
                 .to_string(),
             ),
+            provenance_source: None,
+            provenance_registry: None,
+            catalog_trust_badge: None,
         };
 
         let server = installed_plugin_server(plugin)

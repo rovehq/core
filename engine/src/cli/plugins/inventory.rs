@@ -305,6 +305,9 @@ mod tests {
             installed_at: 1_710_000_000,
             last_used: None,
             config: Some(r#"{"tools":[]}"#.to_string()),
+            provenance_source: None,
+            provenance_registry: None,
+            catalog_trust_badge: None,
         }
     }
 

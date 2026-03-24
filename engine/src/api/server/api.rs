@@ -65,6 +65,7 @@ pub struct DaemonConfigView {
     pub config_written_by: String,
     pub node_name: String,
     pub profile: String,
+    pub developer_mode: bool,
     pub privacy_mode: String,
     pub idle_timeout_secs: u64,
     pub absolute_timeout_secs: u64,
@@ -83,6 +84,7 @@ pub struct DaemonConfigView {
 pub struct UpdateDaemonConfigRequest {
     pub node_name: Option<String>,
     pub profile: Option<String>,
+    pub developer_mode: Option<bool>,
     pub privacy_mode: Option<String>,
     pub idle_timeout_secs: Option<u64>,
     pub absolute_timeout_secs: Option<u64>,
@@ -131,6 +133,14 @@ pub struct ZeroTierSetupRequest {
     pub network_id: String,
     pub api_token_key: Option<String>,
     pub managed_name_sync: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExtensionInstallRequest {
+    pub kind: Option<String>,
+    pub source: String,
+    pub registry: Option<String>,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -336,6 +346,82 @@ pub async fn list_extensions() -> impl IntoResponse {
     }
 }
 
+pub async fn list_extension_catalog() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match extensions::catalog(&config, false).await {
+            Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_extension_catalog_entry(Path(id): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match extensions::catalog_entry(&config, &id, false).await {
+            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::NOT_FOUND, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_extension_updates() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match extensions::updates(&config, false).await {
+            Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn refresh_extension_catalog() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match extensions::catalog(&config, true).await {
+            Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn install_extension(Json(payload): Json<ExtensionInstallRequest>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match extensions::install_extension_api(
+            &config,
+            payload.kind.as_deref(),
+            &payload.source,
+            payload.registry.as_deref(),
+            payload.version.as_deref(),
+        )
+        .await
+        {
+            Ok(item) => (StatusCode::CREATED, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn upgrade_extension(Json(payload): Json<ExtensionInstallRequest>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match extensions::upgrade_extension_api(
+            &config,
+            payload.kind.as_deref(),
+            &payload.source,
+            payload.registry.as_deref(),
+            payload.version.as_deref(),
+        )
+        .await
+        {
+            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn list_brains() -> impl IntoResponse {
     match dispatch_family::status_view() {
         Ok(dispatch) => (
@@ -470,6 +556,7 @@ fn daemon_config_view() -> anyhow::Result<DaemonConfigView> {
         config_written_by: config.config_written_by.clone(),
         node_name,
         profile: config.daemon.profile.as_str().to_string(),
+        developer_mode: config.daemon.developer_mode,
         privacy_mode: config.webui.privacy_mode.clone(),
         idle_timeout_secs: config.webui.idle_timeout_secs,
         absolute_timeout_secs: config.webui.absolute_timeout_secs,
@@ -500,6 +587,9 @@ fn apply_config_update(payload: UpdateDaemonConfigRequest) -> anyhow::Result<Dae
     if let Some(profile) = payload.profile {
         config.daemon.profile = parse_profile(&profile)?;
         config.apply_profile_preset();
+    }
+    if let Some(developer_mode) = payload.developer_mode {
+        config.daemon.developer_mode = developer_mode;
     }
     if let Some(privacy_mode) = payload.privacy_mode {
         config.webui.privacy_mode = privacy_mode;

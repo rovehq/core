@@ -352,6 +352,7 @@ impl Config {
             },
             daemon: DaemonConfigSnapshot {
                 profile: self.daemon.profile.as_str().to_string(),
+                developer_mode: self.daemon.developer_mode,
             },
             core: CoreConfigSnapshot {
                 workspace: self.core.workspace.display().to_string(),

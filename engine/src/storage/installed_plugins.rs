@@ -18,6 +18,9 @@ pub struct InstalledPlugin {
     pub installed_at: i64,
     pub last_used: Option<i64>,
     pub config: Option<String>,
+    pub provenance_source: Option<String>,
+    pub provenance_registry: Option<String>,
+    pub catalog_trust_badge: Option<String>,
 }
 
 pub struct InstalledPluginRepository {
@@ -32,8 +35,8 @@ impl InstalledPluginRepository {
     pub async fn upsert_plugin(&self, plugin: &InstalledPlugin) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO installed_plugins
-               (id, name, version, plugin_type, trust_tier, manifest, binary_path, binary_hash, signature, enabled, installed_at, last_used, config)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               (id, name, version, plugin_type, trust_tier, manifest, binary_path, binary_hash, signature, enabled, installed_at, last_used, config, provenance_source, provenance_registry, catalog_trust_badge)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  name = excluded.name,
                  version = excluded.version,
@@ -46,7 +49,10 @@ impl InstalledPluginRepository {
                  enabled = excluded.enabled,
                  installed_at = excluded.installed_at,
                  last_used = excluded.last_used,
-                 config = excluded.config"#,
+                 config = excluded.config,
+                 provenance_source = excluded.provenance_source,
+                 provenance_registry = excluded.provenance_registry,
+                 catalog_trust_badge = excluded.catalog_trust_badge"#,
         )
         .bind(&plugin.id)
         .bind(&plugin.name)
@@ -61,6 +67,9 @@ impl InstalledPluginRepository {
         .bind(plugin.installed_at)
         .bind(plugin.last_used)
         .bind(&plugin.config)
+        .bind(&plugin.provenance_source)
+        .bind(&plugin.provenance_registry)
+        .bind(&plugin.catalog_trust_badge)
         .execute(&self.pool)
         .await
         .context("Failed to upsert installed plugin")?;
@@ -71,7 +80,8 @@ impl InstalledPluginRepository {
     pub async fn get_plugin(&self, id: &str) -> Result<Option<InstalledPlugin>> {
         let row = sqlx::query(
             r#"SELECT id, name, version, plugin_type, trust_tier, manifest, binary_path, binary_hash,
-                      signature, enabled, installed_at, last_used, config
+                      signature, enabled, installed_at, last_used, config,
+                      provenance_source, provenance_registry, catalog_trust_badge
                FROM installed_plugins
                WHERE id = ?"#,
         )
@@ -86,7 +96,8 @@ impl InstalledPluginRepository {
     pub async fn get_plugin_by_name(&self, name: &str) -> Result<Option<InstalledPlugin>> {
         let row = sqlx::query(
             r#"SELECT id, name, version, plugin_type, trust_tier, manifest, binary_path, binary_hash,
-                      signature, enabled, installed_at, last_used, config
+                      signature, enabled, installed_at, last_used, config,
+                      provenance_source, provenance_registry, catalog_trust_badge
                FROM installed_plugins
                WHERE name = ?"#,
         )
@@ -101,7 +112,8 @@ impl InstalledPluginRepository {
     pub async fn list_plugins(&self) -> Result<Vec<InstalledPlugin>> {
         let rows = sqlx::query(
             r#"SELECT id, name, version, plugin_type, trust_tier, manifest, binary_path, binary_hash,
-                      signature, enabled, installed_at, last_used, config
+                      signature, enabled, installed_at, last_used, config,
+                      provenance_source, provenance_registry, catalog_trust_badge
                FROM installed_plugins
                ORDER BY name ASC"#,
         )
@@ -115,7 +127,8 @@ impl InstalledPluginRepository {
     pub async fn get_enabled_plugins(&self) -> Result<Vec<InstalledPlugin>> {
         let rows = sqlx::query(
             r#"SELECT id, name, version, plugin_type, trust_tier, manifest, binary_path, binary_hash,
-                      signature, enabled, installed_at, last_used, config
+                      signature, enabled, installed_at, last_used, config,
+                      provenance_source, provenance_registry, catalog_trust_badge
                FROM installed_plugins
                WHERE enabled = 1
                ORDER BY name ASC"#,
@@ -180,6 +193,9 @@ fn map_installed_plugin(row: SqliteRow) -> InstalledPlugin {
         installed_at: row.get("installed_at"),
         last_used: row.get("last_used"),
         config: row.get("config"),
+        provenance_source: row.get("provenance_source"),
+        provenance_registry: row.get("provenance_registry"),
+        catalog_trust_badge: row.get("catalog_trust_badge"),
     }
 }
 
@@ -206,6 +222,9 @@ mod tests {
             installed_at: 1_710_000_000,
             last_used: None,
             config: Some(r#"{"entry":"default"}"#.to_string()),
+            provenance_source: Some("public_catalog".to_string()),
+            provenance_registry: Some("https://registry.roveai.co/extensions".to_string()),
+            catalog_trust_badge: Some("verified".to_string()),
         }
     }
 

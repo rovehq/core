@@ -91,6 +91,9 @@ pub fn perform_install(
             installed_at: unix_now()?,
             last_used: None,
             config: config_string,
+            provenance_source: None,
+            provenance_registry: None,
+            catalog_trust_badge: None,
         },
         verify_path,
     })

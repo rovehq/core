@@ -66,7 +66,7 @@ pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> 
     Ok(())
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct PermissionReview {
     pub summary_lines: Vec<String>,
     pub warnings: Vec<String>,

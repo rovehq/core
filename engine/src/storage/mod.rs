@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod extension_catalog;
 pub mod installed_plugins;
 pub mod memory;
 pub mod pending;
@@ -9,6 +10,7 @@ pub mod schedule;
 pub mod tasks;
 
 pub use auth::{AuthEvent, AuthReauth, AuthRepository, AuthSession};
+pub use extension_catalog::{ExtensionCatalogEntry, ExtensionCatalogRepository};
 pub use installed_plugins::{InstalledPlugin, InstalledPluginRepository};
 pub use memory::{EpisodicMemory, MemoryEntry};
 pub use pending as pending_tasks;

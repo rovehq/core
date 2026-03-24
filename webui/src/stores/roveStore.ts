@@ -7,6 +7,7 @@ import {
   ApprovalRequest,
   AuthState,
   AuthStatus,
+  CatalogExtensionRecord,
   DaemonConfig,
   DaemonError,
   DEFAULT_DAEMON_PORT,
@@ -14,6 +15,7 @@ import {
   DaemonEvent,
   DispatchBrainView,
   ExtensionRecord,
+  ExtensionUpdateRecord,
   PolicyExplainReport,
   readStoredDaemonPort,
   RemoteDiscoveryCandidate,
@@ -66,6 +68,8 @@ interface RoveStore {
   tasks: TaskRecord[];
   services: ServiceStatus[];
   extensions: ExtensionRecord[];
+  extensionCatalog: CatalogExtensionRecord[];
+  extensionUpdates: ExtensionUpdateRecord[];
   brains: { dispatch: DispatchBrainView } | null;
   policies: PolicySummary[];
   policyExplain: PolicyExplainReport | null;
@@ -90,6 +94,20 @@ interface RoveStore {
   refreshTasks: () => Promise<void>;
   refreshServices: () => Promise<void>;
   refreshExtensions: () => Promise<void>;
+  refreshExtensionCatalog: (force?: boolean) => Promise<void>;
+  refreshExtensionUpdates: () => Promise<void>;
+  installExtension: (input: {
+    kind?: string;
+    source: string;
+    registry?: string;
+    version?: string;
+  }) => Promise<boolean>;
+  upgradeExtension: (input: {
+    kind?: string;
+    source: string;
+    registry?: string;
+    version?: string;
+  }) => Promise<boolean>;
   refreshConfig: () => Promise<void>;
   refreshBrains: () => Promise<void>;
   refreshPolicies: () => Promise<void>;
@@ -350,6 +368,8 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
   tasks: [],
   services: [],
   extensions: [],
+  extensionCatalog: [],
+  extensionUpdates: [],
   brains: null,
   policies: [],
   policyExplain: null,
@@ -384,9 +404,11 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
 
       if (storedToken && (nextState === 'unlocked' || nextState === 'reauth_required')) {
         const authStatus = await daemon.authStatus();
-        const [services, extensions, config, brains, policies, remoteStatus, remoteNodes, remoteCandidates, approvals, approvalRules, serviceInstall, zeroTier] = await Promise.all([
+        const [services, extensions, extensionCatalog, extensionUpdates, config, brains, policies, remoteStatus, remoteNodes, remoteCandidates, approvals, approvalRules, serviceInstall, zeroTier] = await Promise.all([
           daemon.listServices(),
           daemon.listExtensions(),
+          daemon.listExtensionCatalog(),
+          daemon.listExtensionUpdates(),
           daemon.getConfig(),
           daemon.listBrains(),
           daemon.listPolicies(),
@@ -402,6 +424,8 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           authStatus,
           services,
           extensions,
+          extensionCatalog,
+          extensionUpdates,
           config,
           brains,
           policies,
@@ -426,6 +450,8 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           config: null,
           services: [],
           extensions: [],
+          extensionCatalog: [],
+          extensionUpdates: [],
           brains: null,
           policies: [],
           policyExplain: null,
@@ -452,6 +478,8 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         config: null,
         services: [],
         extensions: [],
+        extensionCatalog: [],
+        extensionUpdates: [],
         brains: null,
         policies: [],
         policyExplain: null,
@@ -547,6 +575,8 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         config: null,
         services: [],
         extensions: [],
+        extensionCatalog: [],
+        extensionUpdates: [],
         brains: null,
         policies: [],
         policyExplain: null,
@@ -620,6 +650,58 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
       set({ extensions, error: null });
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Unable to load extensions' });
+    }
+  },
+
+  refreshExtensionCatalog: async (force = false) => {
+    try {
+      const extensionCatalog = force
+        ? await daemon.refreshExtensionCatalog()
+        : await daemon.listExtensionCatalog();
+      set({ extensionCatalog, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load extension catalog' });
+    }
+  },
+
+  refreshExtensionUpdates: async () => {
+    try {
+      const extensionUpdates = await daemon.listExtensionUpdates();
+      set({ extensionUpdates, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to load extension updates' });
+    }
+  },
+
+  installExtension: async (input) => {
+    try {
+      await daemon.installExtension(input);
+      const [extensions, extensionCatalog, extensionUpdates] = await Promise.all([
+        daemon.listExtensions(),
+        daemon.listExtensionCatalog(),
+        daemon.listExtensionUpdates(),
+      ]);
+      set({ extensions, extensionCatalog, extensionUpdates, error: null });
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to install extension' });
+      return false;
+    }
+  },
+
+  upgradeExtension: async (input) => {
+    try {
+      await daemon.upgradeExtension(input);
+      const [extensions, extensionCatalog, extensionUpdates] = await Promise.all([
+        daemon.listExtensions(),
+        daemon.listExtensionCatalog(),
+        daemon.listExtensionUpdates(),
+      ]);
+      set({ extensions, extensionCatalog, extensionUpdates, error: null });
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Unable to upgrade extension' });
+      return false;
     }
   },
 
@@ -912,13 +994,13 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
 
   setExtensionEnabled: async (kind, name, enabled) => {
     try {
-      const updated = await daemon.setExtensionEnabled(kind, name, enabled);
-      set((state) => ({
-        extensions: state.extensions.map((extension) =>
-          extension.id === updated.id ? updated : extension,
-        ),
-        error: null,
-      }));
+      await daemon.setExtensionEnabled(kind, name, enabled);
+      const [extensions, extensionCatalog, extensionUpdates] = await Promise.all([
+        daemon.listExtensions(),
+        daemon.listExtensionCatalog(),
+        daemon.listExtensionUpdates(),
+      ]);
+      set({ extensions, extensionCatalog, extensionUpdates, error: null });
       return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Unable to update extension' });
@@ -929,13 +1011,12 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
   removeExtension: async (kind, name) => {
     try {
       await daemon.removeExtension(kind, name);
-      set((state) => ({
-        extensions: state.extensions.filter(
-          (extension) => !(extension.kind === kind && (extension.id === name || extension.name === name)),
-        ),
-        error: null,
-      }));
-      await get().refreshExtensions();
+      const [extensions, extensionCatalog, extensionUpdates] = await Promise.all([
+        daemon.listExtensions(),
+        daemon.listExtensionCatalog(),
+        daemon.listExtensionUpdates(),
+      ]);
+      set({ extensions, extensionCatalog, extensionUpdates, error: null });
       return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Unable to remove extension' });

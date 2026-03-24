@@ -7,8 +7,8 @@ use std::str::FromStr;
 use tracing::{debug, info};
 
 use super::{
-    AuthRepository, InstalledPluginRepository, PendingTaskRepository, PluginRepository,
-    RemoteDiscoveryRepository, ScheduleRepository, TaskRepository,
+    AuthRepository, ExtensionCatalogRepository, InstalledPluginRepository, PendingTaskRepository,
+    PluginRepository, RemoteDiscoveryRepository, ScheduleRepository, TaskRepository,
 };
 
 /// Database connection pool.
@@ -63,6 +63,9 @@ impl Database {
         self.ensure_agent_events_parent_task_id()
             .await
             .context("Failed to apply agent_events parent_task_id schema patch")?;
+        self.ensure_installed_plugin_provenance_columns()
+            .await
+            .context("Failed to apply installed plugin provenance schema patch")?;
 
         info!("Database schema loaded successfully");
         Ok(())
@@ -102,6 +105,32 @@ impl Database {
         .execute(&self.pool)
         .await
         .context("Failed to create agent_events parent index")?;
+
+        Ok(())
+    }
+
+    async fn ensure_installed_plugin_provenance_columns(&self) -> Result<()> {
+        if !self.table_exists("installed_plugins").await? {
+            return Ok(());
+        }
+
+        let columns = self.table_columns("installed_plugins").await?;
+        for (column, sql_type) in [
+            ("provenance_source", "TEXT"),
+            ("provenance_registry", "TEXT"),
+            ("catalog_trust_badge", "TEXT"),
+        ] {
+            if !columns.iter().any(|existing| existing == column) {
+                sqlx::query(&format!(
+                    "ALTER TABLE installed_plugins ADD COLUMN {column} {sql_type}"
+                ))
+                .execute(&self.pool)
+                .await
+                .with_context(|| {
+                    format!("Failed to add installed_plugins.{column} compatibility column")
+                })?;
+            }
+        }
 
         Ok(())
     }
@@ -163,6 +192,10 @@ impl Database {
 
     pub fn installed_plugins(&self) -> InstalledPluginRepository {
         InstalledPluginRepository::new(self.pool.clone())
+    }
+
+    pub fn extension_catalog(&self) -> ExtensionCatalogRepository {
+        ExtensionCatalogRepository::new(self.pool.clone())
     }
 
     pub fn pending_tasks(&self) -> PendingTaskRepository {

@@ -963,9 +963,10 @@ mod tests {
         let records = manager
             .transport_records_from_addresses("8056c2e21c000001", &["10.10.10.8/24".to_string()]);
         assert_eq!(records.len(), 1);
+        let expected = format!("http://10.10.10.8:{}", DEFAULT_PORT);
         assert_eq!(
             records[0].base_url.as_deref(),
-            Some(&format!("http://10.10.10.8:{}", DEFAULT_PORT))
+            Some(expected.as_str())
         );
         assert!(records[0].reachable);
     }
@@ -995,9 +996,10 @@ mod tests {
             },
         ]);
 
+        let expected = format!("http://10.10.10.8:{}", DEFAULT_PORT);
         assert_eq!(
             url.as_deref(),
-            Some(&format!("http://10.10.10.8:{}", DEFAULT_PORT))
+            Some(expected.as_str())
         );
     }
 }

@@ -10,9 +10,12 @@ use crate::cli::commands::{ExtensionAction, PluginScaffoldType};
 use crate::cli::database_path::database_path;
 use crate::cli::output::OutputFormat;
 use crate::config::Config;
-use crate::runtime::PluginType;
+use crate::runtime::{Manifest, PluginType};
 use crate::security::crypto::CryptoModule;
 use crate::storage::{Database, InstalledPlugin};
+use sdk::{
+    CatalogExtensionRecord, ExtensionProvenance, ExtensionTrustBadge, ExtensionUpdateRecord,
+};
 
 pub enum ExtensionSurface {
     Skill,
@@ -30,6 +33,15 @@ pub struct ExtensionInventoryItem {
     pub description: String,
     pub version: Option<String>,
     pub official: bool,
+    pub trust_badge: String,
+    pub provenance: ExtensionProvenance,
+    pub latest_version: Option<String>,
+    pub update_available: bool,
+    #[serde(default)]
+    pub permission_summary: Vec<String>,
+    #[serde(default)]
+    pub permission_warnings: Vec<String>,
+    pub release_summary: Option<String>,
 }
 
 impl ExtensionSurface {
@@ -107,7 +119,7 @@ pub async fn handle(
             version,
         } => {
             let expected_type = surface.expected_type();
-            let installed = crate::cli::plugins::install_checked(
+            let installed = crate::cli::plugins::install_with_catalog_defaults(
                 config,
                 &source,
                 registry.as_deref(),
@@ -130,7 +142,7 @@ pub async fn handle(
             version,
         } => {
             let expected_type = surface.expected_type();
-            let installed = crate::cli::plugins::upgrade_checked(
+            let installed = crate::cli::plugins::upgrade_with_catalog_defaults(
                 config,
                 &source,
                 registry.as_deref(),
@@ -400,44 +412,38 @@ pub(crate) async fn inventory(config: &Config) -> Result<Vec<ExtensionInventoryI
         .list_plugins()
         .await
         .context("Failed to list installed plugins")?;
+    let catalog = crate::cli::plugins::list_catalog(config, false)
+        .await
+        .unwrap_or_default();
 
-    let mut items = Vec::new();
-    for system in OFFICIAL_SYSTEMS {
-        let installed_plugin = installed.iter().find(|plugin| plugin.id == system.id);
-        items.push(ExtensionInventoryItem {
-            id: system.id.to_string(),
-            name: system.id.to_string(),
-            kind: "system".to_string(),
-            state: system_state(&installed, system.id).to_string(),
-            source: "official".to_string(),
-            description: system.description.to_string(),
-            version: installed_plugin.map(|plugin| plugin.version.clone()),
-            official: true,
-        });
-    }
-
-    for plugin in installed {
-        if is_official_system_id(&plugin.id) {
-            continue;
-        }
-
-        items.push(ExtensionInventoryItem {
-            id: plugin.id.clone(),
-            name: plugin.name.clone(),
-            kind: plugin_public_kind(&plugin).to_string(),
-            state: if plugin.enabled {
-                "installed".to_string()
-            } else {
-                "installed-disabled".to_string()
-            },
-            source: "installed".to_string(),
-            description: format!("Installed {} extension", plugin_public_kind(&plugin)),
-            version: Some(plugin.version.clone()),
-            official: false,
-        });
-    }
-
+    let mut items = installed
+        .iter()
+        .map(|plugin| inventory_item_from_plugin(plugin, &catalog))
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(items)
+}
+
+pub async fn catalog(
+    config: &Config,
+    force_refresh: bool,
+) -> Result<Vec<CatalogExtensionRecord>> {
+    crate::cli::plugins::list_catalog(config, force_refresh).await
+}
+
+pub async fn catalog_entry(
+    config: &Config,
+    id: &str,
+    force_refresh: bool,
+) -> Result<CatalogExtensionRecord> {
+    crate::cli::plugins::get_catalog_entry(config, id, force_refresh).await
+}
+
+pub async fn updates(
+    config: &Config,
+    force_refresh: bool,
+) -> Result<Vec<ExtensionUpdateRecord>> {
+    crate::cli::plugins::list_updates(config, force_refresh).await
 }
 
 pub(crate) async fn set_extension_enabled_api(
@@ -481,6 +487,54 @@ pub(crate) async fn set_extension_enabled_api(
         .into_iter()
         .find(|item| item.id == plugin.id)
         .context("Updated extension did not appear in inventory")
+}
+
+pub async fn install_extension_api(
+    config: &Config,
+    kind: Option<&str>,
+    source: &str,
+    registry: Option<&str>,
+    version: Option<&str>,
+) -> Result<ExtensionInventoryItem> {
+    let expected_type = kind.and_then(parse_public_kind);
+    let installed = crate::cli::plugins::install_with_catalog_defaults(
+        config,
+        source,
+        registry,
+        version,
+        expected_type,
+    )
+    .await?;
+
+    inventory(config)
+        .await?
+        .into_iter()
+        .find(|item| item.id == installed.id)
+        .context("Installed extension did not appear in inventory")
+}
+
+pub async fn upgrade_extension_api(
+    config: &Config,
+    kind: Option<&str>,
+    source: &str,
+    registry: Option<&str>,
+    version: Option<&str>,
+) -> Result<ExtensionInventoryItem> {
+    let expected_type = kind.and_then(parse_public_kind);
+    let installed = crate::cli::plugins::upgrade_with_catalog_defaults(
+        config,
+        source,
+        registry,
+        version,
+        expected_type,
+    )
+    .await?;
+
+    inventory(config)
+        .await?
+        .into_iter()
+        .find(|item| item.id == installed.id)
+        .context("Upgraded extension did not appear in inventory")
 }
 
 pub(crate) async fn remove_extension_api(
@@ -685,12 +739,84 @@ fn official_registry_dir(config: &Config) -> PathBuf {
 }
 
 fn plugin_public_kind(plugin: &InstalledPlugin) -> &'static str {
-    match plugin.plugin_type.as_str() {
-        "Skill" => "skill",
-        "Workspace" => "system",
-        "Channel" => "channel",
-        "Mcp" => "connector",
-        _ => "plugin",
+    crate::cli::plugins::public_kind_from_plugin_type(&plugin.plugin_type)
+}
+
+fn parse_public_kind(kind: &str) -> Option<PluginType> {
+    match kind {
+        "skill" => Some(PluginType::Skill),
+        "system" => Some(PluginType::Workspace),
+        "channel" => Some(PluginType::Channel),
+        _ => None,
+    }
+}
+
+fn inventory_item_from_plugin(
+    plugin: &InstalledPlugin,
+    catalog: &[CatalogExtensionRecord],
+) -> ExtensionInventoryItem {
+    let catalog_entry = catalog.iter().find(|entry| entry.id == plugin.id);
+    let manifest = Manifest::from_json(&plugin.manifest).ok();
+    let description = catalog_entry
+        .map(|entry| entry.description.clone())
+        .or_else(|| manifest.as_ref().map(|manifest| manifest.description.clone()))
+        .unwrap_or_else(|| format!("Installed {} extension", plugin_public_kind(plugin)));
+    let trust_badge = catalog_entry
+        .map(|entry| entry.trust_badge.as_str().to_string())
+        .or_else(|| plugin.catalog_trust_badge.clone())
+        .or_else(|| {
+            manifest
+                .as_ref()
+                .map(|manifest| crate::cli::plugins::trust_badge_from_manifest_tier(manifest.trust_tier))
+                .map(|badge| badge.as_str().to_string())
+        })
+        .unwrap_or_else(|| ExtensionTrustBadge::Unverified.as_str().to_string());
+    let provenance = match catalog_entry {
+        Some(entry) => entry.provenance.clone(),
+        None => ExtensionProvenance {
+            source: plugin
+                .provenance_source
+                .clone()
+                .unwrap_or_else(|| "installed".to_string()),
+            registry: plugin.provenance_registry.clone(),
+            catalog_managed: matches!(
+                plugin.catalog_trust_badge.as_deref(),
+                Some("official") | Some("verified")
+            ),
+            advanced_source: plugin
+                .provenance_source
+                .as_deref()
+                .map(|source| source != "public_catalog" && source != "public_catalog_upgrade")
+                .unwrap_or(false),
+        },
+    };
+
+    ExtensionInventoryItem {
+        id: plugin.id.clone(),
+        name: plugin.name.clone(),
+        kind: plugin_public_kind(plugin).to_string(),
+        state: if plugin.enabled {
+            "installed".to_string()
+        } else {
+            "installed-disabled".to_string()
+        },
+        source: provenance.source.clone(),
+        description,
+        version: Some(plugin.version.clone()),
+        official: trust_badge == "official",
+        trust_badge,
+        provenance,
+        latest_version: catalog_entry.map(|entry| entry.latest.version.clone()),
+        update_available: catalog_entry
+            .map(|entry| entry.update_available)
+            .unwrap_or(false),
+        permission_summary: catalog_entry
+            .map(|entry| entry.latest.permission_summary.clone())
+            .unwrap_or_default(),
+        permission_warnings: catalog_entry
+            .map(|entry| entry.latest.permission_warnings.clone())
+            .unwrap_or_default(),
+        release_summary: catalog_entry.and_then(|entry| entry.latest.release_summary.clone()),
     }
 }
 
@@ -787,6 +913,9 @@ mod tests {
             installed_at: 1,
             last_used: None,
             config: Some(r#"{"tools":[]}"#.to_string()),
+            provenance_source: None,
+            provenance_registry: None,
+            catalog_trust_badge: None,
         }
     }
 

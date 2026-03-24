@@ -13,6 +13,7 @@ pub struct ConfigMetadataSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonConfigSnapshot {
     pub profile: String,
+    pub developer_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +145,10 @@ impl StaticConfigHandle {
         );
         self.values
             .insert("daemon.profile".to_string(), json!(snapshot.daemon.profile));
+        self.values.insert(
+            "daemon.developer_mode".to_string(),
+            json!(snapshot.daemon.developer_mode),
+        );
         self.values
             .insert("core.workspace".to_string(), json!(snapshot.core.workspace));
         self.values

@@ -261,6 +261,82 @@ pub struct ZeroTierStatus {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionTrustBadge {
+    Official,
+    Verified,
+    #[default]
+    Unverified,
+}
+
+impl ExtensionTrustBadge {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Official => "official",
+            Self::Verified => "verified",
+            Self::Unverified => "unverified",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ExtensionProvenance {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+    #[serde(default)]
+    pub catalog_managed: bool,
+    #[serde(default)]
+    pub advanced_source: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CatalogVersionRecord {
+    pub version: String,
+    pub published_at: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_summary: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CatalogExtensionRecord {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub description: String,
+    pub trust_badge: ExtensionTrustBadge,
+    pub provenance: ExtensionProvenance,
+    pub latest: CatalogVersionRecord,
+    #[serde(default)]
+    pub installed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<String>,
+    #[serde(default)]
+    pub update_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ExtensionUpdateRecord {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub installed_version: String,
+    pub latest_version: String,
+    pub trust_badge: ExtensionTrustBadge,
+    pub provenance: ExtensionProvenance,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_summary: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_summary: Option<String>,
+}
+
 /// Envelope sent between remote daemons for coordinated execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteEnvelope {

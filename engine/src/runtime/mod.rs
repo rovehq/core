@@ -416,6 +416,9 @@ mod tests {
                 }"#
                 .to_string(),
             ),
+            provenance_source: None,
+            provenance_registry: None,
+            catalog_trust_badge: None,
         };
 
         database
@@ -492,6 +495,9 @@ mod tests {
                 }"#
                 .to_string(),
             ),
+            provenance_source: None,
+            provenance_registry: None,
+            catalog_trust_badge: None,
         };
 
         database

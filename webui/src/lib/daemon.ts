@@ -151,11 +151,60 @@ export interface ExtensionRecord {
   description: string;
   version?: string | null;
   official: boolean;
+  trust_badge: 'official' | 'verified' | 'unverified';
+  provenance: ExtensionProvenance;
+  latest_version?: string | null;
+  update_available: boolean;
+  permission_summary: string[];
+  permission_warnings: string[];
+  release_summary?: string | null;
+}
+
+export interface ExtensionProvenance {
+  source: string;
+  registry?: string | null;
+  catalog_managed: boolean;
+  advanced_source: boolean;
+}
+
+export interface CatalogVersionRecord {
+  version: string;
+  published_at: number;
+  permission_summary: string[];
+  permission_warnings: string[];
+  release_summary?: string | null;
+}
+
+export interface CatalogExtensionRecord {
+  id: string;
+  name: string;
+  kind: string;
+  description: string;
+  trust_badge: 'official' | 'verified' | 'unverified';
+  provenance: ExtensionProvenance;
+  latest: CatalogVersionRecord;
+  installed: boolean;
+  installed_version?: string | null;
+  update_available: boolean;
+}
+
+export interface ExtensionUpdateRecord {
+  id: string;
+  name: string;
+  kind: string;
+  installed_version: string;
+  latest_version: string;
+  trust_badge: 'official' | 'verified' | 'unverified';
+  provenance: ExtensionProvenance;
+  permission_summary: string[];
+  permission_warnings: string[];
+  release_summary?: string | null;
 }
 
 export interface DaemonConfig {
   node_name: string;
   profile: 'desktop' | 'headless';
+  developer_mode: boolean;
   privacy_mode: string;
   idle_timeout_secs: number;
   absolute_timeout_secs: number;
@@ -490,6 +539,48 @@ export class RoveDaemonClient {
 
   async listExtensions(): Promise<ExtensionRecord[]> {
     return this.request<ExtensionRecord[]>('/v1/extensions');
+  }
+
+  async listExtensionCatalog(): Promise<CatalogExtensionRecord[]> {
+    return this.request<CatalogExtensionRecord[]>('/v1/extensions/catalog');
+  }
+
+  async getExtensionCatalog(id: string): Promise<CatalogExtensionRecord> {
+    return this.request<CatalogExtensionRecord>(`/v1/extensions/catalog/${encodeURIComponent(id)}`);
+  }
+
+  async refreshExtensionCatalog(): Promise<CatalogExtensionRecord[]> {
+    return this.request<CatalogExtensionRecord[]>('/v1/extensions/catalog/refresh', {
+      method: 'POST',
+    });
+  }
+
+  async listExtensionUpdates(): Promise<ExtensionUpdateRecord[]> {
+    return this.request<ExtensionUpdateRecord[]>('/v1/extensions/updates');
+  }
+
+  async installExtension(input: {
+    kind?: string;
+    source: string;
+    registry?: string;
+    version?: string;
+  }): Promise<ExtensionRecord> {
+    return this.request<ExtensionRecord>('/v1/extensions/install', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async upgradeExtension(input: {
+    kind?: string;
+    source: string;
+    registry?: string;
+    version?: string;
+  }): Promise<ExtensionRecord> {
+    return this.request<ExtensionRecord>('/v1/extensions/upgrade', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 
   async setExtensionEnabled(kind: string, name: string, enabled: boolean): Promise<ExtensionRecord> {

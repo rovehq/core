@@ -43,10 +43,12 @@ pub use config_handle::{
     SecretConfigSnapshot, ServicesConfigSnapshot, StaticConfigHandle, VersionedConfigSnapshot,
 };
 pub use control::{
-    AuthState, AuthStatus, BrainFamily, DaemonCapabilities, DaemonHello, ExtensionKind,
-    NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, NodeSummary, PolicyScope,
-    RemoteDiscoveryCandidate, RemoteEnvelope, RemoteExecutionPlan, RemoteTransportRecord,
-    RunContextId, RunIsolation, RunMode, ServiceKind, SessionInfo, ZeroTierStatus,
+    AuthState, AuthStatus, BrainFamily, CatalogExtensionRecord, CatalogVersionRecord,
+    DaemonCapabilities, DaemonHello, ExtensionKind, ExtensionProvenance, ExtensionTrustBadge,
+    ExtensionUpdateRecord, NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile,
+    NodeSummary, PolicyScope, RemoteDiscoveryCandidate, RemoteEnvelope, RemoteExecutionPlan,
+    RemoteTransportRecord, RunContextId, RunIsolation, RunMode, ServiceKind, SessionInfo,
+    ZeroTierStatus,
 };
 pub use core_tool::{CoreContext, CoreTool};
 pub use crypto_handle::{CryptoHandle, CryptoHandleImpl};

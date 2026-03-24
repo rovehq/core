@@ -19,7 +19,7 @@ pub(super) const PLUGIN_INDEX_FILE: &str = "index.json";
 const LOCAL_DEV_REGISTRY_SIGNATURE: &str = "LOCAL_DEV_REGISTRY_SIGNATURE";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct RegistryCatalog {
+pub(crate) struct RegistryCatalog {
     pub schema_version: String,
     pub generated_at: i64,
     #[serde(default)]
@@ -30,7 +30,7 @@ pub(super) struct RegistryCatalog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct RegistryCatalogEntry {
+pub(crate) struct RegistryCatalogEntry {
     pub id: String,
     pub name: String,
     pub plugin_type: String,
@@ -40,7 +40,7 @@ pub(super) struct RegistryCatalogEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct RegistryPluginIndex {
+pub(crate) struct RegistryPluginIndex {
     pub schema_version: String,
     pub generated_at: i64,
     #[serde(default)]
@@ -52,7 +52,7 @@ pub(super) struct RegistryPluginIndex {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct RegistryVersionEntry {
+pub(crate) struct RegistryVersionEntry {
     pub version: String,
     pub published_at: i64,
     pub bundle_path: String,
@@ -80,6 +80,52 @@ pub(super) struct PublishedBundle {
 enum RegistryLocation {
     Local(PathBuf),
     Remote(String),
+}
+
+pub(crate) async fn load_registry_catalog(registry: &str) -> Result<RegistryCatalog> {
+    let location = parse_registry_location(registry);
+    enforce_remote_registry_policy(&location)?;
+    let raw = match &location {
+        RegistryLocation::Local(root) => fs::read_to_string(root.join(REGISTRY_FILE))
+            .with_context(|| format!("Failed to read '{}'", root.join(REGISTRY_FILE).display()))?,
+        RegistryLocation::Remote(base) => fetch_remote_text(&join_remote(base, REGISTRY_FILE)).await?,
+    };
+
+    if matches!(location, RegistryLocation::Remote(_)) {
+        verify_signed_registry_json(&raw, "registry catalog")?;
+    }
+
+    serde_json::from_str(&raw).context("Invalid plugin registry catalog")
+}
+
+pub(crate) async fn load_registry_plugin_index(
+    registry: &str,
+    plugin_id: &str,
+) -> Result<RegistryPluginIndex> {
+    let location = parse_registry_location(registry);
+    enforce_remote_registry_policy(&location)?;
+    load_plugin_index(&location, plugin_id).await
+}
+
+pub(crate) async fn read_registry_text(registry: &str, relative: &str) -> Result<String> {
+    let location = parse_registry_location(registry);
+    enforce_remote_registry_policy(&location)?;
+
+    match &location {
+        RegistryLocation::Local(root) => {
+            let source = root.join(relative);
+            fs::read_to_string(&source)
+                .with_context(|| format!("Failed to read '{}'", source.display()))
+        }
+        RegistryLocation::Remote(base) => fetch_remote_text(&join_remote(base, relative)).await,
+    }
+}
+
+pub(crate) fn select_registry_version<'a>(
+    index: &'a RegistryPluginIndex,
+    version: Option<&str>,
+) -> Result<&'a RegistryVersionEntry> {
+    select_version(index, version)
 }
 
 pub(super) fn update_registry_metadata(
@@ -459,7 +505,7 @@ fn load_registry_signing_key() -> Result<Option<SigningKey>> {
     Ok(Some(SigningKey::from_bytes(&bytes)))
 }
 
-fn verify_signed_registry_json(raw: &str, label: &str) -> Result<()> {
+pub(crate) fn verify_signed_registry_json(raw: &str, label: &str) -> Result<()> {
     let crypto = CryptoModule::new().context("Failed to initialize registry verifier")?;
     crypto
         .verify_manifest_file(raw.as_bytes())

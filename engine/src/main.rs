@@ -578,7 +578,9 @@ async fn handle_extension_facade(
             registry,
             version,
         } => match kind {
-            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+            Some(kind @ ExtensionKindArg::Skill)
+            | Some(kind @ ExtensionKindArg::System)
+            | Some(kind @ ExtensionKindArg::Channel) => {
                 handle_extension(
                     ExtensionAction::Install {
                         source,
@@ -590,7 +592,26 @@ async fn handle_extension_facade(
                 )
                 .await
             }
-            ExtensionKindArg::Connector => handle_mcp(McpAction::Install { source }, config).await,
+            Some(ExtensionKindArg::Connector) => handle_mcp(McpAction::Install { source }, config).await,
+            None => {
+                let item = rove_engine::cli::extensions::install_extension_api(
+                    config,
+                    None,
+                    &source,
+                    registry.as_deref(),
+                    version.as_deref(),
+                )
+                .await?;
+                println!(
+                    "Installed extension '{}' [{}] version={} trust={} source={}",
+                    item.name,
+                    item.kind,
+                    item.version.unwrap_or_else(|| "unknown".to_string()),
+                    item.trust_badge,
+                    item.provenance.source
+                );
+                Ok(())
+            }
         },
         ExtensionFacadeAction::Upgrade {
             kind,
@@ -598,7 +619,9 @@ async fn handle_extension_facade(
             registry,
             version,
         } => match kind {
-            ExtensionKindArg::Skill | ExtensionKindArg::System | ExtensionKindArg::Channel => {
+            Some(kind @ ExtensionKindArg::Skill)
+            | Some(kind @ ExtensionKindArg::System)
+            | Some(kind @ ExtensionKindArg::Channel) => {
                 handle_extension(
                     ExtensionAction::Upgrade {
                         source,
@@ -610,7 +633,7 @@ async fn handle_extension_facade(
                 )
                 .await
             }
-            ExtensionKindArg::Connector => {
+            Some(ExtensionKindArg::Connector) => {
                 if registry.is_some() || version.is_some() {
                     anyhow::bail!(
                         "Connector upgrades currently accept only a local package directory: `rove connector upgrade <source>`."
@@ -618,7 +641,98 @@ async fn handle_extension_facade(
                 }
                 handle_mcp(McpAction::Upgrade { source }, config).await
             }
+            None => {
+                let item = rove_engine::cli::extensions::upgrade_extension_api(
+                    config,
+                    None,
+                    &source,
+                    registry.as_deref(),
+                    version.as_deref(),
+                )
+                .await?;
+                println!(
+                    "Upgraded extension '{}' [{}] to version {}",
+                    item.name,
+                    item.kind,
+                    item.version.unwrap_or_else(|| "unknown".to_string())
+                );
+                Ok(())
+            }
         },
+        ExtensionFacadeAction::Search { query } => {
+            let items = rove_engine::cli::extensions::catalog(config, false).await?;
+            let query = query.map(|query| query.to_ascii_lowercase());
+            println!("Public catalog:");
+            for item in items.into_iter().filter(|item| {
+                query.as_ref().is_none_or(|query| {
+                    item.id.to_ascii_lowercase().contains(query)
+                        || item.name.to_ascii_lowercase().contains(query)
+                        || item.description.to_ascii_lowercase().contains(query)
+                })
+            }) {
+                println!(
+                    "- {} [{}] {} latest={}{}",
+                    item.name,
+                    item.kind,
+                    item.trust_badge.as_str(),
+                    item.latest.version,
+                    if item.update_available {
+                        " update-available"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            Ok(())
+        }
+        ExtensionFacadeAction::Show { id } => {
+            let item = rove_engine::cli::extensions::catalog_entry(config, &id, false).await?;
+            println!("id: {}", item.id);
+            println!("name: {}", item.name);
+            println!("kind: {}", item.kind);
+            println!("trust: {}", item.trust_badge.as_str());
+            println!("latest_version: {}", item.latest.version);
+            println!("catalog_source: {}", item.provenance.source);
+            if let Some(registry) = item.provenance.registry {
+                println!("registry: {}", registry);
+            }
+            println!("description: {}", item.description);
+            if !item.latest.permission_summary.is_empty() {
+                println!("permissions:");
+                for line in item.latest.permission_summary {
+                    println!("- {}", line);
+                }
+            }
+            if !item.latest.permission_warnings.is_empty() {
+                println!("warnings:");
+                for warning in item.latest.permission_warnings {
+                    println!("- {}", warning);
+                }
+            }
+            if let Some(summary) = item.latest.release_summary {
+                println!("release_summary: {}", summary);
+            }
+            Ok(())
+        }
+        ExtensionFacadeAction::Updates => {
+            let updates = rove_engine::cli::extensions::updates(config, false).await?;
+            if updates.is_empty() {
+                println!("No extension updates available.");
+            } else {
+                println!("Available extension updates:");
+                for update in updates {
+                    println!(
+                        "- {} [{}] {} -> {} ({})",
+                        update.name,
+                        update.kind,
+                        update.installed_version,
+                        update.latest_version,
+                        update.trust_badge.as_str()
+                    );
+                }
+            }
+            Ok(())
+        }
         ExtensionFacadeAction::List { kind } => match kind {
             Some(kind @ ExtensionKindArg::Skill)
             | Some(kind @ ExtensionKindArg::System)

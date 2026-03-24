@@ -82,11 +82,37 @@ CREATE TABLE IF NOT EXISTS installed_plugins (
     enabled      INTEGER NOT NULL DEFAULT 1,
     installed_at INTEGER NOT NULL,
     last_used    INTEGER,
-    config       TEXT
+    config       TEXT,
+    provenance_source TEXT,
+    provenance_registry TEXT,
+    catalog_trust_badge TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_installed_plugins_type
   ON installed_plugins(plugin_type, enabled);
+
+CREATE TABLE IF NOT EXISTS extension_catalog_entries (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    description TEXT NOT NULL,
+    trust_badge TEXT NOT NULL,
+    latest_version TEXT NOT NULL,
+    latest_published_at INTEGER NOT NULL,
+    registry_source TEXT NOT NULL,
+    index_path TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    permission_summary_json TEXT NOT NULL DEFAULT '[]',
+    permission_warnings_json TEXT NOT NULL DEFAULT '[]',
+    release_summary TEXT,
+    fetched_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_extension_catalog_kind
+  ON extension_catalog_entries(kind, trust_badge, name);
+
+CREATE INDEX IF NOT EXISTS idx_extension_catalog_fetched
+  ON extension_catalog_entries(fetched_at DESC);
 
 CREATE TABLE IF NOT EXISTS remote_discovery_candidates (
     candidate_id TEXT PRIMARY KEY,

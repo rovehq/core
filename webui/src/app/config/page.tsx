@@ -9,6 +9,7 @@ export default function ConfigPage() {
   const { appState, clearError, config, daemonUrl, error, hello, initialize, remoteStatus, updateConfig } = useRoveStore();
   const [nodeName, setNodeName] = useState('');
   const [profile, setProfile] = useState<'desktop' | 'headless'>('desktop');
+  const [developerMode, setDeveloperMode] = useState(false);
   const [privacyMode, setPrivacyMode] = useState('local_only');
   const [idleTimeout, setIdleTimeout] = useState('1200');
   const [absoluteTimeout, setAbsoluteTimeout] = useState('43200');
@@ -27,6 +28,7 @@ export default function ConfigPage() {
     }
     setNodeName(config.node_name);
     setProfile(config.profile);
+    setDeveloperMode(config.developer_mode);
     setPrivacyMode(config.privacy_mode);
     setIdleTimeout(String(config.idle_timeout_secs));
     setAbsoluteTimeout(String(config.absolute_timeout_secs));
@@ -94,6 +96,7 @@ export default function ConfigPage() {
                 await updateConfig({
                   node_name: nodeName,
                   profile,
+                  developer_mode: developerMode,
                   privacy_mode: privacyMode,
                   idle_timeout_secs: Number(idleTimeout),
                   absolute_timeout_secs: Number(absoluteTimeout),
@@ -122,6 +125,14 @@ export default function ConfigPage() {
                   className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
                 />
               </Field>
+              <label className="flex items-center gap-3 text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={developerMode}
+                  onChange={(event) => setDeveloperMode(event.target.checked)}
+                />
+                Enable developer mode for advanced local/registry extension installs
+              </label>
               <Field label="Privacy mode">
                 <select
                   value={privacyMode}

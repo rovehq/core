@@ -124,6 +124,18 @@ pub async fn start_daemon(
         .route("/v1/brains", get(api::list_brains))
         .route("/v1/brains/dispatch/use", post(api::use_dispatch_brain))
         .route("/v1/extensions", get(api::list_extensions))
+        .route("/v1/extensions/catalog", get(api::list_extension_catalog))
+        .route(
+            "/v1/extensions/catalog/refresh",
+            post(api::refresh_extension_catalog),
+        )
+        .route(
+            "/v1/extensions/catalog/:id",
+            get(api::get_extension_catalog_entry),
+        )
+        .route("/v1/extensions/updates", get(api::list_extension_updates))
+        .route("/v1/extensions/install", post(api::install_extension))
+        .route("/v1/extensions/upgrade", post(api::upgrade_extension))
         .route(
             "/v1/extensions/:kind/:name/enable",
             post(api::enable_extension),
@@ -208,6 +220,19 @@ pub async fn start_daemon(
         .route("/api/v1/services/:name", get(api::service_status))
         .route("/api/v1/services/:name/enable", post(api::enable_service))
         .route("/api/v1/services/:name/disable", post(api::disable_service))
+        .route("/api/v1/extensions", get(api::list_extensions))
+        .route("/api/v1/extensions/catalog", get(api::list_extension_catalog))
+        .route(
+            "/api/v1/extensions/catalog/refresh",
+            post(api::refresh_extension_catalog),
+        )
+        .route(
+            "/api/v1/extensions/catalog/:id",
+            get(api::get_extension_catalog_entry),
+        )
+        .route("/api/v1/extensions/updates", get(api::list_extension_updates))
+        .route("/api/v1/extensions/install", post(api::install_extension))
+        .route("/api/v1/extensions/upgrade", post(api::upgrade_extension))
         .route(
             "/api/v1/services/install/status",
             get(api::service_install_status),

@@ -11,6 +11,7 @@ export default function SettingsPage() {
     appState,
     authStatus,
     clearError,
+    config,
     daemonPort,
     daemonUrl,
     error,
@@ -20,6 +21,7 @@ export default function SettingsPage() {
     lock,
     refreshServiceInstall,
     setDaemonPort,
+    updateConfig,
     serviceInstall,
     services,
     setServiceEnabled,
@@ -116,6 +118,30 @@ export default function SettingsPage() {
                     The hosted UI probes the new default port first, then falls back to legacy ports such as 3727 if needed.
                   </p>
                 </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="font-medium mb-4">Developer Mode</h3>
+              <div className="flex items-center justify-between p-4 bg-surface2 rounded-lg">
+                <div>
+                  <p className="font-medium">Advanced extension installs</p>
+                  <p className="text-sm text-gray-500">
+                    {config?.developer_mode
+                      ? 'Enabled: local package and explicit registry installs are available.'
+                      : 'Disabled: only catalog-reviewed installs are exposed in the UI.'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => void updateConfig({ developer_mode: !config?.developer_mode })}
+                  className={`rounded-lg px-4 py-2 text-sm ${
+                    config?.developer_mode
+                      ? 'border border-surface hover:border-primary'
+                      : 'bg-primary hover:bg-primary/80'
+                  }`}
+                >
+                  {config?.developer_mode ? 'Disable' : 'Enable'}
+                </button>
               </div>
             </div>
 

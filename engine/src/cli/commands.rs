@@ -525,11 +525,11 @@ pub enum ExtensionFacadeAction {
     },
     /// Install an extension from a local package directory or a registry.
     Install {
-        /// Extension kind to install.
+        /// Extension kind to install. Omit to resolve from the public catalog.
         #[arg(value_enum)]
-        kind: ExtensionKindArg,
+        kind: Option<ExtensionKindArg>,
 
-        /// Package directory, or extension id when --registry is set.
+        /// Extension id from the public catalog, or a package directory / explicit source in developer mode.
         source: String,
 
         /// Static registry directory or base URL.
@@ -542,9 +542,9 @@ pub enum ExtensionFacadeAction {
     },
     /// Upgrade or replace an installed extension from a local package directory or a registry.
     Upgrade {
-        /// Extension kind to upgrade.
+        /// Extension kind to upgrade. Omit to resolve from the public catalog.
         #[arg(value_enum)]
-        kind: ExtensionKindArg,
+        kind: Option<ExtensionKindArg>,
 
         /// Package directory, or extension id when --registry is set.
         source: String,
@@ -557,6 +557,18 @@ pub enum ExtensionFacadeAction {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Search the public extension catalog.
+    Search {
+        /// Optional search term.
+        query: Option<String>,
+    },
+    /// Show a public catalog extension.
+    Show {
+        /// Extension id from the public catalog.
+        id: String,
+    },
+    /// Show installed extensions with newer catalog versions available.
+    Updates,
     /// List installed extensions, optionally filtered by kind.
     List {
         /// Limit the list to one extension kind.
