@@ -152,6 +152,132 @@ impl FilesystemTool {
         Ok(format!("Deleted {}", path.display()))
     }
 
+    fn read_file_sync(&self, path: &str) -> Result<String> {
+        let path = self.resolve_path(path)?;
+        info!("Reading file: {}", path.display());
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
+        debug!("Read {} bytes from {}", content.len(), path.display());
+        Ok(content)
+    }
+
+    fn write_file_sync(&self, path: &str, content: &str) -> Result<String> {
+        let validated = self.prepare_write_target(path, |parent| {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                anyhow::anyhow!("Failed to create directories {}: {}", parent.display(), e)
+            })
+        })?;
+
+        info!(
+            "Writing {} bytes to: {}",
+            content.len(),
+            validated.display()
+        );
+        std::fs::write(&validated, content)
+            .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", validated.display(), e))?;
+        Ok(format!(
+            "Wrote {} bytes to {}",
+            content.len(),
+            validated.display()
+        ))
+    }
+
+    fn list_dir_sync(&self, path: &str) -> Result<String> {
+        let path = self.resolve_path(path)?;
+        info!("Listing directory: {}", path.display());
+
+        let entries = std::fs::read_dir(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to read directory {}: {}", path.display(), e))?;
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        let mut links = Vec::new();
+
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                dirs.push(format!("d  {}/", name));
+            } else if ft.is_symlink() {
+                links.push(format!("l  {}", name));
+            } else {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                files.push(format!("f  {:>8}  {}", format_size(size), name));
+            }
+        }
+
+        dirs.sort();
+        files.sort();
+        links.sort();
+
+        let mut out = Vec::with_capacity(dirs.len() + files.len() + links.len() + 1);
+        out.push(format!(
+            "{}/  ({} entries)",
+            path.display(),
+            dirs.len() + files.len() + links.len()
+        ));
+        out.extend(dirs);
+        out.extend(files);
+        out.extend(links);
+        Ok(out.join("\n"))
+    }
+
+    fn file_exists_sync(&self, path: &str) -> Result<bool> {
+        match self.resolve_path(path) {
+            Ok(p) => Ok(p.exists()),
+            Err(_) => Ok(false),
+        }
+    }
+
+    fn delete_file_sync(&self, path: &str) -> Result<String> {
+        let path = self.resolve_path(path)?;
+        info!("Deleting file: {}", path.display());
+        let metadata = std::fs::metadata(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to inspect {}: {}", path.display(), e))?;
+        if metadata.is_dir() {
+            return Err(anyhow::anyhow!(
+                "Refusing to delete directory {}; delete_file only removes files",
+                path.display()
+            ));
+        }
+        std::fs::remove_file(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to delete {}: {}", path.display(), e))?;
+        Ok(format!("Deleted {}", path.display()))
+    }
+
+    fn prepare_write_target<CreateDir>(&self, path: &str, create_dir: CreateDir) -> Result<PathBuf>
+    where
+        CreateDir: FnOnce(&Path) -> Result<()>,
+    {
+        let target = PathBuf::from(path);
+        if target.exists() {
+            return self.resolve_path(path);
+        }
+
+        let abs = if target.is_absolute() {
+            target.clone()
+        } else {
+            self.workspace.join(&target)
+        };
+        self.check_denied(&abs).map_err(|e| {
+            warn!("Path denied for new file {}: {}", abs.display(), e);
+            anyhow::anyhow!("{}", e)
+        })?;
+        if let Some(parent) = abs.parent() {
+            if !parent.exists() {
+                create_dir(parent)?;
+            }
+            let canonical_parent = parent
+                .canonicalize()
+                .map_err(|e| anyhow::anyhow!("Failed to resolve {}: {}", parent.display(), e))?;
+            if !canonical_parent.starts_with(&self.workspace) {
+                return Err(anyhow::anyhow!("Path outside workspace: {}", abs.display()));
+            }
+        }
+
+        Ok(abs)
+    }
+
     fn resolve_path(&self, path: &str) -> Result<PathBuf> {
         let expanded = expand_user_path(path);
         let target = Path::new(&expanded);
@@ -277,43 +403,40 @@ impl CoreTool for FilesystemTool {
     }
 
     fn handle(&self, input: ToolInput) -> Result<ToolOutput, EngineError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|error| EngineError::ToolError(error.to_string()))?;
-
         match input.method.as_str() {
             "read_file" => {
                 let path = input.param_str("path").map_err(tool_input_error)?;
-                let value = runtime
-                    .block_on(self.read_file(&path))
+                let value = self
+                    .read_file_sync(&path)
                     .map_err(|error| EngineError::ToolError(error.to_string()))?;
                 Ok(ToolOutput::json(serde_json::json!(value)))
             }
             "write_file" => {
                 let path = input.param_str("path").map_err(tool_input_error)?;
                 let content = input.param_str("content").map_err(tool_input_error)?;
-                let value = runtime
-                    .block_on(self.write_file(&path, &content))
+                let value = self
+                    .write_file_sync(&path, &content)
                     .map_err(|error| EngineError::ToolError(error.to_string()))?;
                 Ok(ToolOutput::json(serde_json::json!(value)))
             }
             "delete_file" => {
                 let path = input.param_str("path").map_err(tool_input_error)?;
-                let value = runtime
-                    .block_on(self.delete_file(&path))
+                let value = self
+                    .delete_file_sync(&path)
                     .map_err(|error| EngineError::ToolError(error.to_string()))?;
                 Ok(ToolOutput::json(serde_json::json!(value)))
             }
             "list_dir" => {
                 let path = input.param_str("path").map_err(tool_input_error)?;
-                let value = runtime
-                    .block_on(self.list_dir(&path))
+                let value = self
+                    .list_dir_sync(&path)
                     .map_err(|error| EngineError::ToolError(error.to_string()))?;
                 Ok(ToolOutput::json(serde_json::json!(value)))
             }
             "file_exists" => {
                 let path = input.param_str("path").map_err(tool_input_error)?;
-                let value = runtime
-                    .block_on(self.file_exists(&path))
+                let value = self
+                    .file_exists_sync(&path)
                     .map_err(|error| EngineError::ToolError(error.to_string()))?;
                 Ok(ToolOutput::json(serde_json::json!(value)))
             }
@@ -390,4 +513,39 @@ fn format_size(bytes: u64) -> String {
 
 fn tool_input_error(error: sdk::tool_io::ToolError) -> EngineError {
     EngineError::ToolError(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FilesystemTool;
+    use sdk::tool_io::ToolInput;
+    use sdk::CoreTool;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn handle_write_file_does_not_require_tokio_runtime() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let workspace = std::env::temp_dir().join(format!("rove-fs-tool-{}", unique));
+        std::fs::create_dir_all(&workspace).expect("workspace");
+
+        let tool = FilesystemTool::new(workspace.clone()).expect("tool");
+        let output = tool
+            .handle(
+                ToolInput::new("write_file")
+                    .with_param("path", serde_json::json!("temp.txt"))
+                    .with_param("content", serde_json::json!("4")),
+            )
+            .expect("write file");
+
+        assert!(output.success);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("temp.txt")).expect("read output file"),
+            "4"
+        );
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
 }

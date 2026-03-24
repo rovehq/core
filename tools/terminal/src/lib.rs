@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::io::Read;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use sdk::core_tool::{CoreContext, CoreTool};
@@ -97,6 +98,88 @@ impl TerminalTool {
             }
         }
     }
+
+    fn execute_sync(&self, command: &str) -> Result<String> {
+        info!("Executing terminal command: {}", command);
+        let Some(parts) = shlex::split(command) else {
+            return Err(anyhow::anyhow!("Invalid shell-style quoting in command"));
+        };
+        if parts.is_empty() {
+            return Err(anyhow::anyhow!("Empty command"));
+        }
+
+        let program = parts[0].clone();
+        let args: Vec<String> = parts[1..].to_vec();
+        self.executor
+            .validate(&program, &args)
+            .map_err(|e| anyhow::anyhow!("Command rejected: {}", e))?;
+
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new(self.executor.abs_path(&program))
+            .args(&args)
+            .current_dir(&self.work_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to start command: {}", e))?;
+
+        let started_at = Instant::now();
+        let status = loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|e| anyhow::anyhow!("Failed to poll command: {}", e))?
+            {
+                break status;
+            }
+
+            if started_at.elapsed() >= self.timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                let err_msg = format!("Command timed out after {} seconds", self.timeout.as_secs());
+                warn!("{}", err_msg);
+                return Err(anyhow::anyhow!(err_msg));
+            }
+
+            std::thread::sleep(Duration::from_millis(25));
+        };
+
+        let mut stdout = Vec::new();
+        if let Some(mut handle) = child.stdout.take() {
+            handle
+                .read_to_end(&mut stdout)
+                .map_err(|e| anyhow::anyhow!("Failed to read stdout: {}", e))?;
+        }
+
+        let mut stderr = Vec::new();
+        if let Some(mut handle) = child.stderr.take() {
+            handle
+                .read_to_end(&mut stderr)
+                .map_err(|e| anyhow::anyhow!("Failed to read stderr: {}", e))?;
+        }
+
+        let stdout = String::from_utf8_lossy(&stdout).to_string();
+        let stderr = String::from_utf8_lossy(&stderr).to_string();
+
+        if status.success() {
+            debug!("Command succeeded");
+            if stdout.is_empty() && !stderr.is_empty() {
+                Ok(stderr)
+            } else {
+                Ok(stdout)
+            }
+        } else {
+            let error = anyhow::anyhow!(
+                "Command failed with status: {}\nStdout: {}\nStderr: {}",
+                status,
+                stdout,
+                stderr
+            );
+            warn!("Command failed: {}", error);
+            Err(error)
+        }
+    }
 }
 
 impl CoreTool for TerminalTool {
@@ -135,10 +218,8 @@ impl CoreTool for TerminalTool {
                 )))
             }
         };
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|error| EngineError::ToolError(error.to_string()))?;
-        let output = runtime
-            .block_on(self.execute(&command))
+        let output = self
+            .execute_sync(&command)
             .map_err(|error| EngineError::ToolError(error.to_string()))?;
         Ok(ToolOutput::json(serde_json::json!(output)))
     }

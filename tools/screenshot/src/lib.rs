@@ -63,6 +63,52 @@ impl VisionTool {
             }
         }
     }
+
+    fn capture_screen_sync(&self, output_file: &str) -> Result<PathBuf> {
+        let mut save_path = PathBuf::from(output_file);
+        if !save_path.is_absolute() {
+            save_path = self.work_dir.join(save_path);
+        }
+
+        info!("Capturing screenshot to: {}", save_path.display());
+
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let save_path_str = save_path.to_string_lossy().to_string();
+
+        #[cfg(target_os = "macos")]
+        let result = std::process::Command::new("screencapture")
+            .arg("-x")
+            .arg(&save_path_str)
+            .output();
+
+        #[cfg(target_os = "linux")]
+        let result = std::process::Command::new("scrot")
+            .arg(&save_path_str)
+            .output();
+
+        #[cfg(target_os = "windows")]
+        let result: std::result::Result<std::process::Output, std::io::Error> =
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Native screenshot not implemented for Windows yet",
+            ));
+
+        match result {
+            Ok(output) if output.status.success() => Ok(save_path),
+            Ok(output) => {
+                let err = String::from_utf8_lossy(&output.stderr);
+                warn!("Screenshot command failed: {}", err);
+                Err(anyhow::anyhow!("Screenshot failed: {}", err))
+            }
+            Err(e) => {
+                warn!("Failed to execute screenshot utility: {}", e);
+                Err(anyhow::anyhow!(
+                    "Failed to execute screenshot utility: {}",
+                    e
+                ))
+            }
+        }
+    }
 }
 
 impl CoreTool for VisionTool {
@@ -103,10 +149,8 @@ impl CoreTool for VisionTool {
                 )))
             }
         };
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|error| EngineError::ToolError(error.to_string()))?;
-        let path = runtime
-            .block_on(self.capture_screen(&output_file))
+        let path = self
+            .capture_screen_sync(&output_file)
             .map_err(|error| EngineError::ToolError(error.to_string()))?;
         Ok(ToolOutput::json(serde_json::json!(path
             .display()
