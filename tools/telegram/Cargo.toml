@@ -1,0 +1,20 @@
+[package]
+name = "telegram"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sdk = { path = "../../sdk" }
+
+# Workspace dependencies
+teloxide.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

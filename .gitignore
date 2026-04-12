@@ -1,25 +1,26 @@
+# Rust build outputs
+/target/
+**/target/
 
+# WebUI build outputs
+/webui/node_modules/
+/webui/.next/
+/webui/dist/
+/webui/.turbo/
+/webui/coverage/
 
-# Added by cargo
+# Historical in-repo website path is no longer used after the split
+/website/
 
-/target
-
-
-# Dependencies
-website/node_modules/
-
-# Build outputs
-website/out/
-website/dist/
-website/.next/
-
-# pnpm
+# Package manager caches
 .pnpm-store/
 
-# OS
+# OS/editor noise
 .DS_Store
+.idea/
+.vscode/
 
-# Env
+# Environment files
 .env
 .env.local
 .env.*.local
@@ -28,9 +29,3 @@ website/.next/
 *.db
 *.db-shm
 *.db-wal
-
-
-
-/webui/.next
-/webui/node_modules
-/webui/dist

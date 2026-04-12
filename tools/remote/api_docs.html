@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SudoMate API Server</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 900px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+        }
+        h2 {
+            color: #555;
+            margin-top: 30px;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        .status {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .endpoint {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+        }
+        .method {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 12px;
+            margin-right: 10px;
+        }
+        .post { background: #28a745; color: white; }
+        .get { background: #007bff; color: white; }
+        .delete { background: #dc3545; color: white; }
+        code {
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        pre {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        .warning {
+            margin: 20px 0;
+            padding: 15px;
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            color: #856404;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SudoMate API Server</h1>
+        <p class="status">✓ Server is running</p>
+        
+        <div class="warning">
+            <strong>⚠️ Authentication Required</strong>
+            <p>All API endpoints require Bearer token authentication. 
+            First, obtain a token from the <code>/api/auth</code> endpoint.</p>
+        </div>
+        
+        <h2>Authentication</h2>
+        
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <strong>/api/auth</strong>
+            <p>Obtain an authentication token for API access.</p>
+            <pre>curl -X POST http://localhost:8080/api/auth \
+  -H "Content-Type: application/json" \
+  -d '{}'</pre>
+            <p><strong>Response:</strong></p>
+            <pre>{"token": "abc123..."}</pre>
+        </div>
+        
+        <h2>Task Management</h2>
+        
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <strong>/api/tasks</strong>
+            <p>Submit a new task for execution.</p>
+            <pre>curl -X POST http://localhost:8080/api/tasks \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"task": "List files in current directory"}'</pre>
+            <p><strong>Response:</strong></p>
+            <pre>{"success": true, "task_id": "task_123"}</pre>
+        </div>
+        
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <strong>/api/tasks/:id</strong>
+            <p>Get the status of a specific task.</p>
+            <pre>curl http://localhost:8080/api/tasks/task_123 \
+  -H "Authorization: Bearer YOUR_TOKEN"</pre>
+            <p><strong>Response:</strong></p>
+            <pre>{"id": "task_123", "input": "...", "status": "completed", "created_at": 1234567890}</pre>
+        </div>
+        
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <strong>/api/tasks</strong>
+            <p>Get task history (last 10 tasks).</p>
+            <pre>curl http://localhost:8080/api/tasks \
+  -H "Authorization: Bearer YOUR_TOKEN"</pre>
+            <p><strong>Response:</strong></p>
+            <pre>{"success": true, "tasks": [...]}</pre>
+        </div>
+        
+        <div class="endpoint">
+            <span class="method delete">DELETE</span>
+            <strong>/api/tasks/:id</strong>
+            <p>Cancel a running task (not yet implemented).</p>
+            <pre>curl -X DELETE http://localhost:8080/api/tasks/task_123 \
+  -H "Authorization: Bearer YOUR_TOKEN"</pre>
+        </div>
+        
+        <h2>Server Status</h2>
+        
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <strong>/api/status</strong>
+            <p>Get server status and version information.</p>
+            <pre>curl http://localhost:8080/api/status</pre>
+            <p><strong>Response:</strong></p>
+            <pre>{"status": "running", "version": "0.1.0", "server_type": "api"}</pre>
+        </div>
+        
+        <h2>Features</h2>
+        <ul>
+            <li>✓ Token-based authentication</li>
+            <li>✓ RESTful API design</li>
+            <li>✓ Task submission and status tracking</li>
+            <li>✓ Rate limiting protection</li>
+            <li>✓ Secure localhost-only binding</li>
+        </ul>
+    </div>
+</body>
+</html>

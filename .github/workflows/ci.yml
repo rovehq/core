@@ -1,0 +1,420 @@
+name: Core — Build, Sign & Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Detect what changed ─────────────────────────
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      engine: ${{ steps.filter.outputs.engine }}
+      tools: ${{ steps.filter.outputs.tools }}
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+            engine:
+              - 'engine/**'
+              - 'sdk/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            tools:
+              - 'tools/**'
+              - 'sdk/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+
+  # ── Format (only if code changed) ───────────────
+  fmt:
+    name: Format
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # ── Lint & Test (only if code changed) ──────────
+  check:
+    name: Check (${{ matrix.platform }})
+    needs: [changes, fmt]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macOS
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            platform: Linux
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            platform: Windows
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        shell: bash
+
+      - name: Test
+        run: cargo test --workspace
+        shell: bash
+
+  # ── Build engine (only if engine paths changed) ─
+  build-engine:
+    name: Build Engine (${{ matrix.platform }})
+    needs: [changes, check]
+    if: |
+      always() &&
+      (needs.check.result == 'success' || needs.check.result == 'skipped') &&
+      needs.changes.outputs.engine == 'true' &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            engine_ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-aarch64
+            engine_ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            engine_ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build engine (release)
+        run: cargo build --release --target ${{ matrix.target }} -p engine
+        shell: bash
+        env:
+          ROVE_TEAM_PUBLIC_KEY: ${{ secrets.ROVE_SIGNING_PUBLIC_KEY }}
+
+      - name: Stage engine artifact
+        run: |
+          mkdir -p artifacts/engine
+          cp target/${{ matrix.target }}/release/rove${{ matrix.engine_ext }} \
+             artifacts/engine/rove-${{ matrix.target }}${{ matrix.engine_ext }} 2>/dev/null || true
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ matrix.platform }}
+          path: artifacts/
+          retention-days: 1
+
+  # ── Build core tools (only if tools paths changed)
+  build-tools:
+    name: Build Tools (${{ matrix.platform }})
+    needs: [changes, check]
+    if: |
+      always() &&
+      (needs.check.result == 'success' || needs.check.result == 'skipped') &&
+      needs.changes.outputs.tools == 'true' &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            lib_ext: so
+            lib_prefix: lib
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-aarch64
+            lib_ext: dylib
+            lib_prefix: lib
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            lib_ext: dll
+            lib_prefix: ""
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build core tools (release)
+        run: |
+          for tool in telegram ui-server; do
+            cargo build --release --target ${{ matrix.target }} -p $tool || true
+          done
+        shell: bash
+
+      - name: Stage tool artifacts
+        run: |
+          mkdir -p artifacts/core_tools/${{ matrix.platform }}
+          for tool in telegram ui_server; do
+            SRC="target/${{ matrix.target }}/release/${{ matrix.lib_prefix }}${tool}.${{ matrix.lib_ext }}"
+            [ -f "$SRC" ] && cp "$SRC" artifacts/core_tools/${{ matrix.platform }}/
+          done
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tools-${{ matrix.platform }}
+          path: artifacts/
+          retention-days: 1
+
+  # ── Sign & Deploy to R2 (if any build ran) ──────
+  deploy:
+    name: Sign & Deploy
+    needs: [build-engine, build-tools]
+    if: |
+      always() &&
+      (needs.build-engine.result == 'success' || needs.build-tools.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Hash all artifacts
+        run: |
+          find artifacts/ -type f | while read f; do
+            sha256sum "$f"
+          done | tee artifacts/checksums.txt
+
+      - name: Prepare R2 directory
+        run: |
+          mkdir -p .r2_upload
+          ENGINE_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+
+          # Copy engine artifacts if present
+          if [ -d "artifacts/engine" ]; then
+            mkdir -p ".r2_upload/engine/${ENGINE_VERSION}"
+            cp artifacts/engine/* ".r2_upload/engine/${ENGINE_VERSION}/" 2>/dev/null || true
+          fi
+
+          # Copy tools artifacts if present
+          if [ -d "artifacts/core_tools" ]; then
+            cp -r artifacts/core_tools/ .r2_upload/core_tools/ 2>/dev/null || true
+          fi
+
+          cp scripts/install.sh .r2_upload/install.sh
+          cp scripts/install.ps1 .r2_upload/install.ps1
+          cp scripts/uninstall.sh .r2_upload/uninstall.sh
+          cp scripts/uninstall.ps1 .r2_upload/uninstall.ps1
+          find .r2_upload -type f | sort
+
+      - name: Deploy to Cloudflare R2
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl public-read --follow-symlinks
+        env:
+          AWS_S3_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: "auto"
+          AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
+          SOURCE_DIR: ".r2_upload"
+
+      - name: GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/engine/*
+            artifacts/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Update Registry with build info ─────────────
+  update-registry:
+    name: Update Registry
+    needs: [build-engine, build-tools]
+    if: |
+      always() &&
+      (needs.build-engine.result == 'success' || needs.build-tools.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Update registry with artifacts and manifests
+        env:
+          REGISTRY_PAT: ${{ secrets.REGISTRY_PAT }}
+        run: |
+          set -e
+
+          # ── Clone registry via PAT ──
+          git clone https://x-access-token:${REGISTRY_PAT}@github.com/orvislab/rove-registry.git /tmp/registry
+
+
+          # ── Metadata ──
+          ENGINE_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          COMMIT=$(git rev-parse --short HEAD)
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          R2_BASE="https://registry.roveai.co"
+          GH_RAW="https://raw.githubusercontent.com/orvislab/rove-registry/main"
+
+          # ══════════════════════════════════════════
+          # ENGINE ARTIFACTS
+          # ══════════════════════════════════════════
+          if [ -d "artifacts/engine" ]; then
+            mkdir -p "/tmp/registry/releases/engine/${ENGINE_VERSION}"
+
+            for bin in artifacts/engine/rove-*; do
+              [ ! -f "$bin" ] && continue
+              HASH=$(sha256sum "$bin" | cut -d' ' -f1)
+              SIZE=$(stat --format=%s "$bin" 2>/dev/null || stat -f%z "$bin" 2>/dev/null)
+              FILENAME=$(basename "$bin")
+
+              case "$FILENAME" in
+                *linux*)    PLATFORM="linux-x86_64" ;;
+                *darwin*)   PLATFORM="darwin-aarch64" ;;
+                *windows*)  PLATFORM="windows-x86_64" ;;
+                *)          continue ;;
+              esac
+
+              # Copy artifact to registry releases
+              cp "$bin" "/tmp/registry/releases/engine/${ENGINE_VERSION}/${FILENAME}"
+
+              # Update manifest with R2 + GitHub fallback URLs
+              cd /tmp/registry
+              jq --arg ver "$ENGINE_VERSION" \
+                 --arg plat "$PLATFORM" \
+                 --arg url "$R2_BASE/engine/$ENGINE_VERSION/$FILENAME" \
+                 --arg fallback "$GH_RAW/releases/engine/$ENGINE_VERSION/$FILENAME" \
+                 --arg sha "$HASH" \
+                 --argjson sz "${SIZE:-0}" \
+                 '.engines.latest.version = $ver |
+                  .engines[$plat] = {
+                    "version": $ver,
+                    "url": $url,
+                    "fallback_url": $fallback,
+                    "sha256": $sha,
+                    "size_bytes": $sz
+                  }' \
+                 manifest.json > /tmp/m.json && mv /tmp/m.json manifest.json
+              cd -
+            done
+
+            # ── Engine build history ──
+            PLATFORMS_JSON="{}"
+            for bin in artifacts/engine/rove-*; do
+              [ ! -f "$bin" ] && continue
+              HASH=$(sha256sum "$bin" | cut -d' ' -f1)
+              SIZE=$(stat --format=%s "$bin" 2>/dev/null || stat -f%z "$bin" 2>/dev/null)
+              FILENAME=$(basename "$bin")
+              case "$FILENAME" in
+                *linux*)    PLATFORM="linux-x86_64" ;;
+                *darwin*)   PLATFORM="darwin-aarch64" ;;
+                *windows*)  PLATFORM="windows-x86_64" ;;
+                *)          continue ;;
+              esac
+              PLATFORMS_JSON=$(echo "$PLATFORMS_JSON" | jq \
+                --arg p "$PLATFORM" --arg sha "$HASH" --argjson sz "${SIZE:-0}" \
+                '. + {($p): {"sha256": $sha, "size_bytes": $sz}}')
+            done
+
+            jq --arg ver "$ENGINE_VERSION" --arg commit "$COMMIT" --arg ts "$TIMESTAMP" \
+              --argjson platforms "$PLATFORMS_JSON" \
+              '.builds += [{"version": $ver, "commit": $commit, "built_at": $ts, "platforms": $platforms}]' \
+              /tmp/registry/history/engine.json > /tmp/eh.json && mv /tmp/eh.json /tmp/registry/history/engine.json
+          fi
+
+          # ══════════════════════════════════════════
+          # CORE TOOLS ARTIFACTS
+          # ══════════════════════════════════════════
+          if [ -d "artifacts/core_tools" ]; then
+            TOOLS_VERSION=$ENGINE_VERSION
+
+            for platform_dir in artifacts/core_tools/*/; do
+              [ ! -d "$platform_dir" ] && continue
+              PLATFORM=$(basename "$platform_dir")
+              mkdir -p "/tmp/registry/releases/core-tools/${TOOLS_VERSION}/${PLATFORM}"
+
+              for lib in "$platform_dir"*; do
+                [ ! -f "$lib" ] && continue
+                HASH=$(sha256sum "$lib" | cut -d' ' -f1)
+                FILENAME=$(basename "$lib")
+                TOOL_NAME=$(echo "$FILENAME" | sed 's/^lib//' | sed 's/\..*//' | tr '_' '-')
+
+                cp "$lib" "/tmp/registry/releases/core-tools/${TOOLS_VERSION}/${PLATFORM}/${FILENAME}"
+
+                cd /tmp/registry
+                jq --arg tool "$TOOL_NAME" --arg plat "$PLATFORM" \
+                   --arg url "$R2_BASE/core_tools/$PLATFORM/$FILENAME" \
+                   --arg fallback "$GH_RAW/releases/core-tools/$TOOLS_VERSION/$PLATFORM/$FILENAME" \
+                   --arg sha "$HASH" \
+                   '.core_tools[$tool].platforms[$plat] = {"url": $url, "fallback_url": $fallback, "sha256": $sha}' \
+                   manifest.json > /tmp/m.json && mv /tmp/m.json manifest.json
+                cd -
+              done
+            done
+          fi
+
+          # ── Update timestamp + commit ──
+          cd /tmp/registry
+          jq --arg ts "$TIMESTAMP" '.last_updated = $ts' manifest.json > /tmp/m.json && mv /tmp/m.json manifest.json
+
+          git config user.name "rove-ci"
+          git config user.email "ci@roveai.co"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "release: engine v${ENGINE_VERSION} (${COMMIT}) — $(date -u +%Y-%m-%d)"
+            git push
+          fi
