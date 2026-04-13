@@ -9,7 +9,7 @@ use tracing::{debug, info};
 use super::{
     AgentRunRepository, AuthRepository, ExtensionCatalogRepository, InstalledPluginRepository,
     PendingTaskRepository, PluginRepository, RemoteDiscoveryRepository, ScheduleRepository,
-    TaskRepository,
+    TaskRepository, TelegramAuditRepository,
 };
 
 /// Database connection pool.
@@ -67,6 +67,9 @@ impl Database {
         self.ensure_installed_plugin_provenance_columns()
             .await
             .context("Failed to apply installed plugin provenance schema patch")?;
+        self.ensure_workflow_run_columns()
+            .await
+            .context("Failed to apply workflow run schema patch")?;
 
         info!("Database schema loaded successfully");
         Ok(())
@@ -136,6 +139,50 @@ impl Database {
         Ok(())
     }
 
+    async fn ensure_workflow_run_columns(&self) -> Result<()> {
+        if !self.table_exists("workflow_runs").await? {
+            return Ok(());
+        }
+
+        let columns = self.table_columns("workflow_runs").await?;
+        for (column, sql_type, default_clause) in [
+            ("steps_total", "INTEGER", " NOT NULL DEFAULT 0"),
+            ("steps_completed", "INTEGER", " NOT NULL DEFAULT 0"),
+            ("current_step_index", "INTEGER", ""),
+            ("current_step_id", "TEXT", ""),
+            ("current_step_name", "TEXT", ""),
+            ("retry_count", "INTEGER", " NOT NULL DEFAULT 0"),
+            ("last_task_id", "TEXT", ""),
+        ] {
+            if !columns.iter().any(|existing| existing == column) {
+                sqlx::query(&format!(
+                    "ALTER TABLE workflow_runs ADD COLUMN {column} {sql_type}{default_clause}"
+                ))
+                .execute(&self.pool)
+                .await
+                .with_context(|| {
+                    format!("Failed to add workflow_runs.{column} compatibility column")
+                })?;
+            }
+        }
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_workflow_run_steps_run ON workflow_run_steps(run_id, step_index)",
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create workflow_run_steps run index")?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_workflow_run_steps_status ON workflow_run_steps(status, started_at DESC)",
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create workflow_run_steps status index")?;
+
+        Ok(())
+    }
+
     async fn table_exists(&self, table: &str) -> Result<bool> {
         let row =
             sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
@@ -189,6 +236,10 @@ impl Database {
 
     pub fn auth(&self) -> AuthRepository {
         AuthRepository::new(self.pool.clone())
+    }
+
+    pub fn telegram_audit(&self) -> TelegramAuditRepository {
+        TelegramAuditRepository::new(self.pool.clone())
     }
 
     pub fn plugins(&self) -> PluginRepository {
@@ -256,6 +307,7 @@ mod tests {
         assert!(tables.contains(&"agent_events".to_string()));
         assert!(tables.contains(&"agent_runs".to_string()));
         assert!(tables.contains(&"workflow_runs".to_string()));
+        assert!(tables.contains(&"workflow_run_steps".to_string()));
 
         db.close().await.unwrap();
     }

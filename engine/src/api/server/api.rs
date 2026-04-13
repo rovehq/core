@@ -1,9 +1,12 @@
+use async_stream::stream;
 use axum::{
+    body::{Body, Bytes},
     extract::{Json, Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
@@ -19,8 +22,11 @@ use crate::remote::RemoteManager;
 use crate::security::approvals;
 use crate::service_install::{ServiceInstallMode, ServiceInstaller};
 use crate::services::{ManagedService, ServiceManager};
-use crate::system::{backup, factory, health, logs, migrate};
 use crate::specs::{allowed_tools, SpecRepository};
+use crate::system::{
+    backup, browser as browser_surface, factory, health, logs, migrate, onboarding,
+    starter_catalog, worker_presets, workflow_runtime,
+};
 use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
 use sdk::{
@@ -41,6 +47,14 @@ pub async fn health_check() -> impl IntoResponse {
         version: crate::info::VERSION.to_string(),
     };
     (StatusCode::OK, Json(res))
+}
+
+async fn request_auth_status(state: &AppState, headers: &HeaderMap) -> Option<sdk::AuthStatus> {
+    let token = AuthManager::bearer_token(headers)?;
+    AuthManager::new(state.db.clone())
+        .status_for_token(&token)
+        .await
+        .ok()
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +205,7 @@ pub struct BackupRestoreRequest {
 #[derive(Debug, Deserialize)]
 pub struct MigrationRequest {
     pub path: Option<String>,
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -386,16 +401,32 @@ pub async fn list_agent_templates() -> impl IntoResponse {
     (StatusCode::OK, Json(factory::list_agent_templates())).into_response()
 }
 
+pub async fn list_worker_presets() -> impl IntoResponse {
+    (StatusCode::OK, Json(worker_presets::list_worker_presets())).into_response()
+}
+
+pub async fn list_starters() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match starter_catalog::list(&config).await {
+            Ok(entries) => (StatusCode::OK, Json(entries)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn preview_agent_factory(
     Json(payload): Json<FactoryGenerateRequest>,
 ) -> impl IntoResponse {
-    match factory::preview_agent(
+    let repo = SpecRepository::new().ok();
+    match factory::preview_agent_result(
+        repo.as_ref(),
         &payload.requirement,
         payload.template_id.as_deref(),
         payload.id.as_deref(),
         payload.name.as_deref(),
     ) {
-        Ok(spec) => (StatusCode::OK, Json(spec)).into_response(),
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
     }
 }
@@ -411,7 +442,7 @@ pub async fn create_agent_factory(
             payload.id.as_deref(),
             payload.name.as_deref(),
         ) {
-            Ok(spec) => (StatusCode::CREATED, Json(spec)).into_response(),
+            Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -433,7 +464,27 @@ pub async fn create_agent_from_task(
         )
         .await
         {
-            Ok(spec) => (StatusCode::CREATED, Json(spec)).into_response(),
+            Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_agent_review(Path(id): Path<String>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match factory::get_agent_review(&repo, &id) {
+            Ok(review) => (StatusCode::OK, Json(review)).into_response(),
+            Err(error) => json_error_response(StatusCode::NOT_FOUND, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn approve_agent_factory(Path(id): Path<String>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match factory::approve_agent(&repo, &id) {
+            Ok(spec) => (StatusCode::OK, Json(spec)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -537,10 +588,13 @@ pub async fn run_agent(
     let profile = TaskExecutionProfile {
         agent_id: Some(spec.id.clone()),
         agent_name: Some(spec.name.clone()),
+        worker_preset_id: None,
+        worker_preset_name: None,
         purpose: Some(spec.purpose.clone()),
         instructions: spec.instructions.clone(),
         allowed_tools: allowed_tools(&spec),
         output_contract: spec.output_contract.clone(),
+        max_iterations: None,
     };
 
     match crate::cli::run::execute_local_task_request(
@@ -582,7 +636,13 @@ pub async fn run_agent(
             let _ = state
                 .db
                 .agent_runs()
-                .finish_agent_run(&run_id, SpecRunStatus::Failed, None, None, Some(&error.to_string()))
+                .finish_agent_run(
+                    &run_id,
+                    SpecRunStatus::Failed,
+                    None,
+                    None,
+                    Some(&error.to_string()),
+                )
                 .await;
             json_error_response(StatusCode::BAD_REQUEST, error)
         }
@@ -600,23 +660,21 @@ pub async fn list_workflows() -> impl IntoResponse {
 }
 
 pub async fn list_workflow_templates() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(factory::list_workflow_templates()),
-    )
-        .into_response()
+    (StatusCode::OK, Json(factory::list_workflow_templates())).into_response()
 }
 
 pub async fn preview_workflow_factory(
     Json(payload): Json<FactoryGenerateRequest>,
 ) -> impl IntoResponse {
-    match factory::preview_workflow(
+    let repo = SpecRepository::new().ok();
+    match factory::preview_workflow_result(
+        repo.as_ref(),
         &payload.requirement,
         payload.template_id.as_deref(),
         payload.id.as_deref(),
         payload.name.as_deref(),
     ) {
-        Ok(spec) => (StatusCode::OK, Json(spec)).into_response(),
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
     }
 }
@@ -632,7 +690,7 @@ pub async fn create_workflow_factory(
             payload.id.as_deref(),
             payload.name.as_deref(),
         ) {
-            Ok(spec) => (StatusCode::CREATED, Json(spec)).into_response(),
+            Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -654,7 +712,27 @@ pub async fn create_workflow_from_task(
         )
         .await
         {
-            Ok(spec) => (StatusCode::CREATED, Json(spec)).into_response(),
+            Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_workflow_review(Path(id): Path<String>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match factory::get_workflow_review(&repo, &id) {
+            Ok(review) => (StatusCode::OK, Json(review)).into_response(),
+            Err(error) => json_error_response(StatusCode::NOT_FOUND, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn approve_workflow_factory(Path(id): Path<String>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match factory::approve_workflow(&repo, &id) {
+            Ok(spec) => (StatusCode::OK, Json(spec)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -716,6 +794,20 @@ pub async fn list_workflow_runs(State(state): State<AppState>) -> impl IntoRespo
     }
 }
 
+pub async fn get_workflow_run(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.agent_runs().get_workflow_run_detail(&run_id).await {
+        Ok(Some(detail)) => (StatusCode::OK, Json(detail)).into_response(),
+        Ok(None) => json_error_response(
+            StatusCode::NOT_FOUND,
+            anyhow::anyhow!("Workflow run '{}' was not found", run_id),
+        ),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn run_workflow(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -745,92 +837,53 @@ pub async fn run_workflow(
         Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     };
 
-    let run_id = Uuid::new_v4().to_string();
-    if let Err(error) = state
-        .db
-        .agent_runs()
-        .start_workflow_run(&run_id, &workflow.id, &input)
-        .await
-    {
-        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
-    }
-
-    let mut last_output = input.clone();
-    for step in &workflow.steps {
-        let rendered = step
-            .prompt
-            .replace("{{input}}", &input)
-            .replace("{{last_output}}", &last_output);
-        let profile = match step.agent_id.as_deref() {
-            Some(agent_id) => match repo.load_agent(agent_id) {
-                Ok(spec) => Some(TaskExecutionProfile {
-                    agent_id: Some(spec.id.clone()),
-                    agent_name: Some(spec.name.clone()),
-                    purpose: Some(spec.purpose.clone()),
-                    instructions: spec.instructions.clone(),
-                    allowed_tools: allowed_tools(&spec),
-                    output_contract: spec.output_contract.clone(),
-                }),
-                Err(error) => {
-                    let _ = state
-                        .db
-                        .agent_runs()
-                        .finish_workflow_run(
-                            &run_id,
-                            SpecRunStatus::Failed,
-                            None,
-                            Some(&error.to_string()),
-                        )
-                        .await;
-                    return json_error_response(StatusCode::BAD_REQUEST, error);
-                }
-            },
-            None => None,
+    let result =
+        match workflow_runtime::start_new_run(&repo, &state.db, &config, &workflow, &input).await {
+            Ok(result) => result,
+            Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
         };
-
-        match crate::cli::run::execute_local_task_request(
-            rendered,
-            &config,
-            RunMode::Serial,
-            RunIsolation::None,
-            profile,
-        )
-        .await
-        {
-            Ok(task_result) => {
-                last_output = task_result.answer;
-            }
-            Err(error) => {
-                let _ = state
-                    .db
-                    .agent_runs()
-                    .finish_workflow_run(
-                        &run_id,
-                        SpecRunStatus::Failed,
-                        None,
-                        Some(&error.to_string()),
-                    )
-                    .await;
-                return json_error_response(StatusCode::BAD_REQUEST, error);
-            }
-        }
-    }
-
-    let _ = state
-        .db
-        .agent_runs()
-        .finish_workflow_run(&run_id, SpecRunStatus::Completed, Some(&last_output), None)
-        .await;
     (
         StatusCode::OK,
         Json(ExecuteResponse {
             success: true,
             task_id: None,
             status: "completed".to_string(),
-            answer: Some(last_output),
+            answer: Some(result.final_output),
             provider: None,
             duration_ms: None,
-            message: Some(run_id),
+            message: Some(result.run.run_id),
+        }),
+    )
+        .into_response()
+}
+
+pub async fn resume_workflow_run(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> impl IntoResponse {
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let config = match Config::load_or_create() {
+        Ok(config) => config,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    let result = match workflow_runtime::resume_run(&repo, &state.db, &config, &run_id).await {
+        Ok(result) => result,
+        Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
+    };
+    (
+        StatusCode::OK,
+        Json(ExecuteResponse {
+            success: true,
+            task_id: result.run.last_task_id.clone(),
+            status: result.run.status.as_str().to_string(),
+            answer: Some(result.final_output),
+            provider: None,
+            duration_ms: None,
+            message: Some(result.run.run_id),
         }),
     )
         .into_response()
@@ -1146,6 +1199,27 @@ fn apply_config_update(payload: UpdateDaemonConfigRequest) -> anyhow::Result<Dae
 pub async fn reload_config() -> impl IntoResponse {
     match daemon_config_view() {
         Ok(config) => (StatusCode::OK, Json(config)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn browser_status() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => (
+            StatusCode::OK,
+            Json(browser_surface::BrowserManager::new(config).status()),
+        )
+            .into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn update_browser(Json(payload): Json<sdk::BrowserSurfaceUpdate>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match browser_surface::BrowserManager::new(config).replace(payload) {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -1556,7 +1630,7 @@ pub async fn list_services() -> impl IntoResponse {
     }
 }
 
-pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn overview(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let config = match Config::load_or_create() {
         Ok(config) => config,
         Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -1595,6 +1669,22 @@ pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
     let pending_approvals = approvals::list_pending();
     let pending_approvals_count = pending_approvals.len();
     let extension_count = extensions.len();
+    let queue = match state.db.pending_tasks().queue_stats().await {
+        Ok(stats) => stats,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let local_load = match current_node_load(&state).await {
+        Ok(load) => load,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let remote_nodes = RemoteManager::new(config.clone())
+        .nodes()
+        .unwrap_or_default();
+    let remote_candidates = ZeroTierManager::new(config.clone())
+        .list_candidates()
+        .await
+        .unwrap_or_default();
+    let zerotier = ZeroTierManager::new(config.clone()).status().await.ok();
     let repo = match SpecRepository::new() {
         Ok(repo) => repo,
         Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -1611,8 +1701,13 @@ pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
         Ok(items) => items,
         Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     };
-    let health = match health::collect_snapshot(&config).await {
+    let auth_status = request_auth_status(&state, &headers).await;
+    let health = match health::collect_snapshot_with_auth(&config, auth_status.as_ref()).await {
         Ok(snapshot) => snapshot,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let onboarding = match onboarding::collect(&config, &state.db, &health).await {
+        Ok(checklist) => checklist,
         Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     };
 
@@ -1637,7 +1732,13 @@ pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
                 "extensions": extension_count,
                 "pending_approvals": pending_approvals_count,
             },
+            "queue": queue,
+            "local_load": local_load,
+            "remote_nodes": remote_nodes,
+            "remote_candidates": remote_candidates,
+            "zerotier": zerotier,
             "health": health,
+            "onboarding": onboarding,
             "recent_logs": recent_logs,
         })),
     )
@@ -1651,12 +1752,61 @@ pub async fn recent_logs() -> impl IntoResponse {
     }
 }
 
-pub async fn health_snapshot() -> impl IntoResponse {
+pub async fn stream_logs() -> impl IntoResponse {
+    let stream = stream! {
+        let mut sent_count = 0usize;
+
+        loop {
+            match logs::recent_lines(400) {
+                Ok(lines) => {
+                    if lines.len() < sent_count {
+                        sent_count = 0;
+                    }
+
+                    for line in lines.iter().skip(sent_count) {
+                        let payload = serde_json::json!({
+                            "type": "line",
+                            "line": line,
+                        });
+                        yield Ok::<Bytes, Infallible>(Bytes::from(format!("{payload}\n")));
+                    }
+
+                    sent_count = lines.len();
+                }
+                Err(error) => {
+                    let payload = serde_json::json!({
+                        "type": "error",
+                        "error": error.to_string(),
+                    });
+                    yield Ok::<Bytes, Infallible>(Bytes::from(format!("{payload}\n")));
+                    break;
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/x-ndjson")
+        .header("cache-control", "no-store")
+        .body(Body::from_stream(stream))
+        .expect("log stream response")
+}
+
+pub async fn health_snapshot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     match Config::load_or_create() {
-        Ok(config) => match health::collect_snapshot(&config).await {
-            Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
-            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
-        },
+        Ok(config) => {
+            let auth_status = request_auth_status(&state, &headers).await;
+            match health::collect_snapshot_with_auth(&config, auth_status.as_ref()).await {
+                Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+                Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+            }
+        }
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -1669,7 +1819,9 @@ pub async fn export_backup(Json(payload): Json<BackupExportRequest>) -> impl Int
                 Some(path) => PathBuf::from(path),
                 None => match manager.default_export_path() {
                     Ok(path) => path,
-                    Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+                    Err(error) => {
+                        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error)
+                    }
                 },
             };
             match manager.export(&target, payload.force.unwrap_or(false)) {
@@ -1733,10 +1885,21 @@ pub async fn import_migration(
         Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
     };
     let root_override = payload.path.as_ref().map(PathBuf::from);
+    let dry_run = payload.dry_run.unwrap_or(false);
     match SpecRepository::new() {
-        Ok(repo) => match migrate::import(&repo, source, root_override.as_deref()) {
+        Ok(repo) => match migrate::import(&repo, source, root_override.as_deref(), dry_run) {
             Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn migration_status() -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match migrate::migrate_status(&repo) {
+            Ok(report) => (StatusCode::OK, Json(report)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
@@ -1853,12 +2016,10 @@ pub async fn disable_service(Path(name): Path<String>) -> impl IntoResponse {
 
 pub async fn list_channels() -> impl IntoResponse {
     match Config::load_or_create() {
-        Ok(config) => {
-            match ChannelManager::new(config).list().await {
-                Ok(channels) => (StatusCode::OK, Json(channels)).into_response(),
-                Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
-            }
-        }
+        Ok(config) => match ChannelManager::new(config).list().await {
+            Ok(channels) => (StatusCode::OK, Json(channels)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": error.to_string() })),
@@ -1910,7 +2071,10 @@ pub async fn telegram_channel_enable() -> impl IntoResponse {
 
 pub async fn telegram_channel_disable() -> impl IntoResponse {
     match Config::load_or_create() {
-        Ok(config) => match ChannelManager::new(config).telegram_set_enabled(false).await {
+        Ok(config) => match ChannelManager::new(config)
+            .telegram_set_enabled(false)
+            .await
+        {
             Ok(status) => (StatusCode::OK, Json(status)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },

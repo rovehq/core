@@ -115,6 +115,18 @@ pub enum Command {
         action: WorkflowAction,
     },
 
+    /// Show the official starter catalog across templates, channels, and packs.
+    Starter {
+        #[command(subcommand)]
+        action: StarterAction,
+    },
+
+    /// Manage the daemon-native browser control surface.
+    Browser {
+        #[command(subcommand)]
+        action: BrowserAction,
+    },
+
     /// Replay a task and show every recorded step.
     Replay {
         /// Task UUID to replay.
@@ -280,6 +292,12 @@ pub enum Command {
         action: LogsAction,
     },
 
+    /// Local daemon auth management.
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+
     /// Export or restore a filesystem-level Rove backup bundle.
     Backup {
         #[command(subcommand)]
@@ -300,6 +318,9 @@ pub enum Command {
         action: MigrateAction,
     },
 
+    /// Show the current security posture (trust, approvals, sandbox, secrets).
+    Security,
+
     /// Generate or verify signing keys.
     Keys,
 
@@ -312,6 +333,18 @@ pub enum Command {
 
     /// Interactively configure Rove.
     Setup,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuthAction {
+    /// Show password protection and reset availability.
+    Status,
+    /// Reset the local daemon password using the device seal or a recovery code.
+    ResetPassword {
+        /// Recovery code printed during setup or the previous reset.
+        #[arg(long)]
+        recovery_code: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -879,6 +912,10 @@ pub enum AgentAction {
     Enable { id: String },
     /// Disable an agent.
     Disable { id: String },
+    /// Review a generated draft agent before approval.
+    Review { id: String },
+    /// Approve a generated draft agent into its canonical id.
+    Approve { id: String },
     /// Run a saved agent once.
     Run { id: String, prompt: Vec<String> },
     /// Export an agent spec to a TOML file.
@@ -909,6 +946,8 @@ pub enum AgentAction {
 pub enum WorkflowAction {
     /// List saved workflows.
     List,
+    /// List built-in bounded worker presets.
+    WorkerPresets,
     /// Show one saved workflow.
     Show { id: String },
     /// Create a basic workflow.
@@ -922,6 +961,8 @@ pub enum WorkflowAction {
         step: Vec<String>,
         #[arg(long = "agent")]
         agent: Vec<String>,
+        #[arg(long = "worker-preset")]
+        worker_preset: Vec<String>,
         #[arg(long)]
         disabled: bool,
     },
@@ -929,8 +970,14 @@ pub enum WorkflowAction {
     Enable { id: String },
     /// Disable a workflow.
     Disable { id: String },
+    /// Review a generated draft workflow before approval.
+    Review { id: String },
+    /// Approve a generated draft workflow into its canonical id.
+    Approve { id: String },
     /// Run a saved workflow once.
     Run { id: String, input: Vec<String> },
+    /// Resume or retry an existing workflow run from its last incomplete step.
+    ResumeRun { run_id: String },
     /// Export a workflow spec to a TOML file.
     Export { id: String, path: PathBuf },
     /// Import a workflow spec from a TOML file.
@@ -1005,6 +1052,87 @@ pub enum WorkflowFactoryAction {
         name: Option<String>,
         requirement: Vec<String>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum StarterAction {
+    /// List official starter agents, workflows, worker presets, channels, and capability packs.
+    List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BrowserAction {
+    /// Show current browser surface status, profile warnings, and approval controls.
+    Status,
+    /// Enable the browser surface.
+    Enable,
+    /// Disable the browser surface.
+    Disable,
+    /// Manage browser approval controls.
+    Controls {
+        #[command(subcommand)]
+        action: BrowserControlsAction,
+    },
+    /// Manage named browser profiles.
+    Profile {
+        #[command(subcommand)]
+        action: BrowserProfileAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BrowserControlsAction {
+    /// Show current browser approval controls.
+    Show,
+    /// Update browser approval controls.
+    Set {
+        #[arg(long)]
+        require_managed_launch_approval: Option<bool>,
+        #[arg(long)]
+        require_existing_session_approval: Option<bool>,
+        #[arg(long)]
+        require_remote_cdp_approval: Option<bool>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BrowserProfileAction {
+    /// List configured browser profiles.
+    List,
+    /// Add or replace a browser profile.
+    Add {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_enum)]
+        mode: BrowserProfileModeArg,
+        #[arg(long)]
+        browser: Option<String>,
+        #[arg(long = "user-data-dir")]
+        user_data_dir: Option<String>,
+        #[arg(long = "startup-url")]
+        startup_url: Option<String>,
+        #[arg(long = "cdp-url")]
+        cdp_url: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+        #[arg(long)]
+        default: bool,
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Remove a browser profile.
+    Remove { id: String },
+    /// Set the default browser profile.
+    Default { id: String },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum BrowserProfileModeArg {
+    ManagedLocal,
+    AttachExisting,
+    RemoteCdp,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1129,7 +1257,13 @@ pub enum MigrateAction {
 
         #[arg(long, value_name = "DIR")]
         path: Option<PathBuf>,
+
+        /// Show what would be imported without actually doing it.
+        #[arg(long)]
+        dry_run: bool,
     },
+    /// Show previously imported specs and their current state.
+    Status,
 }
 
 #[derive(Subcommand, Debug)]

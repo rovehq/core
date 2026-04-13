@@ -1,6 +1,6 @@
 'use client';
 
-export type AuthState = 'uninitialized' | 'locked' | 'unlocked' | 'reauth_required';
+export type AuthState = 'uninitialized' | 'locked' | 'tampered' | 'unlocked' | 'reauth_required';
 export type NodeRole = 'full' | 'executor_only';
 
 export interface DaemonHello {
@@ -77,6 +77,31 @@ export interface HealthCheckRecord {
   detail: string;
 }
 
+export interface AuthHealthSummary {
+  password_state: string;
+  session_state?: string | null;
+  idle_expires_in_secs?: number | null;
+  absolute_expires_in_secs?: number | null;
+}
+
+export interface ControlPlaneSummary {
+  webui_enabled: boolean;
+  configured_bind_addr: string;
+  listen_addr: string;
+  port: number;
+  control_url: string;
+  tls_enabled: boolean;
+  current_binary?: string | null;
+}
+
+export interface TransportHealthSummary {
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  healthy: boolean;
+  summary: string;
+}
+
 export interface RuntimeHealthSnapshot {
   healthy: boolean;
   initialized: boolean;
@@ -91,9 +116,12 @@ export interface RuntimeHealthSnapshot {
   secret_backend: string;
   daemon_running: boolean;
   daemon_pid?: number | null;
+  auth: AuthHealthSummary;
+  control_plane: ControlPlaneSummary;
   service_install: ServiceInstallStatus;
   services: ServiceStatus[];
   channels: ChannelStatus[];
+  transports: TransportHealthSummary[];
   remote?: {
     enabled: boolean;
     node_name: string;
@@ -309,6 +337,7 @@ export interface WorkflowStepSpec {
   name: string;
   prompt: string;
   agent_id?: string | null;
+  worker_preset?: string | null;
   continue_on_error: boolean;
 }
 
@@ -330,6 +359,37 @@ export interface SpecProvenance {
   import_source?: string | null;
   notes?: string | null;
   imported_at?: number | null;
+  draft_for?: string | null;
+  review_status?: string | null;
+  reviewed_at?: number | null;
+}
+
+export interface FactoryFieldChange {
+  field: string;
+  current?: string | null;
+  proposed?: string | null;
+}
+
+export interface FactoryReview {
+  kind: string;
+  target_id: string;
+  draft_id?: string | null;
+  target_exists: boolean;
+  review_status: string;
+  suggested_action: string;
+  summary: string;
+  warnings: string[];
+  changes: FactoryFieldChange[];
+}
+
+export interface AgentFactoryResult {
+  spec: AgentSpec;
+  review: FactoryReview;
+}
+
+export interface WorkflowFactoryResult {
+  spec: WorkflowSpec;
+  review: FactoryReview;
 }
 
 export interface SpecRunRecord {
@@ -350,12 +410,81 @@ export interface AgentRunRecord extends SpecRunRecord {
 
 export interface WorkflowRunRecord extends SpecRunRecord {
   workflow_id: string;
+  steps_total: number;
+  steps_completed: number;
+  current_step_index?: number | null;
+  current_step_id?: string | null;
+  current_step_name?: string | null;
+  retry_count: number;
+  last_task_id?: string | null;
+  resumable: boolean;
+}
+
+export interface WorkflowRunStepRecord {
+  run_id: string;
+  step_index: number;
+  step_id: string;
+  step_name: string;
+  agent_id?: string | null;
+  worker_preset?: string | null;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  prompt: string;
+  task_id?: string | null;
+  output?: string | null;
+  error?: string | null;
+  attempt_count: number;
+  started_at: number;
+  completed_at?: number | null;
+}
+
+export interface WorkflowRunDetail {
+  run: WorkflowRunRecord;
+  steps: WorkflowRunStepRecord[];
 }
 
 export interface SpecTemplateSummary {
   id: string;
   name: string;
   description: string;
+}
+
+export interface WorkerPreset {
+  id: string;
+  name: string;
+  description: string;
+  role: string;
+  instructions: string;
+  allowed_tools: string[];
+  output_contract?: string | null;
+  max_iterations?: number | null;
+  max_steps: number;
+  timeout_secs: number;
+  memory_budget: number;
+}
+
+export type StarterCatalogKind =
+  | 'agent_template'
+  | 'workflow_template'
+  | 'worker_preset'
+  | 'channel_starter'
+  | 'capability_pack';
+
+export type StarterCatalogStatus = 'available' | 'needs_setup' | 'ready';
+
+export interface StarterCatalogEntry {
+  id: string;
+  kind: StarterCatalogKind;
+  name: string;
+  description: string;
+  official: boolean;
+  status: StarterCatalogStatus;
+  source: string;
+  action_label: string;
+  action_route?: string | null;
+  command_hint?: string | null;
+  tags: string[];
+  components: string[];
+  notes: string[];
 }
 
 export interface ChannelStatus {
@@ -386,6 +515,22 @@ export interface TelegramChannelTestResponse {
   bot_username?: string | null;
 }
 
+export type OnboardingStepState = 'complete' | 'action_required';
+
+export interface OnboardingStep {
+  id: string;
+  title: string;
+  state: OnboardingStepState;
+  summary: string;
+  action: string;
+}
+
+export interface OnboardingChecklist {
+  completed_steps: number;
+  total_steps: number;
+  steps: OnboardingStep[];
+}
+
 export interface OverviewResponse {
   config: DaemonConfig;
   tasks: TaskSummary[];
@@ -405,8 +550,23 @@ export interface OverviewResponse {
     extensions: number;
     pending_approvals: number;
   };
+  queue: {
+    pending: number;
+    running: number;
+  };
+  local_load: NodeLoadSnapshot;
+  remote_nodes: RemotePeer[];
+  remote_candidates: RemoteDiscoveryCandidate[];
+  zerotier?: ZeroTierStatus | null;
   health: RuntimeHealthSnapshot;
+  onboarding: OnboardingChecklist;
   recent_logs: string[];
+}
+
+export interface LogStreamRecord {
+  type: 'line' | 'error';
+  line?: string;
+  error?: string;
 }
 
 export interface BackupManifest {
@@ -520,6 +680,49 @@ export interface ZeroTierStatus {
   message?: string | null;
 }
 
+export type BrowserProfileMode = 'managed_local' | 'attach_existing' | 'remote_cdp';
+export type BrowserProfileReadiness = 'ready' | 'needs_setup' | 'warning';
+
+export interface BrowserApprovalControls {
+  require_approval_for_managed_launch: boolean;
+  require_approval_for_existing_session_attach: boolean;
+  require_approval_for_remote_cdp: boolean;
+}
+
+export interface BrowserProfileInput {
+  id: string;
+  name: string;
+  enabled: boolean;
+  mode: BrowserProfileMode;
+  browser?: string | null;
+  user_data_dir?: string | null;
+  startup_url?: string | null;
+  cdp_url?: string | null;
+  notes?: string | null;
+}
+
+export interface BrowserProfileRecord extends BrowserProfileInput {
+  is_default: boolean;
+  readiness: BrowserProfileReadiness;
+  approval_required: boolean;
+  warnings: string[];
+}
+
+export interface BrowserSurfaceStatus {
+  enabled: boolean;
+  default_profile_id?: string | null;
+  controls: BrowserApprovalControls;
+  profiles: BrowserProfileRecord[];
+  warnings: string[];
+}
+
+export interface BrowserSurfaceUpdate {
+  enabled: boolean;
+  default_profile_id?: string | null;
+  controls: BrowserApprovalControls;
+  profiles: BrowserProfileInput[];
+}
+
 export interface DispatchBrainView {
   root: string;
   active?: string | null;
@@ -558,7 +761,12 @@ const TOKEN_KEY = 'rove_webui_access_token';
 const PORT_KEY = 'rove_webui_daemon_port';
 
 function buildLoopbackBaseUrls(port: number): string[] {
-  return [`https://127.0.0.1:${port}`, `http://127.0.0.1:${port}`];
+  return [
+    `http://localhost:${port}`,
+    `https://localhost:${port}`,
+    `http://127.0.0.1:${port}`,
+    `https://127.0.0.1:${port}`,
+  ];
 }
 
 function normalizePort(value: number | null | undefined): number | null {
@@ -738,6 +946,17 @@ export class RoveDaemonClient {
     });
   }
 
+  async getBrowserSurface(): Promise<BrowserSurfaceStatus> {
+    return this.request<BrowserSurfaceStatus>('/v1/browser');
+  }
+
+  async updateBrowserSurface(payload: BrowserSurfaceUpdate): Promise<BrowserSurfaceStatus> {
+    return this.request<BrowserSurfaceStatus>('/v1/browser', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
   async listServices(): Promise<ServiceStatus[]> {
     return this.request<ServiceStatus[]>('/v1/services');
   }
@@ -752,6 +971,87 @@ export class RoveDaemonClient {
 
   async getRecentLogs(): Promise<{ lines: string[] }> {
     return this.request<{ lines: string[] }>('/v1/logs/recent');
+  }
+
+  streamLogs(handlers: {
+    onOpen?: () => void;
+    onLine?: (line: string) => void;
+    onError?: (message: string) => void;
+    onClose?: () => void;
+  }): () => void {
+    const baseUrl = this.currentBaseUrl();
+    if (!baseUrl || !this.token) {
+      throw new DaemonError('Missing daemon session');
+    }
+
+    const controller = new AbortController();
+
+    void (async () => {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      try {
+        const response = await fetch(`${baseUrl}/v1/logs/stream`, {
+          method: 'GET',
+          headers: this.headers(undefined, false),
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          let message = response.statusText;
+          try {
+            const body = (await response.json()) as { error?: string };
+            message = body.error ?? message;
+          } catch {
+            // Ignore non-JSON stream errors.
+          }
+          throw new DaemonError(message, response.status);
+        }
+
+        handlers.onOpen?.();
+        reader = response.body?.getReader() ?? null;
+        if (!reader) {
+          throw new DaemonError('Daemon log stream did not provide a readable body');
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+          buffer += decoder.decode(value, { stream: true });
+
+          let newlineIndex = buffer.indexOf('\n');
+          while (newlineIndex !== -1) {
+            const raw = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
+            if (raw) {
+              const record = JSON.parse(raw) as LogStreamRecord;
+              if (record.type === 'line' && record.line) {
+                handlers.onLine?.(record.line);
+              } else if (record.type === 'error') {
+                handlers.onError?.(record.error ?? 'Daemon log stream failed');
+              }
+            }
+            newlineIndex = buffer.indexOf('\n');
+          }
+        }
+
+        handlers.onClose?.();
+      } catch (error) {
+        if (controller.signal.aborted) {
+          handlers.onClose?.();
+          return;
+        }
+        handlers.onError?.(error instanceof Error ? error.message : 'Daemon log stream failed');
+      } finally {
+        void reader?.cancel().catch(() => undefined);
+      }
+    })();
+
+    return () => controller.abort();
   }
 
   async exportBackup(path?: string, force = false): Promise<BackupResponse> {
@@ -828,6 +1128,10 @@ export class RoveDaemonClient {
 
   async listChannels(): Promise<ChannelStatus[]> {
     return this.request<ChannelStatus[]>('/v1/channels');
+  }
+
+  async listStarters(): Promise<StarterCatalogEntry[]> {
+    return this.request<StarterCatalogEntry[]>('/v1/starters');
   }
 
   async getTelegramChannel(): Promise<TelegramChannelStatus> {
@@ -1080,8 +1384,8 @@ export class RoveDaemonClient {
     template_id?: string;
     id?: string;
     name?: string;
-  }): Promise<AgentSpec> {
-    return this.request<AgentSpec>('/v1/agents/factory/preview', {
+  }): Promise<AgentFactoryResult> {
+    return this.request<AgentFactoryResult>('/v1/agents/factory/preview', {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -1092,8 +1396,8 @@ export class RoveDaemonClient {
     template_id?: string;
     id?: string;
     name?: string;
-  }): Promise<AgentSpec> {
-    return this.request<AgentSpec>('/v1/agents/factory/create', {
+  }): Promise<AgentFactoryResult> {
+    return this.request<AgentFactoryResult>('/v1/agents/factory/create', {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -1102,10 +1406,20 @@ export class RoveDaemonClient {
   async createAgentFromTask(taskId: string, input?: {
     id?: string;
     name?: string;
-  }): Promise<AgentSpec> {
-    return this.request<AgentSpec>(`/v1/agents/from-task/${encodeURIComponent(taskId)}`, {
+  }): Promise<AgentFactoryResult> {
+    return this.request<AgentFactoryResult>(`/v1/agents/from-task/${encodeURIComponent(taskId)}`, {
       method: 'POST',
       body: JSON.stringify(input ?? {}),
+    });
+  }
+
+  async getAgentReview(id: string): Promise<FactoryReview> {
+    return this.request<FactoryReview>(`/v1/agents/${encodeURIComponent(id)}/review`);
+  }
+
+  async approveAgentDraft(id: string): Promise<AgentSpec> {
+    return this.request<AgentSpec>(`/v1/agents/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
     });
   }
 
@@ -1142,13 +1456,17 @@ export class RoveDaemonClient {
     return this.request<SpecTemplateSummary[]>('/v1/workflows/templates');
   }
 
+  async listWorkerPresets(): Promise<WorkerPreset[]> {
+    return this.request<WorkerPreset[]>('/v1/workers/presets');
+  }
+
   async previewWorkflowFactory(input: {
     requirement: string;
     template_id?: string;
     id?: string;
     name?: string;
-  }): Promise<WorkflowSpec> {
-    return this.request<WorkflowSpec>('/v1/workflows/factory/preview', {
+  }): Promise<WorkflowFactoryResult> {
+    return this.request<WorkflowFactoryResult>('/v1/workflows/factory/preview', {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -1159,8 +1477,8 @@ export class RoveDaemonClient {
     template_id?: string;
     id?: string;
     name?: string;
-  }): Promise<WorkflowSpec> {
-    return this.request<WorkflowSpec>('/v1/workflows/factory/create', {
+  }): Promise<WorkflowFactoryResult> {
+    return this.request<WorkflowFactoryResult>('/v1/workflows/factory/create', {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -1169,10 +1487,20 @@ export class RoveDaemonClient {
   async createWorkflowFromTask(taskId: string, input?: {
     id?: string;
     name?: string;
-  }): Promise<WorkflowSpec> {
-    return this.request<WorkflowSpec>(`/v1/workflows/from-task/${encodeURIComponent(taskId)}`, {
+  }): Promise<WorkflowFactoryResult> {
+    return this.request<WorkflowFactoryResult>(`/v1/workflows/from-task/${encodeURIComponent(taskId)}`, {
       method: 'POST',
       body: JSON.stringify(input ?? {}),
+    });
+  }
+
+  async getWorkflowReview(id: string): Promise<FactoryReview> {
+    return this.request<FactoryReview>(`/v1/workflows/${encodeURIComponent(id)}/review`);
+  }
+
+  async approveWorkflowDraft(id: string): Promise<WorkflowSpec> {
+    return this.request<WorkflowSpec>(`/v1/workflows/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
     });
   }
 
@@ -1199,6 +1527,19 @@ export class RoveDaemonClient {
 
   async listWorkflowRuns(): Promise<WorkflowRunRecord[]> {
     return this.request<WorkflowRunRecord[]>('/v1/workflows/runs');
+  }
+
+  async getWorkflowRun(runId: string): Promise<WorkflowRunDetail> {
+    return this.request<WorkflowRunDetail>(`/v1/workflows/runs/${encodeURIComponent(runId)}`);
+  }
+
+  async resumeWorkflowRun(runId: string): Promise<ExecuteTaskResponse> {
+    return this.request<ExecuteTaskResponse>(
+      `/v1/workflows/runs/${encodeURIComponent(runId)}/resume`,
+      {
+        method: 'POST',
+      },
+    );
   }
 
   connectEvents(onEvent: (event: DaemonEvent) => void): WebSocket {
@@ -1272,9 +1613,11 @@ export class RoveDaemonClient {
     );
   }
 
-  private headers(headers?: HeadersInit): Headers {
+  private headers(headers?: HeadersInit, json = true): Headers {
     const merged = new Headers(headers);
-    merged.set('Content-Type', 'application/json');
+    if (json) {
+      merged.set('Content-Type', 'application/json');
+    }
     if (this.token) {
       merged.set('Authorization', `Bearer ${this.token}`);
     }

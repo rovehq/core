@@ -31,9 +31,11 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
 use crate::agent::AgentCore;
+use crate::config::Config;
 use crate::db::Database;
 use crate::gateway::Gateway;
 use crate::secrets::SecretManager;
+use crate::system::runtime_state;
 
 /// Application state shared across all HTTP requests
 #[derive(Clone)]
@@ -52,6 +54,7 @@ pub async fn start_daemon(
     agent: Arc<RwLock<AgentCore>>,
     port: u16,
     bind_addr: String,
+    config: Config,
     db: Arc<Database>,
     gateway: Arc<Gateway>,
     webui_enabled: bool,
@@ -119,20 +122,34 @@ pub async fn start_daemon(
         .route("/v1/auth/lock", post(api::auth_lock))
         .route("/v1/auth/reauth", post(api::auth_reauth))
         .route("/v1/config", get(api::get_config).post(api::update_config))
+        .route(
+            "/v1/browser",
+            get(api::browser_status).put(api::update_browser),
+        )
         .route("/v1/config/reload", post(api::reload_config))
         .route("/v1/overview", get(api::overview))
         .route("/v1/health/snapshot", get(api::health_snapshot))
         .route("/v1/logs/recent", get(api::recent_logs))
+        .route("/v1/logs/stream", get(api::stream_logs))
         .route("/v1/backups/export", post(api::export_backup))
         .route("/v1/backups/restore", post(api::restore_backup))
         .route("/v1/migrate/:source/inspect", post(api::inspect_migration))
         .route("/v1/migrate/:source/import", post(api::import_migration))
+        .route("/v1/migrate/status", get(api::migration_status))
         .route("/v1/tasks", get(api::list_tasks).post(api::create_task))
         .route("/v1/agents", get(api::list_agents).post(api::create_agent))
         .route("/v1/agents/templates", get(api::list_agent_templates))
-        .route("/v1/agents/factory/preview", post(api::preview_agent_factory))
+        .route(
+            "/v1/agents/factory/preview",
+            post(api::preview_agent_factory),
+        )
         .route("/v1/agents/factory/create", post(api::create_agent_factory))
-        .route("/v1/agents/from-task/:task_id", post(api::create_agent_from_task))
+        .route(
+            "/v1/agents/from-task/:task_id",
+            post(api::create_agent_from_task),
+        )
+        .route("/v1/agents/:id/review", get(api::get_agent_review))
+        .route("/v1/agents/:id/approve", post(api::approve_agent_factory))
         .route("/v1/agents/runs", get(api::list_agent_runs))
         .route(
             "/v1/agents/:id",
@@ -145,6 +162,8 @@ pub async fn start_daemon(
             "/v1/workflows",
             get(api::list_workflows).post(api::create_workflow),
         )
+        .route("/v1/starters", get(api::list_starters))
+        .route("/v1/workers/presets", get(api::list_worker_presets))
         .route("/v1/workflows/templates", get(api::list_workflow_templates))
         .route(
             "/v1/workflows/factory/preview",
@@ -158,7 +177,17 @@ pub async fn start_daemon(
             "/v1/workflows/from-task/:task_id",
             post(api::create_workflow_from_task),
         )
+        .route("/v1/workflows/:id/review", get(api::get_workflow_review))
+        .route(
+            "/v1/workflows/:id/approve",
+            post(api::approve_workflow_factory),
+        )
         .route("/v1/workflows/runs", get(api::list_workflow_runs))
+        .route("/v1/workflows/runs/:run_id", get(api::get_workflow_run))
+        .route(
+            "/v1/workflows/runs/:run_id/resume",
+            post(api::resume_workflow_run),
+        )
         .route(
             "/v1/workflows/:id",
             get(api::get_workflow)
@@ -275,13 +304,28 @@ pub async fn start_daemon(
         .route("/api/v1/execute", post(api::execute_task))
         .route("/api/v1/tasks/:task_id", get(api::task_status))
         .route("/api/v1/overview", get(api::overview))
+        .route(
+            "/api/v1/browser",
+            get(api::browser_status).put(api::update_browser),
+        )
         .route("/api/v1/health/snapshot", get(api::health_snapshot))
         .route("/api/v1/logs/recent", get(api::recent_logs))
+        .route("/api/v1/logs/stream", get(api::stream_logs))
         .route("/api/v1/backups/export", post(api::export_backup))
         .route("/api/v1/backups/restore", post(api::restore_backup))
-        .route("/api/v1/migrate/:source/inspect", post(api::inspect_migration))
-        .route("/api/v1/migrate/:source/import", post(api::import_migration))
-        .route("/api/v1/agents", get(api::list_agents).post(api::create_agent))
+        .route(
+            "/api/v1/migrate/:source/inspect",
+            post(api::inspect_migration),
+        )
+        .route(
+            "/api/v1/migrate/:source/import",
+            post(api::import_migration),
+        )
+        .route("/api/v1/migrate/status", get(api::migration_status))
+        .route(
+            "/api/v1/agents",
+            get(api::list_agents).post(api::create_agent),
+        )
         .route("/api/v1/agents/templates", get(api::list_agent_templates))
         .route(
             "/api/v1/agents/factory/preview",
@@ -294,6 +338,11 @@ pub async fn start_daemon(
         .route(
             "/api/v1/agents/from-task/:task_id",
             post(api::create_agent_from_task),
+        )
+        .route("/api/v1/agents/:id/review", get(api::get_agent_review))
+        .route(
+            "/api/v1/agents/:id/approve",
+            post(api::approve_agent_factory),
         )
         .route("/api/v1/agents/runs", get(api::list_agent_runs))
         .route(
@@ -323,6 +372,14 @@ pub async fn start_daemon(
             "/api/v1/workflows/from-task/:task_id",
             post(api::create_workflow_from_task),
         )
+        .route(
+            "/api/v1/workflows/:id/review",
+            get(api::get_workflow_review),
+        )
+        .route(
+            "/api/v1/workflows/:id/approve",
+            post(api::approve_workflow_factory),
+        )
         .route("/api/v1/workflows/runs", get(api::list_workflow_runs))
         .route(
             "/api/v1/workflows/:id",
@@ -341,7 +398,10 @@ pub async fn start_daemon(
         .route("/api/v1/services/:name/enable", post(api::enable_service))
         .route("/api/v1/services/:name/disable", post(api::disable_service))
         .route("/api/v1/extensions", get(api::list_extensions))
-        .route("/api/v1/extensions/catalog", get(api::list_extension_catalog))
+        .route(
+            "/api/v1/extensions/catalog",
+            get(api::list_extension_catalog),
+        )
         .route(
             "/api/v1/extensions/catalog/refresh",
             post(api::refresh_extension_catalog),
@@ -350,7 +410,10 @@ pub async fn start_daemon(
             "/api/v1/extensions/catalog/:id",
             get(api::get_extension_catalog_entry),
         )
-        .route("/api/v1/extensions/updates", get(api::list_extension_updates))
+        .route(
+            "/api/v1/extensions/updates",
+            get(api::list_extension_updates),
+        )
         .route("/api/v1/extensions/install", post(api::install_extension))
         .route("/api/v1/extensions/upgrade", post(api::upgrade_extension))
         .route(
@@ -451,6 +514,8 @@ pub async fn start_daemon(
 
     let tls_status = tls::localhost_tls_status();
     if tls_status.enabled {
+        let state_record = runtime_state::build_record(&bind_addr, addr, port, true, webui_enabled);
+        runtime_state::write(&config, &state_record)?;
         info!(
             "Localhost TLS enabled using cert '{}' and key '{}'",
             tls_status.cert_path, tls_status.key_path
@@ -466,10 +531,19 @@ pub async fn start_daemon(
         {
             error!("Daemon TLS server error: {}", error);
         }
+        if let Err(error) = runtime_state::clear(&config) {
+            error!("Failed to clear daemon runtime state: {}", error);
+        }
     } else {
         let listener = TcpListener::bind(addr).await?;
+        let state_record =
+            runtime_state::build_record(&bind_addr, addr, port, false, webui_enabled);
+        runtime_state::write(&config, &state_record)?;
         if let Err(error) = axum::serve(listener, app).await {
             error!("Daemon server error: {}", error);
+        }
+        if let Err(error) = runtime_state::clear(&config) {
+            error!("Failed to clear daemon runtime state: {}", error);
         }
     }
 

@@ -8,15 +8,16 @@ use tracing_subscriber::{
 
 use rove_engine::cli::{
     ActivateTarget, AddTarget, ApprovalsAction, Cli, Command, ConfigAction, DaemonProfileArg,
-    ExtensionAction, ExtensionFacadeAction, ExtensionKindArg, McpAction, ModelAction,
-    OutputFormat, PluginAction, PolicyAction, RemoteAction, RemoteDiscoverAction,
-    RemoteNodeAction, RemoteProfileAction, RemoteTransportAction, SecretBackendAction,
-    SecretsAction, ServiceAction, SteeringAction,
+    ExtensionAction, ExtensionFacadeAction, ExtensionKindArg, McpAction, ModelAction, OutputFormat,
+    PluginAction, PolicyAction, RemoteAction, RemoteDiscoverAction, RemoteNodeAction,
+    RemoteProfileAction, RemoteTransportAction, SecretBackendAction, SecretsAction, ServiceAction,
+    SteeringAction,
 };
 use rove_engine::policy::PolicyEngine;
 use rove_engine::policy::{
     active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir,
 };
+use rove_engine::security::{describe_protection_state, password_protection_state};
 use rove_engine::server;
 
 #[tokio::main]
@@ -93,11 +94,18 @@ async fn main() -> Result<()> {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::workflows::handle_workflows(action, &config).await?;
         }
+        Some(Command::Starter { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            rove_engine::cli::starters::handle_starters(action, &config).await?;
+        }
+        Some(Command::Browser { action }) => {
+            rove_engine::cli::browser::handle_browser(action).await?;
+        }
         Some(Command::Replay { task_id }) => {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::replay::handle_replay(task_id, &config, OutputFormat::Text).await?;
         }
-        Some(Command::Status) => rove_engine::cli::status::show()?,
+        Some(Command::Status) => rove_engine::cli::status::show().await?,
         Some(Command::Unlock) => rove_engine::cli::unlock::run().await?,
         Some(Command::Plugin { action }) => {
             eprintln!(
@@ -180,6 +188,9 @@ async fn main() -> Result<()> {
         Some(Command::Logs { action }) => {
             rove_engine::cli::logs::handle_logs(action).await?;
         }
+        Some(Command::Auth { action }) => {
+            rove_engine::cli::auth::handle_auth(action).await?;
+        }
         Some(Command::Backup { action }) => {
             rove_engine::cli::backup::handle_backup(action)?;
         }
@@ -188,6 +199,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::Migrate { action }) => {
             rove_engine::cli::migrate::handle_migrate(action)?;
+        }
+        Some(Command::Security) => {
+            rove_engine::cli::security::show_security().await?;
         }
         Some(Command::Keys) => println!("Use: python3 scripts/generate_keys.py"),
         Some(Command::Update { check }) => {
@@ -295,19 +309,82 @@ fn should_honor_console_env_filter(cli: &Cli) -> bool {
 async fn run_daemon(port: u16, profile: Option<DaemonProfileArg>) -> Result<()> {
     let _ = apply_profile_override(profile)?;
     let config = rove_engine::config::Config::load_or_create()?;
+    let effective_port = if port == 0 {
+        std::env::var("ROVE_PORT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(rove_engine::info::DEFAULT_PORT)
+    } else {
+        port
+    };
     // Runtime manager bootstrap happens inside CLI bootstrap:
     // builtins are registered immediately, while plugin schemas are loaded
     // without starting WASM modules or MCP servers until first use.
     let (agent, database, gateway) = rove_engine::cli::bootstrap::init_daemon().await?;
     gateway.clone().start();
-    rove_engine::channels::manager::ChannelManager::new(config.clone())
-        .start_enabled(agent.clone());
+    let channel_manager = rove_engine::channels::manager::ChannelManager::new(config.clone());
+    channel_manager.start_enabled(agent.clone());
     rove_engine::zerotier::maybe_start_sync_loop(config.clone()).await;
+    let channel_summaries = match channel_manager.list().await {
+        Ok(channels) => channels
+            .into_iter()
+            .map(|channel| {
+                format!(
+                    "{}={}",
+                    channel.name,
+                    if channel.healthy {
+                        "healthy"
+                    } else if channel.enabled {
+                        "needs-setup"
+                    } else {
+                        "off"
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(_) => "unavailable".to_string(),
+    };
+    let zerotier_summary = match rove_engine::zerotier::ZeroTierManager::new(config.clone())
+        .status()
+        .await
+    {
+        Ok(status) => {
+            if status.joined {
+                let target = status
+                    .network_name
+                    .clone()
+                    .or_else(|| status.network_id.clone())
+                    .unwrap_or_else(|| "network".to_string());
+                format!("joined {target}")
+            } else if status.enabled {
+                "enabled-not-joined".to_string()
+            } else {
+                "off".to_string()
+            }
+        }
+        Err(_) => "unavailable".to_string(),
+    };
     tracing::info!("{}", rove_engine::info::engine_banner());
+    let auth_state = password_protection_state(&config)
+        .map(describe_protection_state)
+        .unwrap_or("unknown");
+    tracing::info!(
+        "Runtime truth: auth={} bind_addr={} port={} profile={} secrets={} channels=[{}] zerotier={} webui={}",
+        auth_state,
+        config.webui.bind_addr,
+        effective_port,
+        config.daemon.profile.as_str(),
+        config.secrets.backend.as_str(),
+        channel_summaries,
+        zerotier_summary,
+        if config.webui.enabled { "enabled" } else { "disabled" },
+    );
     server::start_daemon(
         agent,
         port,
         config.webui.bind_addr.clone(),
+        config.clone(),
         database,
         gateway,
         config.webui.enabled,
@@ -607,7 +684,9 @@ async fn handle_extension_facade(
                 )
                 .await
             }
-            Some(ExtensionKindArg::Connector) => handle_mcp(McpAction::Install { source }, config).await,
+            Some(ExtensionKindArg::Connector) => {
+                handle_mcp(McpAction::Install { source }, config).await
+            }
             None => {
                 let item = rove_engine::cli::extensions::install_extension_api(
                     config,

@@ -6,6 +6,7 @@ use serde_json::Value;
 pub enum AuthState {
     Uninitialized,
     Locked,
+    Tampered,
     Unlocked,
     ReauthRequired,
 }
@@ -261,6 +262,138 @@ pub struct ZeroTierStatus {
     pub message: Option<String>,
 }
 
+/// Official browser-control profile mode exposed across CLI, API, and WebUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserProfileMode {
+    #[default]
+    ManagedLocal,
+    AttachExisting,
+    RemoteCdp,
+}
+
+impl BrowserProfileMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ManagedLocal => "managed_local",
+            Self::AttachExisting => "attach_existing",
+            Self::RemoteCdp => "remote_cdp",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserProfileReadiness {
+    #[default]
+    Ready,
+    NeedsSetup,
+    Warning,
+}
+
+impl BrowserProfileReadiness {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::NeedsSetup => "needs_setup",
+            Self::Warning => "warning",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserApprovalControls {
+    #[serde(default)]
+    pub require_approval_for_managed_launch: bool,
+    #[serde(default)]
+    pub require_approval_for_existing_session_attach: bool,
+    #[serde(default)]
+    pub require_approval_for_remote_cdp: bool,
+}
+
+impl Default for BrowserApprovalControls {
+    fn default() -> Self {
+        Self {
+            require_approval_for_managed_launch: true,
+            require_approval_for_existing_session_attach: true,
+            require_approval_for_remote_cdp: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BrowserProfileInput {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: BrowserProfileMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_data_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdp_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BrowserProfileRecord {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: BrowserProfileMode,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_data_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdp_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub readiness: BrowserProfileReadiness,
+    #[serde(default)]
+    pub approval_required: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BrowserSurfaceStatus {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile_id: Option<String>,
+    #[serde(default)]
+    pub controls: BrowserApprovalControls,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<BrowserProfileRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BrowserSurfaceUpdate {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile_id: Option<String>,
+    #[serde(default)]
+    pub controls: BrowserApprovalControls,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<BrowserProfileInput>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionTrustBadge {
@@ -335,6 +468,84 @@ pub struct ExtensionUpdateRecord {
     pub permission_warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_summary: Option<String>,
+}
+
+/// Starter catalog group for official setup surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StarterCatalogKind {
+    AgentTemplate,
+    WorkflowTemplate,
+    WorkerPreset,
+    ChannelStarter,
+    CapabilityPack,
+}
+
+impl StarterCatalogKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AgentTemplate => "agent_template",
+            Self::WorkflowTemplate => "workflow_template",
+            Self::WorkerPreset => "worker_preset",
+            Self::ChannelStarter => "channel_starter",
+            Self::CapabilityPack => "capability_pack",
+        }
+    }
+}
+
+impl Default for StarterCatalogKind {
+    fn default() -> Self {
+        Self::AgentTemplate
+    }
+}
+
+/// Availability state for an official starter entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StarterCatalogStatus {
+    Available,
+    NeedsSetup,
+    Ready,
+}
+
+impl StarterCatalogStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::NeedsSetup => "needs_setup",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+impl Default for StarterCatalogStatus {
+    fn default() -> Self {
+        Self::Available
+    }
+}
+
+/// Unified official starter catalog entry exposed across CLI, API, and WebUI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StarterCatalogEntry {
+    pub id: String,
+    pub kind: StarterCatalogKind,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub official: bool,
+    pub status: StarterCatalogStatus,
+    pub source: String,
+    pub action_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Envelope sent between remote daemons for coordinated execution.

@@ -50,6 +50,7 @@
 pub mod agent;
 pub mod approvals;
 pub mod brain;
+pub mod browser;
 pub mod core;
 pub mod daemon;
 pub mod defaults;
@@ -70,6 +71,7 @@ pub mod webui;
 pub use agent::*;
 pub use approvals::*;
 pub use brain::*;
+pub use browser::*;
 pub use core::*;
 pub use daemon::*;
 pub use defaults::*;
@@ -316,6 +318,7 @@ impl Config {
 
         ensure_directory_writable(&self.core.data_dir)?;
         ensure_database_path_writable(&self.core.data_dir.join("rove.db"))?;
+        normalize_and_validate_browser(&mut self.browser)?;
 
         Ok(())
     }
@@ -393,6 +396,7 @@ fn config_to_toml(config: &Config) -> Result<String, toml::ser::Error> {
     table.insert("daemon".to_string(), Value::try_from(&config.daemon)?);
     table.insert("core".to_string(), Value::try_from(&config.core)?);
     table.insert("approvals".to_string(), Value::try_from(&config.approvals)?);
+    table.insert("browser".to_string(), Value::try_from(&config.browser)?);
     table.insert("llm".to_string(), Value::try_from(&config.llm)?);
     table.insert("tools".to_string(), Value::try_from(&config.tools)?);
     table.insert("plugins".to_string(), Value::try_from(&config.plugins)?);
@@ -566,6 +570,83 @@ fn insert_public_brain_aliases(
         .expect("brains entry must be a TOML table");
     brains_table.insert("dispatch".to_string(), Value::try_from(&config.brains)?);
     Ok(())
+}
+
+fn normalize_and_validate_browser(browser: &mut BrowserConfig) -> Result<(), EngineError> {
+    browser.default_profile_id = normalize_optional_string(browser.default_profile_id.take());
+
+    let mut seen_ids = std::collections::HashSet::new();
+    for profile in &mut browser.profiles {
+        profile.id = profile.id.trim().to_string();
+        profile.name = profile.name.trim().to_string();
+        profile.browser = normalize_optional_string(profile.browser.take());
+        profile.user_data_dir = normalize_optional_string(profile.user_data_dir.take());
+        profile.startup_url = normalize_optional_string(profile.startup_url.take());
+        profile.cdp_url = normalize_optional_string(profile.cdp_url.take());
+        profile.notes = normalize_optional_string(profile.notes.take());
+
+        if profile.id.is_empty() {
+            return Err(EngineError::Config(
+                "browser profile id cannot be empty".to_string(),
+            ));
+        }
+        if profile.name.is_empty() {
+            return Err(EngineError::Config(format!(
+                "browser profile '{}' must have a non-empty name",
+                profile.id
+            )));
+        }
+        if !seen_ids.insert(profile.id.clone()) {
+            return Err(EngineError::Config(format!(
+                "duplicate browser profile id '{}'",
+                profile.id
+            )));
+        }
+        if matches!(
+            profile.mode,
+            BrowserProfileMode::AttachExisting | BrowserProfileMode::RemoteCdp
+        ) && profile.cdp_url.is_none()
+        {
+            return Err(EngineError::Config(format!(
+                "browser profile '{}' uses {} mode but has no cdp_url",
+                profile.id,
+                profile.mode.as_str()
+            )));
+        }
+        if let Some(url) = profile.cdp_url.as_deref() {
+            let valid_scheme = ["ws://", "wss://", "http://", "https://"]
+                .iter()
+                .any(|prefix| url.starts_with(prefix));
+            if !valid_scheme {
+                return Err(EngineError::Config(format!(
+                    "browser profile '{}' has invalid cdp_url '{}'",
+                    profile.id, url
+                )));
+            }
+        }
+    }
+
+    if let Some(default_profile_id) = browser.default_profile_id.as_deref() {
+        if !browser
+            .profiles
+            .iter()
+            .any(|profile| profile.id == default_profile_id)
+        {
+            return Err(EngineError::Config(format!(
+                "browser.default_profile_id '{}' does not match any browser profile",
+                default_profile_id
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
 #[cfg(test)]
@@ -744,6 +825,55 @@ max_risk_tier = 2
         assert_eq!(snapshot.secrets.backend, "vault");
         assert!(snapshot.services.remote_enabled);
         assert!(snapshot.channels.telegram_enabled);
+    }
+
+    #[test]
+    fn browser_profiles_require_unique_ids_and_valid_default() {
+        let mut config = Config::default();
+        config.core.workspace = std::env::current_dir().expect("cwd");
+        config.core.data_dir = config
+            .core
+            .workspace
+            .join("target/config-tests/browser-duplicate");
+        config.browser.enabled = true;
+        config.browser.default_profile_id = Some("ops".to_string());
+        config.browser.profiles = vec![
+            crate::config::BrowserProfileConfig {
+                id: "ops".to_string(),
+                name: "Ops".to_string(),
+                ..Default::default()
+            },
+            crate::config::BrowserProfileConfig {
+                id: "ops".to_string(),
+                name: "Duplicate".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let error = config.clamp_and_validate().expect_err("duplicate id");
+        assert!(error.to_string().contains("duplicate browser profile id"));
+    }
+
+    #[test]
+    fn browser_remote_cdp_requires_url() {
+        let mut config = Config::default();
+        config.core.workspace = std::env::current_dir().expect("cwd");
+        config.core.data_dir = config
+            .core
+            .workspace
+            .join("target/config-tests/browser-remote-cdp");
+        config.browser.enabled = true;
+        config.browser.profiles = vec![crate::config::BrowserProfileConfig {
+            id: "remote".to_string(),
+            name: "Remote".to_string(),
+            mode: crate::config::BrowserProfileMode::RemoteCdp,
+            ..Default::default()
+        }];
+
+        let error = config
+            .clamp_and_validate()
+            .expect_err("remote cdp should require cdp url");
+        assert!(error.to_string().contains("has no cdp_url"));
     }
 }
 

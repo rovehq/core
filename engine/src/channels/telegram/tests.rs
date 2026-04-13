@@ -80,7 +80,7 @@ fn test_empty_allowed_users_allows_all() {
 #[tokio::test]
 async fn test_pending_approval_resolve() {
     let op_key = "approve_test:run_command:unique123".to_string();
-    let rx = park_approval(op_key.clone()).await;
+    let rx = park_approval(op_key.clone(), 60).await;
     resolve_approval(&op_key, true).await;
     let approved = rx.await.unwrap();
     assert!(approved);
@@ -89,7 +89,7 @@ async fn test_pending_approval_resolve() {
 #[tokio::test]
 async fn test_pending_approval_denied() {
     let op_key = "deny_test:run_command:unique456".to_string();
-    let rx = park_approval(op_key.clone()).await;
+    let rx = park_approval(op_key.clone(), 60).await;
     resolve_approval(&op_key, false).await;
     let approved = rx.await.unwrap();
     assert!(!approved);

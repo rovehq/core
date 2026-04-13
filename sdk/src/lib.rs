@@ -3,8 +3,8 @@
 //! Shared library providing traits, types, and utilities for Rove components.
 //! This crate is used by both the engine and plugins/core-tools.
 
-pub mod agent_spec;
 pub mod agent_handle;
+pub mod agent_spec;
 pub mod bus_handle;
 pub mod config_handle;
 pub mod control;
@@ -32,12 +32,13 @@ pub mod subagent;
 pub mod brain;
 
 // Re-export commonly used types
-pub use agent_spec::{
-    AgentRunRecord, AgentSpec, AgentTemplate, AgentUiSchema, CapabilityRef, ChannelBinding,
-    NodePlacementPolicy, SpecProvenance, SpecRunStatus, TaskExecutionProfile, WorkflowRunRecord,
-    WorkflowSpec, WorkflowStepSpec,
-};
 pub use agent_handle::{AgentHandle, AgentHandleImpl};
+pub use agent_spec::{
+    AgentFactoryResult, AgentRunRecord, AgentSpec, AgentTemplate, AgentUiSchema, CapabilityRef,
+    ChannelBinding, FactoryFieldChange, FactoryReview, NodePlacementPolicy, SpecProvenance,
+    SpecRunStatus, TaskExecutionProfile, WorkerPreset, WorkflowFactoryResult, WorkflowRunDetail,
+    WorkflowRunRecord, WorkflowRunStepRecord, WorkflowSpec, WorkflowStepSpec,
+};
 pub use brain::{
     Brain, BrainResponse, Complexity, DispatchResult, Message, Route, TaskDomain, ToolSchema,
     ToolTag,
@@ -49,12 +50,14 @@ pub use config_handle::{
     SecretConfigSnapshot, ServicesConfigSnapshot, StaticConfigHandle, VersionedConfigSnapshot,
 };
 pub use control::{
-    AuthState, AuthStatus, BrainFamily, CatalogExtensionRecord, CatalogVersionRecord,
-    DaemonCapabilities, DaemonHello, ExtensionKind, ExtensionProvenance, ExtensionTrustBadge,
-    ExtensionUpdateRecord, NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile,
-    NodeSummary, PolicyScope, RemoteDiscoveryCandidate, RemoteEnvelope, RemoteExecutionPlan,
-    RemoteTransportRecord, RunContextId, RunIsolation, RunMode, ServiceKind, SessionInfo,
-    ZeroTierStatus,
+    AuthState, AuthStatus, BrainFamily, BrowserApprovalControls, BrowserProfileInput,
+    BrowserProfileMode, BrowserProfileReadiness, BrowserProfileRecord, BrowserSurfaceStatus,
+    BrowserSurfaceUpdate, CatalogExtensionRecord, CatalogVersionRecord, DaemonCapabilities,
+    DaemonHello, ExtensionKind, ExtensionProvenance, ExtensionTrustBadge, ExtensionUpdateRecord,
+    NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, NodeSummary, PolicyScope,
+    RemoteDiscoveryCandidate, RemoteEnvelope, RemoteExecutionPlan, RemoteTransportRecord,
+    RunContextId, RunIsolation, RunMode, ServiceKind, SessionInfo, StarterCatalogEntry,
+    StarterCatalogKind, StarterCatalogStatus, ZeroTierStatus,
 };
 pub use core_tool::{CoreContext, CoreTool};
 pub use crypto_handle::{CryptoHandle, CryptoHandleImpl};

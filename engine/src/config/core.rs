@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::agent::AgentConfig;
 use super::approvals::ApprovalsConfig;
 use super::brain::BrainsConfig;
+use super::browser::BrowserConfig;
 use super::daemon::DaemonConfig;
 use super::defaults::{default_data_dir, default_log_level, default_true};
 use super::gateway::GatewayFileConfig;
@@ -33,6 +34,8 @@ pub struct Config {
     pub core: CoreConfig,
     #[serde(default)]
     pub approvals: ApprovalsConfig,
+    #[serde(default)]
+    pub browser: BrowserConfig,
     #[serde(default)]
     pub llm: LLMConfig,
     #[serde(default)]
