@@ -22,15 +22,19 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::agent::AgentCore;
+use crate::cli::bootstrap::build_tools;
+use crate::cli::database_path::{database_path, expand_data_dir};
 use crate::config::Config;
 use crate::db::Database;
 use crate::gateway::Gateway;
@@ -76,6 +80,11 @@ pub async fn start_daemon(
         gateway,
         db,
     };
+    spawn_extension_hot_reload_watcher(
+        Arc::clone(&state.agent),
+        Arc::clone(&state.db),
+        config.clone(),
+    );
 
     // Only allow explicit hosted and local dev origins for CORS.
     let cors = CorsLayer::new()
@@ -275,6 +284,11 @@ pub async fn start_daemon(
         .route("/v1/services/install", post(api::install_service))
         .route("/v1/services/install/:mode", delete(api::uninstall_service))
         .route("/v1/channels", get(api::list_channels))
+        .route("/v1/channels/plugins", get(api::plugin_channel_statuses))
+        .route(
+            "/v1/channels/plugins/:name/deliver",
+            post(api::plugin_channel_deliver),
+        )
         .route("/v1/channels/telegram", get(api::telegram_channel_status))
         .route(
             "/v1/channels/telegram/setup",
@@ -477,6 +491,14 @@ pub async fn start_daemon(
         )
         .route("/api/v1/channels", get(api::list_channels))
         .route(
+            "/api/v1/channels/plugins",
+            get(api::plugin_channel_statuses),
+        )
+        .route(
+            "/api/v1/channels/plugins/:name/deliver",
+            post(api::plugin_channel_deliver),
+        )
+        .route(
             "/api/v1/channels/telegram",
             get(api::telegram_channel_status),
         )
@@ -598,6 +620,160 @@ pub async fn start_daemon(
     }
 
     Ok(())
+}
+
+fn spawn_extension_hot_reload_watcher(
+    agent: Arc<RwLock<AgentCore>>,
+    db: Arc<Database>,
+    config: Config,
+) {
+    let db_path = database_path(&config);
+    let data_dir = expand_data_dir(&config.core.data_dir);
+    let plugin_dir = data_dir.join("plugins");
+
+    tokio::spawn(async move {
+        let (event_tx, mut event_rx) = mpsc::channel(100);
+
+        let watcher_res = RecommendedWatcher::new(
+            move |res: notify::Result<Event>| {
+                if let Ok(event) = res {
+                    if is_extension_reload_event(&event, &db_path, &plugin_dir) {
+                        let _ = event_tx.blocking_send(());
+                    }
+                }
+            },
+            NotifyConfig::default(),
+        );
+
+        let mut watcher = match watcher_res {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                warn!(
+                    "Failed to initialize extension hot-reload watcher: {}",
+                    error
+                );
+                return;
+            }
+        };
+
+        if let Err(error) = watcher.watch(&data_dir, RecursiveMode::Recursive) {
+            warn!(
+                "Failed to watch '{}' for extension hot-reload: {}",
+                data_dir.display(),
+                error
+            );
+            return;
+        }
+
+        info!(
+            "Watching '{}' for installed plugin changes",
+            data_dir.display()
+        );
+
+        loop {
+            tokio::select! {
+                Some(_) = event_rx.recv() => {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    while event_rx.try_recv().is_ok() {}
+
+                    match build_tools(db.as_ref(), &config).await {
+                        Ok(tools) => {
+                            agent.write().await.set_tools(tools);
+                            info!("Hot-reloaded daemon tool registry after extension change");
+                        }
+                        Err(error) => {
+                            warn!("Failed to hot-reload daemon tool registry: {}", error);
+                        }
+                    }
+                }
+                else => break,
+            }
+        }
+    });
+}
+
+fn is_extension_reload_event(event: &Event, db_path: &Path, plugin_dir: &Path) -> bool {
+    event
+        .paths
+        .iter()
+        .any(|path| path.starts_with(plugin_dir) || matches_database_file(path, db_path))
+}
+
+fn matches_database_file(path: &Path, db_path: &Path) -> bool {
+    if path == db_path {
+        return true;
+    }
+
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if Some(parent) != db_path.parent() {
+        return false;
+    }
+
+    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let Some(db_name) = db_path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+
+    file_name == db_name
+        || file_name == format!("{db_name}-wal")
+        || file_name == format!("{db_name}-shm")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use notify::{event::CreateKind, Event, EventKind};
+
+    use super::{is_extension_reload_event, matches_database_file};
+
+    #[test]
+    fn database_file_match_includes_wal_and_shm() {
+        let db_path = PathBuf::from("/tmp/rove/rove.db");
+        assert!(matches_database_file(
+            &PathBuf::from("/tmp/rove/rove.db"),
+            &db_path
+        ));
+        assert!(matches_database_file(
+            &PathBuf::from("/tmp/rove/rove.db-wal"),
+            &db_path
+        ));
+        assert!(matches_database_file(
+            &PathBuf::from("/tmp/rove/rove.db-shm"),
+            &db_path
+        ));
+        assert!(!matches_database_file(
+            &PathBuf::from("/tmp/other/rove.db"),
+            &db_path
+        ));
+    }
+
+    #[test]
+    fn extension_reload_event_filters_plugin_and_database_paths() {
+        let db_path = PathBuf::from("/tmp/rove/rove.db");
+        let plugin_dir = PathBuf::from("/tmp/rove/plugins");
+        let event = Event {
+            kind: EventKind::Create(CreateKind::File),
+            paths: vec![PathBuf::from("/tmp/rove/plugins/demo/runtime.json")],
+            attrs: Default::default(),
+        };
+        assert!(is_extension_reload_event(&event, &db_path, &plugin_dir));
+
+        let unrelated = Event {
+            kind: EventKind::Create(CreateKind::File),
+            paths: vec![PathBuf::from("/tmp/rove/logs/rove.log")],
+            attrs: Default::default(),
+        };
+        assert!(!is_extension_reload_event(
+            &unrelated,
+            &db_path,
+            &plugin_dir
+        ));
+    }
 }
 
 fn daemon_socket_addr(bind_addr: &str, port: u16) -> Result<SocketAddr> {

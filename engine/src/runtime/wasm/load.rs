@@ -86,7 +86,7 @@ impl WasmRuntime {
 
         let wasm = Wasm::data(wasm_bytes);
         let extism_manifest = ExtismManifest::new([wasm]);
-        let host_functions = self.create_host_functions();
+        let host_functions = self.create_host_functions(plugin_entry);
 
         let plugin = Plugin::new(&extism_manifest, host_functions, true).map_err(|error| {
             tracing::error!("Failed to create Extism plugin for '{}': {}", name, error);

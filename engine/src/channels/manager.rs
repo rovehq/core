@@ -1,14 +1,21 @@
 use std::sync::Arc;
 
-use anyhow::Result;
-use serde::Serialize;
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::agent::AgentCore;
 use crate::channels::TelegramBot;
+use crate::cli::database_path::database_path;
 use crate::config::{metadata::SERVICE_NAME, Config};
+use crate::crypto::CryptoModule;
+use crate::fs_guard::FileSystemGuard;
+use crate::gateway::Gateway;
+use crate::runtime::{sdk_plugin_entry_from_installed_plugin, WasmRuntime};
 use crate::secrets::SecretManager;
 use crate::specs::{allowed_tools, SpecRepository};
+use crate::storage::{Database, InstalledPlugin};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelStatus {
@@ -52,6 +59,34 @@ pub struct TelegramSetupInput {
     pub default_agent_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginChannelStatus {
+    pub name: String,
+    pub enabled: bool,
+    pub configured: bool,
+    pub healthy: bool,
+    pub summary: String,
+    pub tool: String,
+    pub trust_tier: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginChannelDeliverInput {
+    pub input: String,
+    pub session_id: Option<String>,
+    pub workspace: Option<String>,
+    pub team_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginChannelDeliverResult {
+    pub ok: bool,
+    pub task_id: Option<String>,
+    pub preview: Option<String>,
+    pub accepted_input: String,
+    pub plugin_output: Value,
+}
+
 pub struct ChannelManager {
     config: Config,
 }
@@ -63,7 +98,7 @@ impl ChannelManager {
 
     pub async fn list(&self) -> Result<Vec<ChannelStatus>> {
         let telegram = self.telegram_status().await?;
-        Ok(vec![ChannelStatus {
+        let mut channels = vec![ChannelStatus {
             name: "telegram".to_string(),
             enabled: telegram.enabled,
             configured: telegram.configured,
@@ -81,7 +116,22 @@ impl ChannelManager {
             } else {
                 "Disabled".to_string()
             },
-        }])
+        }];
+
+        channels.extend(
+            self.plugin_statuses()
+                .await?
+                .into_iter()
+                .map(|status| ChannelStatus {
+                    name: status.name,
+                    enabled: status.enabled,
+                    configured: status.configured,
+                    healthy: status.healthy,
+                    summary: status.summary,
+                }),
+        );
+
+        Ok(channels)
     }
 
     pub async fn telegram_status(&self) -> Result<TelegramChannelStatus> {
@@ -217,6 +267,98 @@ impl ChannelManager {
         }
     }
 
+    pub async fn plugin_statuses(&self) -> Result<Vec<PluginChannelStatus>> {
+        let plugins = self.list_channel_plugins().await?;
+        Ok(plugins
+            .into_iter()
+            .map(|plugin| PluginChannelStatus {
+                name: plugin.name.clone(),
+                enabled: plugin.enabled,
+                configured: plugin.binary_path.is_some(),
+                healthy: plugin.enabled && plugin.binary_path.is_some(),
+                summary: if plugin.enabled && plugin.binary_path.is_some() {
+                    "Channel plugin ready for deliver dispatch".to_string()
+                } else if plugin.enabled {
+                    "Enabled but missing runtime artifact".to_string()
+                } else {
+                    "Installed but disabled".to_string()
+                },
+                tool: "deliver".to_string(),
+                trust_tier: plugin.trust_tier,
+            })
+            .collect())
+    }
+
+    pub async fn deliver_plugin(
+        &self,
+        name: &str,
+        input: PluginChannelDeliverInput,
+        gateway: Arc<Gateway>,
+    ) -> Result<PluginChannelDeliverResult> {
+        let plugin = self
+            .list_channel_plugins()
+            .await?
+            .into_iter()
+            .find(|plugin| plugin.name == name)
+            .with_context(|| format!("Channel plugin '{}' is not installed", name))?;
+        if !plugin.enabled {
+            return Err(anyhow!(
+                "Channel plugin '{}' is installed but disabled",
+                name
+            ));
+        }
+
+        let mut runtime = self.build_channel_runtime(&plugin).await?;
+        let payload = serde_json::json!({
+            "input": input.input,
+            "session_id": input.session_id,
+            "workspace": input.workspace,
+            "team_id": input.team_id,
+        });
+        let payload_bytes = serde_json::to_vec(&payload)?;
+        let output = runtime
+            .call_plugin(&plugin.name, "deliver", &payload_bytes)
+            .await
+            .with_context(|| format!("Channel plugin '{}' failed during deliver", plugin.name))?;
+        let plugin_output: Value = serde_json::from_slice(&output)
+            .with_context(|| format!("Channel plugin '{}' returned invalid JSON", plugin.name))?;
+
+        let accepted_input = plugin_output
+            .get("task_input")
+            .and_then(|value| value.as_str())
+            .or_else(|| plugin_output.get("input").and_then(|value| value.as_str()))
+            .unwrap_or_else(|| payload["input"].as_str().unwrap_or_default())
+            .trim()
+            .to_string();
+        if accepted_input.is_empty() {
+            return Err(anyhow!(
+                "Channel plugin '{}' did not provide any task input to submit",
+                plugin.name
+            ));
+        }
+
+        let task_id = gateway
+            .submit_channel(
+                &plugin.name,
+                &accepted_input,
+                input.session_id.as_deref(),
+                input.workspace.as_deref(),
+                input.team_id.as_deref(),
+            )
+            .await?;
+
+        Ok(PluginChannelDeliverResult {
+            ok: true,
+            task_id: Some(task_id),
+            preview: plugin_output
+                .get("preview")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned),
+            accepted_input,
+            plugin_output,
+        })
+    }
+
     pub fn start_enabled(&self, agent: Arc<RwLock<AgentCore>>) {
         if !self.config.telegram.enabled {
             return;
@@ -323,5 +465,113 @@ impl ChannelManager {
 
     fn secret_manager(&self) -> SecretManager {
         SecretManager::new(SERVICE_NAME)
+    }
+
+    async fn list_channel_plugins(&self) -> Result<Vec<InstalledPlugin>> {
+        let db = Database::new(&database_path(&self.config)).await?;
+        Ok(db
+            .installed_plugins()
+            .list_plugins()
+            .await?
+            .into_iter()
+            .filter(|plugin| plugin.plugin_type == "Channel")
+            .collect())
+    }
+
+    async fn build_channel_runtime(&self, plugin: &InstalledPlugin) -> Result<WasmRuntime> {
+        let entry = sdk_plugin_entry_from_installed_plugin(plugin).ok_or_else(|| {
+            anyhow!(
+                "Installed plugin '{}' is not a WASM channel plugin",
+                plugin.name
+            )
+        })?;
+        let manifest = sdk::manifest::Manifest {
+            version: "1.0.0".to_string(),
+            team_public_key: String::new(),
+            signature: String::new(),
+            generated_at: String::new(),
+            core_tools: Vec::new(),
+            plugins: vec![entry],
+        };
+        let crypto = Arc::new(CryptoModule::new()?);
+        let fs_guard = Arc::new(FileSystemGuard::new(self.config.core.workspace.clone())?);
+        Ok(WasmRuntime::new(manifest, crypto, fs_guard))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::ChannelManager;
+    use crate::cli::database_path::database_path;
+    use crate::config::Config;
+    use crate::storage::{Database, InstalledPlugin};
+
+    fn sample_channel_plugin(name: &str, enabled: bool) -> InstalledPlugin {
+        InstalledPlugin {
+            id: name.to_string(),
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            plugin_type: "Channel".to_string(),
+            trust_tier: 1,
+            manifest: format!(
+                r#"{{
+                    "name": "{name}",
+                    "version": "0.1.0",
+                    "sdk_version": "0.1.0",
+                    "plugin_type": "Channel",
+                    "permissions": {{
+                        "filesystem": [],
+                        "network": ["api.example.com"],
+                        "memory_read": false,
+                        "memory_write": false,
+                        "tools": []
+                    }},
+                    "trust_tier": "Reviewed",
+                    "min_model": null,
+                    "description": "channel plugin"
+                }}"#
+            ),
+            binary_path: Some(format!("{name}.wasm")),
+            binary_hash: "hash".to_string(),
+            signature: "sig".to_string(),
+            enabled,
+            installed_at: 0,
+            last_used: None,
+            config: None,
+            provenance_source: None,
+            provenance_registry: None,
+            catalog_trust_badge: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_statuses_include_installed_channel_plugins() {
+        let workspace = TempDir::new().expect("workspace");
+        let data = TempDir::new().expect("data");
+        let mut config = Config::default();
+        config.core.workspace = workspace.path().to_path_buf();
+        config.core.data_dir = data.path().to_path_buf();
+        std::fs::create_dir_all(&config.core.workspace).expect("workspace dir");
+        std::fs::create_dir_all(&config.core.data_dir).expect("data dir");
+
+        let db = Database::new(&database_path(&config))
+            .await
+            .expect("database");
+        db.installed_plugins()
+            .upsert_plugin(&sample_channel_plugin("echo-channel", true))
+            .await
+            .expect("upsert");
+
+        let statuses = ChannelManager::new(config)
+            .plugin_statuses()
+            .await
+            .expect("statuses");
+
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].name, "echo-channel");
+        assert!(statuses[0].enabled);
+        assert!(statuses[0].healthy);
     }
 }

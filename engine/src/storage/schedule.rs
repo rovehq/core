@@ -4,11 +4,37 @@ use sqlx::{Row, SqlitePool};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledTargetKind {
+    #[default]
+    Task,
+    Workflow,
+}
+
+impl ScheduledTargetKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::Workflow => "workflow",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "workflow" => Self::Workflow,
+            _ => Self::Task,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduledTask {
     pub id: String,
     pub name: String,
     pub input: String,
+    pub target_kind: ScheduledTargetKind,
+    pub target_id: Option<String>,
     pub interval_secs: i64,
     pub enabled: bool,
     pub workspace: Option<String>,
@@ -34,18 +60,63 @@ impl ScheduleRepository {
         workspace: Option<&str>,
         start_now: bool,
     ) -> Result<ScheduledTask> {
+        self.create_target(
+            name,
+            input,
+            ScheduledTargetKind::Task,
+            None,
+            interval_secs,
+            workspace,
+            start_now,
+        )
+        .await
+    }
+
+    pub async fn create_workflow_trigger(
+        &self,
+        name: &str,
+        workflow_id: &str,
+        input: &str,
+        interval_secs: i64,
+        workspace: Option<&str>,
+        start_now: bool,
+    ) -> Result<ScheduledTask> {
+        self.create_target(
+            name,
+            input,
+            ScheduledTargetKind::Workflow,
+            Some(workflow_id),
+            interval_secs,
+            workspace,
+            start_now,
+        )
+        .await
+    }
+
+    async fn create_target(
+        &self,
+        name: &str,
+        input: &str,
+        target_kind: ScheduledTargetKind,
+        target_id: Option<&str>,
+        interval_secs: i64,
+        workspace: Option<&str>,
+        start_now: bool,
+    ) -> Result<ScheduledTask> {
         let now = unix_now()?;
         let next_run_at = if start_now { now } else { now + interval_secs };
         let id = Uuid::new_v4().to_string();
 
         sqlx::query(
             r#"INSERT INTO scheduled_tasks
-               (id, name, input, interval_secs, enabled, workspace, created_at, next_run_at)
-               VALUES (?, ?, ?, ?, 1, ?, ?, ?)"#,
+               (id, name, input, target_kind, target_id, interval_secs, enabled, workspace, created_at, next_run_at)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"#,
         )
         .bind(&id)
         .bind(name)
         .bind(input)
+        .bind(target_kind.as_str())
+        .bind(target_id)
         .bind(interval_secs)
         .bind(workspace)
         .bind(now)
@@ -58,6 +129,8 @@ impl ScheduleRepository {
             id,
             name: name.to_string(),
             input: input.to_string(),
+            target_kind,
+            target_id: target_id.map(ToOwned::to_owned),
             interval_secs,
             enabled: true,
             workspace: workspace.map(ToOwned::to_owned),
@@ -69,7 +142,7 @@ impl ScheduleRepository {
 
     pub async fn list(&self) -> Result<Vec<ScheduledTask>> {
         let rows = sqlx::query(
-            r#"SELECT id, name, input, interval_secs, enabled, workspace, created_at, last_run_at, next_run_at
+            r#"SELECT id, name, input, target_kind, target_id, interval_secs, enabled, workspace, created_at, last_run_at, next_run_at
                FROM scheduled_tasks
                ORDER BY name ASC"#,
         )
@@ -82,7 +155,7 @@ impl ScheduleRepository {
 
     pub async fn get(&self, name: &str) -> Result<Option<ScheduledTask>> {
         let row = sqlx::query(
-            r#"SELECT id, name, input, interval_secs, enabled, workspace, created_at, last_run_at, next_run_at
+            r#"SELECT id, name, input, target_kind, target_id, interval_secs, enabled, workspace, created_at, last_run_at, next_run_at
                FROM scheduled_tasks
                WHERE name = ?"#,
         )
@@ -151,7 +224,7 @@ impl ScheduleRepository {
     pub async fn due(&self, limit: i64) -> Result<Vec<ScheduledTask>> {
         let now = unix_now()?;
         let rows = sqlx::query(
-            r#"SELECT id, name, input, interval_secs, enabled, workspace, created_at, last_run_at, next_run_at
+            r#"SELECT id, name, input, target_kind, target_id, interval_secs, enabled, workspace, created_at, last_run_at, next_run_at
                FROM scheduled_tasks
                WHERE enabled = 1 AND next_run_at <= ?
                ORDER BY next_run_at ASC
@@ -187,6 +260,8 @@ fn row_to_scheduled_task(row: sqlx::sqlite::SqliteRow) -> ScheduledTask {
         id: row.get("id"),
         name: row.get("name"),
         input: row.get("input"),
+        target_kind: ScheduledTargetKind::parse(&row.get::<String, _>("target_kind")),
+        target_id: row.get("target_id"),
         interval_secs: row.get("interval_secs"),
         enabled: row.get::<i64, _>("enabled") != 0,
         workspace: row.get("workspace"),
@@ -205,7 +280,7 @@ fn unix_now() -> Result<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::ScheduleRepository;
+    use super::{ScheduleRepository, ScheduledTargetKind};
     use crate::storage::Database;
     use tempfile::TempDir;
 
@@ -230,7 +305,36 @@ mod tests {
         let tasks = repo.list().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "daily-brief");
+        assert_eq!(tasks[0].target_kind, ScheduledTargetKind::Task);
         assert_eq!(tasks[0].workspace.as_deref(), Some("/tmp/workspace"));
+    }
+
+    #[tokio::test]
+    async fn test_create_workflow_trigger_round_trips_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::new(&temp_dir.path().join("schedule.db"))
+            .await
+            .unwrap();
+        let repo: ScheduleRepository = db.schedules();
+
+        let task = repo
+            .create_workflow_trigger(
+                "daily-release",
+                "release-flow",
+                "ship the current release",
+                900,
+                Some("/tmp/workspace"),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(task.target_kind, ScheduledTargetKind::Workflow);
+        assert_eq!(task.target_id.as_deref(), Some("release-flow"));
+
+        let loaded = repo.get("daily-release").await.unwrap().unwrap();
+        assert_eq!(loaded.target_kind, ScheduledTargetKind::Workflow);
+        assert_eq!(loaded.target_id.as_deref(), Some("release-flow"));
     }
 
     #[tokio::test]

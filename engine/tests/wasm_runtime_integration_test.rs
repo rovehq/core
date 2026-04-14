@@ -32,6 +32,9 @@ fn create_test_manifest(plugin_name: &str, plugin_path: &str, plugin_hash: &str)
             permissions: PluginPermissions {
                 allowed_paths: vec!["workspace".to_string()],
                 denied_paths: vec![".ssh".to_string(), ".env".to_string()],
+                allowed_network_domains: Vec::new(),
+                memory_read: false,
+                memory_write: false,
                 max_file_size: Some(10485760),
                 can_execute: false,
                 allowed_commands: None,

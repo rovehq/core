@@ -108,6 +108,10 @@ impl AgentCore {
         self.memory_system = Some(memory);
     }
 
+    pub fn set_tools(&mut self, tools: Arc<ToolRegistry>) {
+        self.tools = tools;
+    }
+
     pub fn memory_system(&self) -> Option<&Arc<MemorySystem>> {
         self.memory_system.as_ref()
     }

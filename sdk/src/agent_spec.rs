@@ -250,6 +250,10 @@ pub struct WorkflowSpec {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<WorkflowStepSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<ChannelBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schedules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,6 +273,8 @@ impl Default for WorkflowSpec {
             description: String::new(),
             enabled: true,
             steps: Vec::new(),
+            channels: Vec::new(),
+            schedules: Vec::new(),
             runtime_profile: None,
             output_contract: None,
             tags: Vec::new(),

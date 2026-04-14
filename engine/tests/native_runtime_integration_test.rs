@@ -13,6 +13,7 @@ use sdk::{
     NetworkHandle, NetworkHandleImpl, SecretConfigSnapshot, ServicesConfigSnapshot,
     StaticConfigHandle, VersionedConfigSnapshot,
 };
+use serde_json::json;
 use std::sync::Arc;
 
 // Mock implementations for testing
@@ -90,6 +91,7 @@ fn create_mock_context() -> CoreContext {
             },
             daemon: DaemonConfigSnapshot {
                 profile: "desktop".to_string(),
+                developer_mode: false,
             },
             core: CoreConfigSnapshot {
                 workspace: "~/projects".to_string(),

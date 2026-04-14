@@ -1,9 +1,12 @@
 use anyhow::Result;
 
-use crate::channels::manager::{ChannelManager, TelegramSetupInput};
+use std::sync::Arc;
+
+use crate::channels::manager::{ChannelManager, PluginChannelDeliverInput, TelegramSetupInput};
+use crate::cli::bootstrap::init_daemon;
 use crate::config::Config;
 
-use super::commands::{ChannelAction, ChannelTelegramAction};
+use super::commands::{ChannelAction, ChannelPluginAction, ChannelTelegramAction};
 
 pub async fn handle_channels(action: ChannelAction, config: &Config) -> Result<()> {
     let manager = ChannelManager::new(config.clone());
@@ -27,8 +30,47 @@ pub async fn handle_channels(action: ChannelAction, config: &Config) -> Result<(
             }
             Ok(())
         }
+        ChannelAction::Plugin { action } => handle_plugin(action, manager, config).await,
         ChannelAction::Telegram { action } => handle_telegram(action, manager).await,
     }
+}
+
+async fn handle_plugin(
+    action: ChannelPluginAction,
+    manager: ChannelManager,
+    _config: &Config,
+) -> Result<()> {
+    match action {
+        ChannelPluginAction::Status => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&manager.plugin_statuses().await?)?
+            );
+        }
+        ChannelPluginAction::Deliver {
+            name,
+            input,
+            session_id,
+            workspace,
+            team_id,
+        } => {
+            let (_, _, gateway) = init_daemon().await?;
+            let result = manager
+                .deliver_plugin(
+                    &name,
+                    PluginChannelDeliverInput {
+                        input,
+                        session_id,
+                        workspace,
+                        team_id,
+                    },
+                    Arc::clone(&gateway),
+                )
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+    }
+    Ok(())
 }
 
 async fn handle_telegram(action: ChannelTelegramAction, manager: ChannelManager) -> Result<()> {

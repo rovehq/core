@@ -62,6 +62,28 @@ impl ToolRegistry {
             .any(|keyword| query_lower.contains(keyword))
     }
 
+    fn should_offer_browser(query_lower: &str) -> bool {
+        [
+            "browse",
+            "browser",
+            "webpage",
+            "website",
+            "url",
+            "http",
+            "https",
+            "html",
+            "click",
+            "form",
+            "fill",
+            "navigate",
+            "web page",
+            "open link",
+            "scrape",
+        ]
+        .iter()
+        .any(|keyword| query_lower.contains(keyword))
+    }
+
     /// Return WASM tools whose domain tags overlap with keywords in `query`.
     ///
     /// Falls back to all WASM tools when the query matches nothing or
@@ -123,6 +145,8 @@ impl ToolRegistry {
             && (include_all_core_tools || Self::should_offer_terminal(&query_lower));
         let include_vision = self.vision.is_some()
             && (include_all_core_tools || Self::should_offer_vision(&query_lower));
+        let include_browser = self.browser.is_some()
+            && (include_all_core_tools || Self::should_offer_browser(&query_lower));
 
         let mut parts = vec![
             "You are Rove, an AI agent that can use tools to accomplish tasks.".to_string(),
@@ -193,6 +217,42 @@ impl ToolRegistry {
             parts.push(r#"Arguments: {"output_file": "screenshot.png"}"#.to_string());
         }
 
+        if include_browser {
+            parts.push(String::new());
+            parts.push("## browse_url".to_string());
+            parts.push(
+                "Navigate the browser to a URL and return the page title. \
+                 Use this before read_page_text or click_element."
+                    .to_string(),
+            );
+            parts.push(r#"Arguments: {"url": "https://example.com"}"#.to_string());
+
+            parts.push(String::new());
+            parts.push("## read_page_text".to_string());
+            parts.push(
+                "Get the visible text content of the current browser page (up to 8 000 chars)."
+                    .to_string(),
+            );
+            parts.push(r#"Arguments: {}"#.to_string());
+
+            parts.push(String::new());
+            parts.push("## click_element".to_string());
+            parts.push(
+                "Click the first DOM element matching a CSS selector on the current page."
+                    .to_string(),
+            );
+            parts.push(r#"Arguments: {"selector": "button.submit"}"#.to_string());
+
+            parts.push(String::new());
+            parts.push("## fill_form_field".to_string());
+            parts.push(
+                "Set the value of an input or textarea that matches a CSS selector.".to_string(),
+            );
+            parts.push(
+                r##"Arguments: {"selector": "#email", "value": "user@example.com"}"##.to_string(),
+            );
+        }
+
         for tool in &self.wasm_tools {
             parts.push(String::new());
             parts.push(format!("## {}", tool.name));
@@ -226,6 +286,14 @@ impl ToolRegistry {
         }
         if self.vision.is_some() {
             names.push("capture_screen".to_string());
+        }
+        if self.browser.is_some() {
+            names.extend_from_slice(&[
+                "browse_url".to_string(),
+                "read_page_text".to_string(),
+                "click_element".to_string(),
+                "fill_form_field".to_string(),
+            ]);
         }
         for tool in &self.wasm_tools {
             names.push(tool.name.clone());

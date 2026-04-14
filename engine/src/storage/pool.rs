@@ -79,6 +79,9 @@ impl Database {
         self.ensure_memory_graph_edges_table()
             .await
             .context("Failed to apply memory_graph_edges schema patch")?;
+        self.ensure_scheduled_task_columns()
+            .await
+            .context("Failed to apply scheduled task schema patch")?;
 
         info!("Database schema loaded successfully");
         Ok(())
@@ -237,6 +240,31 @@ impl Database {
             .execute(&self.pool)
             .await
             .context("Failed to backfill graph_edges.updated_at")?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_scheduled_task_columns(&self) -> Result<()> {
+        if !self.table_exists("scheduled_tasks").await? {
+            return Ok(());
+        }
+
+        let columns = self.table_columns("scheduled_tasks").await?;
+        for (column, sql_type, default_clause) in [
+            ("target_kind", "TEXT", " NOT NULL DEFAULT 'task'"),
+            ("target_id", "TEXT", ""),
+        ] {
+            if !columns.iter().any(|existing| existing == column) {
+                sqlx::query(&format!(
+                    "ALTER TABLE scheduled_tasks ADD COLUMN {column} {sql_type}{default_clause}"
+                ))
+                .execute(&self.pool)
+                .await
+                .with_context(|| {
+                    format!("Failed to add scheduled_tasks.{column} compatibility column")
+                })?;
+            }
         }
 
         Ok(())

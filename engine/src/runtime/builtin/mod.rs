@@ -1,3 +1,6 @@
+pub mod browser;
+
+pub use browser::BrowserTool;
 pub use filesystem::FilesystemTool;
 pub use screenshot::VisionTool;
 pub use terminal::TerminalTool;

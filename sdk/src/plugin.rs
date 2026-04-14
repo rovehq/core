@@ -83,6 +83,34 @@ impl PluginEntry {
 
         true
     }
+
+    pub fn is_network_host_allowed(&self, host: &str) -> bool {
+        if self.permissions.allowed_network_domains.is_empty() {
+            return false;
+        }
+
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        self.permissions
+            .allowed_network_domains
+            .iter()
+            .map(|pattern| pattern.trim().trim_end_matches('.').to_ascii_lowercase())
+            .any(|pattern| match pattern.as_str() {
+                "*" => true,
+                pattern if pattern.starts_with("*.") => {
+                    let suffix = &pattern[2..];
+                    host == suffix || host.ends_with(&format!(".{suffix}"))
+                }
+                _ => host == pattern,
+            })
+    }
+
+    pub fn can_read_memory(&self) -> bool {
+        self.permissions.memory_read
+    }
+
+    pub fn can_write_memory(&self) -> bool {
+        self.permissions.memory_write
+    }
 }
 
 fn current_platform_tag() -> String {
@@ -102,4 +130,40 @@ fn current_os_tag() -> &'static str {
 #[cfg(target_os = "windows")]
 fn current_os_tag() -> &'static str {
     "windows"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PluginEntry;
+    use crate::permission::PluginPermissions;
+
+    fn plugin_with_domains(domains: &[&str]) -> PluginEntry {
+        let mut permissions = PluginPermissions::default();
+        permissions.allowed_network_domains =
+            domains.iter().map(|value| value.to_string()).collect();
+        PluginEntry {
+            name: "test".to_string(),
+            version: "0.1.0".to_string(),
+            path: "test.wasm".to_string(),
+            hash: "hash".to_string(),
+            permissions,
+            allowed_imports: vec![],
+            trust_tier: 1,
+        }
+    }
+
+    #[test]
+    fn network_permissions_match_exact_hosts() {
+        let plugin = plugin_with_domains(&["api.example.com"]);
+        assert!(plugin.is_network_host_allowed("api.example.com"));
+        assert!(!plugin.is_network_host_allowed("other.example.com"));
+    }
+
+    #[test]
+    fn network_permissions_match_wildcards() {
+        let plugin = plugin_with_domains(&["*.example.com"]);
+        assert!(plugin.is_network_host_allowed("api.example.com"));
+        assert!(plugin.is_network_host_allowed("example.com"));
+        assert!(!plugin.is_network_host_allowed("example.org"));
+    }
 }

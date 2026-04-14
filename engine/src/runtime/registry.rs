@@ -12,7 +12,7 @@ use tracing::debug;
 
 use crate::config::Config;
 use crate::runtime::{
-    FilesystemTool, McpSpawner, NativeRuntime, TerminalTool, VisionTool, WasmRuntime,
+    BrowserTool, FilesystemTool, McpSpawner, NativeRuntime, TerminalTool, VisionTool, WasmRuntime,
 };
 use crate::security::approvals;
 use crate::security::command_executor::CommandExecutor;
@@ -48,6 +48,8 @@ pub struct ToolRegistry {
     pub fs: Option<FilesystemTool>,
     pub terminal: Option<TerminalTool>,
     pub vision: Option<VisionTool>,
+    /// Browser tool — `None` when `browser.enabled` is false or no profile is configured.
+    pub browser: Option<Arc<Mutex<BrowserTool>>>,
     pub wasm_runtime: Option<Arc<Mutex<WasmRuntime>>>,
     pub wasm_tools: Vec<WasmToolInfo>,
     pub mcp_spawner: Option<Arc<McpSpawner>>,
@@ -64,6 +66,7 @@ impl ToolRegistry {
             fs: None,
             terminal: None,
             vision: None,
+            browser: None,
             wasm_runtime: None,
             wasm_tools: Vec::new(),
             mcp_spawner: None,
@@ -85,6 +88,7 @@ impl ToolRegistry {
             fs: None,
             terminal: None,
             vision: None,
+            browser: None,
             wasm_runtime: wasm,
             wasm_tools: Vec::new(),
             mcp_spawner: mcp,
@@ -168,6 +172,42 @@ impl ToolRegistry {
             parameters: serde_json::json!({"type":"object","properties":{"output_file":{"type":"string"}}}),
             source: ToolSource::Builtin,
             domains: vec!["vision".to_string(), "all".to_string()],
+        })
+        .await;
+    }
+
+    pub async fn register_builtin_browser(&mut self, tool: Arc<Mutex<BrowserTool>>) {
+        self.browser = Some(tool);
+        self.register(ToolSchema {
+            name: "browse_url".to_string(),
+            description: "Navigate the browser to a URL and return the page title.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"url":{"type":"string","description":"The URL to navigate to"}},"required":["url"]}),
+            source: ToolSource::Builtin,
+            domains: vec!["browser".to_string(), "web".to_string(), "all".to_string()],
+        })
+        .await;
+        self.register(ToolSchema {
+            name: "read_page_text".to_string(),
+            description: "Get the visible text content of the current browser page.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{}}),
+            source: ToolSource::Builtin,
+            domains: vec!["browser".to_string(), "web".to_string(), "all".to_string()],
+        })
+        .await;
+        self.register(ToolSchema {
+            name: "click_element".to_string(),
+            description: "Click the first DOM element matching a CSS selector on the current page.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"selector":{"type":"string","description":"CSS selector of the element to click"}},"required":["selector"]}),
+            source: ToolSource::Builtin,
+            domains: vec!["browser".to_string(), "web".to_string(), "all".to_string()],
+        })
+        .await;
+        self.register(ToolSchema {
+            name: "fill_form_field".to_string(),
+            description: "Set the value of an input or textarea matching a CSS selector.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"selector":{"type":"string","description":"CSS selector of the form field"},"value":{"type":"string","description":"Value to fill in"}},"required":["selector","value"]}),
+            source: ToolSource::Builtin,
+            domains: vec!["browser".to_string(), "web".to_string(), "form".to_string(), "all".to_string()],
         })
         .await;
     }
@@ -594,7 +634,8 @@ impl ToolRegistry {
                 .and_then(Value::as_str)
                 .map(classify_terminal_command)
                 .unwrap_or("execute_command"),
-            "capture_screen" => "read_file",
+            "capture_screen" | "browse_url" | "read_page_text" => "read_file",
+            "click_element" | "fill_form_field" => "execute_task",
             _ => "execute_task",
         }
     }
@@ -703,6 +744,71 @@ impl ToolRegistry {
                     .map(|path| Value::String(path.display().to_string()))
                     .map_err(|error| EngineError::ToolError(error.to_string()))
             }
+            "browse_url" => {
+                let browser = self
+                    .browser
+                    .as_ref()
+                    .ok_or_else(|| EngineError::ToolNotFound("browse_url".to_string()))?;
+                let url = args.get("url").and_then(Value::as_str).unwrap_or_default();
+                browser
+                    .lock()
+                    .await
+                    .navigate(url)
+                    .await
+                    .map(Value::String)
+                    .map_err(|e| EngineError::ToolError(e.to_string()))
+            }
+            "read_page_text" => {
+                let browser = self
+                    .browser
+                    .as_ref()
+                    .ok_or_else(|| EngineError::ToolNotFound("read_page_text".to_string()))?;
+                browser
+                    .lock()
+                    .await
+                    .page_text()
+                    .await
+                    .map(Value::String)
+                    .map_err(|e| EngineError::ToolError(e.to_string()))
+            }
+            "click_element" => {
+                let browser = self
+                    .browser
+                    .as_ref()
+                    .ok_or_else(|| EngineError::ToolNotFound("click_element".to_string()))?;
+                let selector = args
+                    .get("selector")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                browser
+                    .lock()
+                    .await
+                    .click(selector)
+                    .await
+                    .map(Value::String)
+                    .map_err(|e| EngineError::ToolError(e.to_string()))
+            }
+            "fill_form_field" => {
+                let browser = self
+                    .browser
+                    .as_ref()
+                    .ok_or_else(|| EngineError::ToolNotFound("fill_form_field".to_string()))?;
+                let selector = args
+                    .get("selector")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let value = args
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                browser
+                    .lock()
+                    .await
+                    .fill_field(selector, value)
+                    .await
+                    .map(Value::String)
+                    .map_err(|e| EngineError::ToolError(e.to_string()))
+            }
             _ => Err(EngineError::ToolNotFound(name.to_string())),
         }
     }
@@ -779,8 +885,9 @@ fn should_use_daemon_approval(source: &TaskSource) -> bool {
 fn operation_source_from_task_source(source: &TaskSource) -> OperationSource {
     match source {
         TaskSource::Cli => OperationSource::Local,
-        TaskSource::Telegram(_) | TaskSource::WebUI | TaskSource::Remote(_) => {
-            OperationSource::Remote
-        }
+        TaskSource::Telegram(_)
+        | TaskSource::Channel(_)
+        | TaskSource::WebUI
+        | TaskSource::Remote(_) => OperationSource::Remote,
     }
 }

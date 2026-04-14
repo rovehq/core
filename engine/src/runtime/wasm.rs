@@ -8,6 +8,7 @@ mod restart;
 #[cfg(test)]
 mod tests;
 
+use crate::config::Config;
 use crate::crypto::CryptoModule;
 use crate::fs_guard::FileSystemGuard;
 use crate::message_bus::MessageBus;
@@ -29,14 +30,16 @@ pub struct WasmRuntime {
     crypto: Arc<CryptoModule>,
     #[allow(dead_code)]
     fs_guard: Arc<FileSystemGuard>,
+    config: Arc<Config>,
     message_bus: Option<Arc<MessageBus>>,
 }
 
 impl WasmRuntime {
-    pub fn new(
+    pub fn new_with_config(
         manifest: Manifest,
         crypto: Arc<CryptoModule>,
         fs_guard: Arc<FileSystemGuard>,
+        config: Config,
     ) -> Self {
         tracing::info!("Initializing WasmRuntime");
         Self {
@@ -44,8 +47,17 @@ impl WasmRuntime {
             manifest,
             crypto,
             fs_guard,
+            config: Arc::new(config),
             message_bus: None,
         }
+    }
+
+    pub fn new(
+        manifest: Manifest,
+        crypto: Arc<CryptoModule>,
+        fs_guard: Arc<FileSystemGuard>,
+    ) -> Self {
+        Self::new_with_config(manifest, crypto, fs_guard, Config::default())
     }
 
     pub fn load_from_directory(

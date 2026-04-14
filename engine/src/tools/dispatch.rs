@@ -29,6 +29,10 @@ impl ToolRegistry {
             "file_exists" => self.dispatch_file_exists(&args).await,
             "run_command" => self.dispatch_run_command(&args).await,
             "capture_screen" => self.dispatch_capture_screen(&args).await,
+            "browse_url" => self.dispatch_browse_url(&args).await,
+            "read_page_text" => self.dispatch_read_page_text().await,
+            "click_element" => self.dispatch_click_element(&args).await,
+            "fill_form_field" => self.dispatch_fill_form_field(&args).await,
             _ => self.dispatch_dynamic_tool(name, args).await,
         }
     }
@@ -164,6 +168,63 @@ impl ToolRegistry {
         match vision.capture_screen(output_file).await {
             Ok(path) => format!("Screenshot saved to {}", path.display()),
             Err(error) => format!("ERROR: {}", error),
+        }
+    }
+
+    async fn dispatch_browse_url(&self, args: &serde_json::Value) -> String {
+        let Some(browser) = &self.browser else {
+            return "ERROR: browse_url tool is not enabled (browser control is disabled)"
+                .to_string();
+        };
+        let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+        match browser.lock().await.navigate(url).await {
+            Ok(result) => result,
+            Err(e) => format!("ERROR: {}", e),
+        }
+    }
+
+    async fn dispatch_read_page_text(&self) -> String {
+        let Some(browser) = &self.browser else {
+            return "ERROR: read_page_text tool is not enabled (browser control is disabled)"
+                .to_string();
+        };
+        match browser.lock().await.page_text().await {
+            Ok(text) => text,
+            Err(e) => format!("ERROR: {}", e),
+        }
+    }
+
+    async fn dispatch_click_element(&self, args: &serde_json::Value) -> String {
+        let Some(browser) = &self.browser else {
+            return "ERROR: click_element tool is not enabled (browser control is disabled)"
+                .to_string();
+        };
+        let selector = args
+            .get("selector")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        match browser.lock().await.click(selector).await {
+            Ok(result) => result,
+            Err(e) => format!("ERROR: {}", e),
+        }
+    }
+
+    async fn dispatch_fill_form_field(&self, args: &serde_json::Value) -> String {
+        let Some(browser) = &self.browser else {
+            return "ERROR: fill_form_field tool is not enabled (browser control is disabled)"
+                .to_string();
+        };
+        let selector = args
+            .get("selector")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let value = args
+            .get("value")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        match browser.lock().await.fill_field(selector, value).await {
+            Ok(result) => result,
+            Err(e) => format!("ERROR: {}", e),
         }
     }
 

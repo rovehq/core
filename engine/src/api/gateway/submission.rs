@@ -37,6 +37,24 @@ impl Gateway {
         .await
     }
 
+    pub async fn submit_channel(
+        &self,
+        channel: &str,
+        input: &str,
+        session_id: Option<&str>,
+        workspace: Option<&str>,
+        team_id: Option<&str>,
+    ) -> anyhow::Result<String> {
+        self.submit_task(
+            input,
+            TaskSource::Channel(channel.to_string()),
+            session_id,
+            workspace,
+            team_id,
+        )
+        .await
+    }
+
     pub async fn submit_webui(
         &self,
         input: &str,

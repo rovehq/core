@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 pub struct PluginPermissions {
     pub allowed_paths: Vec<String>,
     pub denied_paths: Vec<String>,
+    #[serde(default)]
+    pub allowed_network_domains: Vec<String>,
+    #[serde(default)]
+    pub memory_read: bool,
+    #[serde(default)]
+    pub memory_write: bool,
     pub max_file_size: Option<u64>,
     pub can_execute: bool,
     pub allowed_commands: Option<Vec<String>>,
@@ -23,6 +29,9 @@ impl Default for PluginPermissions {
                 "id_rsa".to_string(),
                 "id_ed25519".to_string(),
             ],
+            allowed_network_domains: Vec::new(),
+            memory_read: false,
+            memory_write: false,
             max_file_size: Some(10 * 1024 * 1024),
             can_execute: false,
             allowed_commands: None,

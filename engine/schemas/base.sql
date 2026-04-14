@@ -302,6 +302,8 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL UNIQUE,
     input         TEXT NOT NULL,
+    target_kind   TEXT NOT NULL DEFAULT 'task',
+    target_id     TEXT,
     interval_secs INTEGER NOT NULL CHECK(interval_secs > 0),
     enabled       INTEGER NOT NULL DEFAULT 1,
     workspace     TEXT,

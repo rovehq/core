@@ -314,6 +314,7 @@ fn rule_matches(
     if !rule.channels.is_empty() {
         let actual = match source {
             TaskSource::Telegram(user_id) => format!("telegram:{}", user_id),
+            TaskSource::Channel(kind) => format!("channel:{}", kind),
             TaskSource::Cli => "cli".to_string(),
             TaskSource::WebUI => "webui".to_string(),
             TaskSource::Remote(node) => format!("remote:{}", node),

@@ -6,6 +6,10 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::cli::bootstrap::build_task_agent;
+use crate::config::Config;
+use crate::storage::schedule::ScheduledTargetKind;
+use crate::system::specs::SpecRepository;
+use crate::system::workflow_runtime;
 use sdk::{RunContextId, RunIsolation, RunMode, TaskSource};
 
 use super::{Gateway, Task};
@@ -51,6 +55,43 @@ impl Gateway {
                     "Failed to update scheduled task after dispatch: {}",
                     error
                 );
+                continue;
+            }
+
+            if matches!(schedule.target_kind, ScheduledTargetKind::Workflow) {
+                let Some(workflow_id) = schedule.target_id.clone() else {
+                    warn!(
+                        schedule_id = %schedule.id,
+                        schedule_name = %schedule.name,
+                        "Scheduled workflow trigger is missing target_id"
+                    );
+                    continue;
+                };
+                let db_clone = Arc::clone(&self.db);
+                let schedule_id = schedule.id.clone();
+                let schedule_name = schedule.name.clone();
+                let input = schedule.input.clone();
+                tokio::spawn(async move {
+                    if let Err(error) =
+                        execute_scheduled_workflow(db_clone, &workflow_id, &input).await
+                    {
+                        warn!(
+                            schedule_id = %schedule_id,
+                            schedule_name = %schedule_name,
+                            workflow_id = %workflow_id,
+                            "Failed to execute scheduled workflow: {}",
+                            error
+                        );
+                    } else {
+                        info!(
+                            schedule_id = %schedule_id,
+                            schedule_name = %schedule_name,
+                            workflow_id = %workflow_id,
+                            "Executed scheduled workflow"
+                        );
+                    }
+                });
+                queued += 1;
                 continue;
             }
 
@@ -155,4 +196,19 @@ impl Gateway {
 
         Ok(spawned)
     }
+}
+
+async fn execute_scheduled_workflow(
+    db: Arc<crate::db::Database>,
+    workflow_id: &str,
+    input: &str,
+) -> anyhow::Result<()> {
+    let repo = SpecRepository::new()?;
+    let config = Config::load_or_create()?;
+    let workflow = repo.load_workflow(workflow_id)?;
+    if !workflow.enabled {
+        anyhow::bail!("workflow '{}' is disabled", workflow.id);
+    }
+    workflow_runtime::start_new_run(&repo, &db, &config, &workflow, input).await?;
+    Ok(())
 }

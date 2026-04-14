@@ -12,7 +12,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::{auth::AuthManager, completion, AppState};
-use crate::channels::manager::{ChannelManager, TelegramSetupInput};
+use crate::channels::manager::{ChannelManager, PluginChannelDeliverInput, TelegramSetupInput};
 use crate::cli::brain::dispatch_family;
 use crate::cli::extensions;
 use crate::config::Config;
@@ -193,6 +193,14 @@ pub struct TelegramChannelSetupRequest {
     pub confirmation_chat_id: Option<i64>,
     pub api_base_url: Option<String>,
     pub default_agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PluginChannelDeliverRequest {
+    pub input: String,
+    pub session_id: Option<String>,
+    pub workspace: Option<String>,
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2318,6 +2326,42 @@ pub async fn telegram_channel_disable() -> impl IntoResponse {
             .await
         {
             Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn plugin_channel_statuses() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ChannelManager::new(config).plugin_statuses().await {
+            Ok(statuses) => (StatusCode::OK, Json(statuses)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn plugin_channel_deliver(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(payload): Json<PluginChannelDeliverRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match ChannelManager::new(config)
+            .deliver_plugin(
+                &name,
+                PluginChannelDeliverInput {
+                    input: payload.input,
+                    session_id: payload.session_id,
+                    workspace: payload.workspace,
+                    team_id: payload.team_id,
+                },
+                state.gateway.clone(),
+            )
+            .await
+        {
+            Ok(result) => (StatusCode::ACCEPTED, Json(result)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),

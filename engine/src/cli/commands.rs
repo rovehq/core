@@ -825,6 +825,10 @@ pub enum ScheduleAction {
         #[arg(long, value_name = "MINUTES")]
         every_minutes: u64,
 
+        /// Workflow to run instead of enqueuing a plain task prompt.
+        #[arg(long, value_name = "WORKFLOW_ID")]
+        workflow: Option<String>,
+
         /// Queue the first run immediately.
         #[arg(long)]
         start_now: bool,
@@ -1330,10 +1334,34 @@ pub enum MemoryModeArg {
 pub enum ChannelAction {
     /// List runtime channels and setup state.
     List,
+    /// Deliver a message through an installed channel plugin.
+    Plugin {
+        #[command(subcommand)]
+        action: ChannelPluginAction,
+    },
     /// Manage Telegram as a first-class channel pack.
     Telegram {
         #[command(subcommand)]
         action: ChannelTelegramAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChannelPluginAction {
+    /// Show installed channel plugin runtime status.
+    Status,
+    /// Invoke the plugin `deliver` entrypoint and submit the accepted task.
+    Deliver {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        team_id: Option<String>,
     },
 }
 

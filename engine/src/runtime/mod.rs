@@ -10,6 +10,8 @@ pub mod wasm;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use tokio::sync::Mutex as TokioMutex;
+
 use sdk::errors::EngineError;
 use sdk::manifest::Manifest as SdkManifest;
 use sdk::manifest::{PluginEntry, PluginPermissions};
@@ -22,7 +24,7 @@ use crate::security::fs_guard::FileSystemGuard;
 use crate::storage::Database;
 use crate::storage::InstalledPlugin;
 
-pub use builtin::{FilesystemTool, TerminalTool, VisionTool};
+pub use builtin::{BrowserTool, FilesystemTool, TerminalTool, VisionTool};
 pub use manifest::*;
 pub use mcp::{
     McpSandbox, McpServer, McpServerConfig, McpSpawner, McpToolDescriptor, SandboxProfile,
@@ -71,10 +73,11 @@ impl RuntimeManager {
             match CryptoModule::new() {
                 Ok(crypto) => {
                     let fs_guard = Arc::new(FileSystemGuard::new(config.core.workspace.clone())?);
-                    Some(Arc::new(Mutex::new(WasmRuntime::new(
+                    Some(Arc::new(Mutex::new(WasmRuntime::new_with_config(
                         wasm_manifest,
                         Arc::new(crypto),
                         fs_guard,
+                        config.clone(),
                     ))))
                 }
                 Err(error) => {
@@ -111,6 +114,35 @@ impl RuntimeManager {
         .await?;
 
         register_installed_plugin_schemas(&mut registry, native.as_ref(), &installed_plugins).await;
+
+        // Wire browser tool when browser control is enabled and a profile is configured
+        if config.browser.enabled {
+            if let Some(profile) = config
+                .browser
+                .default_profile_id
+                .as_deref()
+                .and_then(|id| {
+                    config
+                        .browser
+                        .profiles
+                        .iter()
+                        .find(|p| p.id == id && p.enabled)
+                        .cloned()
+                })
+                .or_else(|| {
+                    config
+                        .browser
+                        .profiles
+                        .first()
+                        .filter(|p| p.enabled)
+                        .cloned()
+                })
+            {
+                registry
+                    .register_builtin_browser(Arc::new(TokioMutex::new(BrowserTool::new(profile))))
+                    .await;
+            }
+        }
 
         if let Some(spawner) = &mcp {
             registry.register_mcp_spawner(Arc::clone(spawner));
@@ -290,43 +322,55 @@ fn merge_mcp_configs(
     merged.into_values().collect()
 }
 
+pub(crate) fn sdk_plugin_entry_from_installed_plugin(
+    plugin: &InstalledPlugin,
+) -> Option<PluginEntry> {
+    let manifest = Manifest::from_json(&plugin.manifest).ok()?;
+    if !matches!(
+        manifest.plugin_type,
+        PluginType::Skill | PluginType::Channel
+    ) {
+        return None;
+    }
+
+    let path = plugin.binary_path.clone()?;
+    let mut permissions = PluginPermissions::default();
+    let allowed_paths: Vec<String> = manifest
+        .permissions
+        .filesystem
+        .iter()
+        .map(|pattern| pattern.0.clone())
+        .collect();
+    if !allowed_paths.is_empty() {
+        permissions.allowed_paths = allowed_paths;
+    }
+    permissions.allowed_network_domains = manifest
+        .permissions
+        .network
+        .iter()
+        .map(|pattern| pattern.0.clone())
+        .collect();
+    permissions.memory_read = manifest.permissions.memory_read;
+    permissions.memory_write = manifest.permissions.memory_write;
+
+    Some(PluginEntry {
+        name: plugin.name.clone(),
+        version: plugin.version.clone(),
+        path,
+        hash: plugin.binary_hash.clone(),
+        permissions,
+        allowed_imports: vec![
+            "extism:host/env".to_string(),
+            "wasi_snapshot_preview1".to_string(),
+        ],
+        trust_tier: plugin.trust_tier as u8,
+    })
+}
+
 fn sdk_manifest_from_installed_plugins(installed_plugins: &[InstalledPlugin]) -> SdkManifest {
     let plugins = installed_plugins
         .iter()
-        .filter_map(|plugin| {
-            let manifest = Manifest::from_json(&plugin.manifest).ok()?;
-            if !matches!(
-                manifest.plugin_type,
-                PluginType::Skill | PluginType::Channel
-            ) {
-                return None;
-            }
-
-            let path = plugin.binary_path.clone()?;
-            let mut permissions = PluginPermissions::default();
-            let allowed_paths: Vec<String> = manifest
-                .permissions
-                .filesystem
-                .iter()
-                .map(|pattern| pattern.0.clone())
-                .collect();
-            if !allowed_paths.is_empty() {
-                permissions.allowed_paths = allowed_paths;
-            }
-
-            Some(PluginEntry {
-                name: plugin.name.clone(),
-                version: plugin.version.clone(),
-                path,
-                hash: plugin.binary_hash.clone(),
-                permissions,
-                allowed_imports: vec![
-                    "extism:host/env".to_string(),
-                    "wasi_snapshot_preview1".to_string(),
-                ],
-                trust_tier: plugin.trust_tier as u8,
-            })
-        })
+        .filter_map(sdk_plugin_entry_from_installed_plugin)
         .collect();
 
     SdkManifest {
@@ -358,7 +402,7 @@ mod tests {
     use crate::runtime::mcp::SandboxProfile;
     use crate::storage::{Database, InstalledPlugin};
 
-    use super::{merge_mcp_configs, RuntimeManager};
+    use super::{merge_mcp_configs, sdk_plugin_entry_from_installed_plugin, RuntimeManager};
 
     #[tokio::test]
     async fn runtime_build_registers_installed_plugin_schemas() {
@@ -644,5 +688,51 @@ mod tests {
             .expect("github server");
         assert_eq!(github.command, "installed-command");
         assert_eq!(github.args, vec!["two"]);
+    }
+
+    #[test]
+    fn sdk_plugin_entry_preserves_network_and_memory_permissions() {
+        let plugin = InstalledPlugin {
+            id: "net-skill".to_string(),
+            name: "net-skill".to_string(),
+            version: "0.1.0".to_string(),
+            plugin_type: "Skill".to_string(),
+            trust_tier: 1,
+            manifest: r#"{
+                "name": "net-skill",
+                "version": "0.1.0",
+                "sdk_version": "0.1.0",
+                "plugin_type": "Skill",
+                "permissions": {
+                    "filesystem": [],
+                    "network": ["api.example.com", "*.example.net"],
+                    "memory_read": true,
+                    "memory_write": true,
+                    "tools": []
+                },
+                "trust_tier": "Reviewed",
+                "min_model": null,
+                "description": "network skill"
+            }"#
+            .to_string(),
+            binary_path: Some("net-skill.wasm".to_string()),
+            binary_hash: "hash".to_string(),
+            signature: "sig".to_string(),
+            enabled: true,
+            installed_at: 0,
+            last_used: None,
+            config: None,
+            provenance_source: None,
+            provenance_registry: None,
+            catalog_trust_badge: None,
+        };
+
+        let entry = sdk_plugin_entry_from_installed_plugin(&plugin).expect("entry");
+        assert_eq!(
+            entry.permissions.allowed_network_domains,
+            vec!["api.example.com".to_string(), "*.example.net".to_string()]
+        );
+        assert!(entry.permissions.memory_read);
+        assert!(entry.permissions.memory_write);
     }
 }
