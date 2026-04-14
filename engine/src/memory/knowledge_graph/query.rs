@@ -262,6 +262,7 @@ fn format_relationship(from: &GraphNode, to: &GraphNode, relation: &RelationType
 #[cfg(test)]
 mod tests {
     use super::{format_relationship, question_terms, GraphQuery};
+    use crate::conductor::types::GraphSourceKind;
     use crate::memory::knowledge_graph::{EntityType, GraphNode, RelationType};
 
     #[test]
@@ -282,6 +283,10 @@ mod tests {
             label: "rove".to_string(),
             node_type: EntityType::Project,
             properties: serde_json::json!({}),
+            source_kind: GraphSourceKind::Deterministic,
+            source_scope: "per_node".to_string(),
+            source_ref: None,
+            confidence: 1.0,
             created_at: 0,
             last_updated: 0,
             access_count: 0,
@@ -291,6 +296,10 @@ mod tests {
             label: "~/workspace/rove".to_string(),
             node_type: EntityType::File,
             properties: serde_json::json!({}),
+            source_kind: GraphSourceKind::Deterministic,
+            source_scope: "per_node".to_string(),
+            source_ref: None,
+            confidence: 1.0,
             created_at: 0,
             last_updated: 0,
             access_count: 0,

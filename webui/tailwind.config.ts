@@ -5,13 +5,13 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        background: "#0f0f0f",
-        surface: "#1a1a1a",
-        surface2: "#252525",
-        primary: "#3b82f6",
-        success: "#10b981",
-        error: "#ef4444",
-        warning: "#f59e0b",
+        background: "#0d1114",
+        surface: "#151b20",
+        surface2: "#23303a",
+        primary: "#de6947",
+        success: "#2fb28b",
+        error: "#e16666",
+        warning: "#d5a24d",
       },
     },
   },

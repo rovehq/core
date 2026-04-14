@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
 import {
   DEFAULT_DAEMON_PORT,
+  OnboardingStep,
   OverviewResponse,
   readStoredToken,
   RoveDaemonClient,
@@ -38,6 +39,11 @@ export default function MessagesPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const [logStream, setLogStream] = useState<{ connected: boolean; error: string | null }>({
+    connected: false,
+    error: null,
+  });
 
   useEffect(() => {
     void initialize();
@@ -52,6 +58,100 @@ export default function MessagesPage() {
       void refreshOverview();
     }
   }, [appState]);
+
+  useEffect(() => {
+    if (appState !== 'unlocked' || typeof window === 'undefined') {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshOverview();
+    }, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [appState, daemonUrl]);
+
+  useEffect(() => {
+    if (overview?.recent_logs?.length) {
+      setLogLines((current) => (current.length === 0 ? overview.recent_logs : current));
+    }
+  }, [overview?.recent_logs]);
+
+  useEffect(() => {
+    if (appState !== 'unlocked' || typeof window === 'undefined') {
+      setLogStream({ connected: false, error: null });
+      return;
+    }
+
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    let stopStream: () => void = () => {};
+
+    const scheduleReconnect = () => {
+      if (cancelled || retryTimer !== null) {
+        return;
+      }
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        connect();
+      }, 3000);
+    };
+
+    const connect = () => {
+      if (cancelled) {
+        return;
+      }
+
+      setLogStream({ connected: false, error: null });
+
+      try {
+        stopStream = daemonClient().streamLogs({
+          onOpen: () => {
+            if (!cancelled) {
+              setLogLines([]);
+              setLogStream({ connected: true, error: null });
+            }
+          },
+          onLine: (line) => {
+            if (!cancelled) {
+              setLogLines((current) => appendLogLine(current, line));
+            }
+          },
+          onError: (message) => {
+            if (!cancelled) {
+              setLogStream({ connected: false, error: message });
+              scheduleReconnect();
+            }
+          },
+          onClose: () => {
+            if (!cancelled) {
+              setLogStream((current) => ({
+                connected: false,
+                error: current.error,
+              }));
+              scheduleReconnect();
+            }
+          },
+        });
+      } catch (nextError) {
+        setLogStream({
+          connected: false,
+          error: nextError instanceof Error ? nextError.message : String(nextError),
+        });
+        scheduleReconnect();
+      }
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
+      stopStream();
+    };
+  }, [appState, daemonUrl]);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -214,6 +314,28 @@ export default function MessagesPage() {
     );
   }
 
+  if (appState === 'tampered') {
+    return (
+      <AuthShell
+        title="Reset Required"
+        subtitle="Daemon auth integrity failed or the device reset secret is unavailable."
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-400">
+            This machine must reset the local daemon password before the control plane can be
+            unlocked again.
+          </p>
+          <div className="rounded-lg border border-error/40 bg-error/10 p-4 text-sm text-error">
+            Run <code className="font-mono">rove auth reset-password</code> in a local terminal.
+            If the device seal is unavailable, use your recovery code with{' '}
+            <code className="font-mono">--recovery-code</code>.
+          </div>
+          <ErrorBanner error={error} onDismiss={clearError} />
+        </div>
+      </AuthShell>
+    );
+  }
+
   if (appState === 'locked' || appState === 'reauth_required') {
     return (
       <AuthShell
@@ -301,10 +423,18 @@ export default function MessagesPage() {
       </header>
 
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6">
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
           <SummaryCard label="Brains" value={hello?.capabilities.brains.join(', ') || 'dispatch'} />
           <SummaryCard label="Agents" value={String(overview?.counts.agents ?? 0)} />
           <SummaryCard label="Workflows" value={String(overview?.counts.workflows ?? 0)} />
+          <SummaryCard
+            label="Queue"
+            value={`${overview?.queue.pending ?? 0} pending · ${overview?.queue.running ?? 0} running`}
+          />
+          <SummaryCard
+            label="Fleet"
+            value={`${overview?.remote_nodes.length ?? 0} paired · ${overview?.remote_candidates.length ?? 0} candidates`}
+          />
         </div>
 
         <section className="rounded-xl border border-surface2 bg-surface p-4">
@@ -349,6 +479,39 @@ export default function MessagesPage() {
 
         <section className="grid gap-4 xl:grid-cols-2">
           <DashboardPanel
+            title="First Run"
+            subtitle="Concrete next steps for install truth, auth, first task, first channel, and first remote."
+            actionLabel="Refresh"
+            onAction={() => void refreshOverview()}
+          >
+            {overview?.onboarding ? (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-surface p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-medium">
+                      {overview.onboarding.completed_steps}/{overview.onboarding.total_steps} steps complete
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-xs ${
+                      overview.onboarding.completed_steps === overview.onboarding.total_steps
+                        ? 'bg-success/10 text-success'
+                        : 'bg-warning/10 text-warning'
+                    }`}>
+                      {overview.onboarding.completed_steps === overview.onboarding.total_steps ? 'ready' : 'setup in progress'}
+                    </span>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  {overview.onboarding.steps.map((step) => (
+                    <OnboardingStepCard key={step.id} step={step} />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <EmptyState text="Onboarding checklist unavailable." />
+            )}
+          </DashboardPanel>
+
+          <DashboardPanel
             title="Health"
             subtitle="First-run truth for config, data, database, and service install state."
             actionLabel="Refresh"
@@ -386,6 +549,45 @@ export default function MessagesPage() {
                   </div>
                 </div>
 
+                <div className="rounded-lg border border-surface p-3">
+                  <div className="font-medium">Auth and control plane</div>
+                  <div className="mt-2 text-gray-400">
+                    {formatAuthSummary(overview.health)} · {overview.health.control_plane.control_url}
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500">
+                    configured {overview.health.control_plane.configured_bind_addr}
+                    {' · '}
+                    active {overview.health.control_plane.listen_addr}
+                    {' · '}
+                    {overview.health.control_plane.tls_enabled ? 'TLS enabled' : 'HTTP only'}
+                  </div>
+                </div>
+
+                {overview.health.transports.length ? (
+                  <div className="rounded-lg border border-surface p-3">
+                    <div className="font-medium">Transports</div>
+                    <div className="mt-2 space-y-2">
+                      {overview.health.transports.map((transport) => (
+                        <div key={transport.name} className="flex items-start justify-between gap-3 text-sm">
+                          <div>
+                            <div className="font-medium">{transport.name}</div>
+                            <div className="text-gray-400">{transport.summary}</div>
+                          </div>
+                          <span className={`rounded-full px-2 py-0.5 text-xs ${
+                            transport.healthy
+                              ? 'bg-success/10 text-success'
+                              : transport.enabled
+                                ? 'bg-warning/10 text-warning'
+                                : 'bg-surface2 text-gray-400'
+                          }`}>
+                            {transport.healthy ? 'healthy' : transport.enabled ? 'needs attention' : 'off'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
                 {overview.health.issues.length ? (
                   <div className="rounded-lg border border-warning/30 bg-warning/5 p-3">
                     <div className="font-medium text-warning">Open issues</div>
@@ -398,9 +600,81 @@ export default function MessagesPage() {
                 ) : (
                   <EmptyState text="No initialization or runtime truth issues detected." />
                 )}
+
+                {overview.health.checks.length ? (
+                  <div className="rounded-lg border border-surface p-3">
+                    <div className="font-medium">Checks</div>
+                    <div className="mt-2 space-y-2">
+                      {overview.health.checks.slice(0, 8).map((check) => (
+                        <div key={check.name} className="flex items-start justify-between gap-3 text-sm">
+                          <div>
+                            <div className="font-medium">{check.name}</div>
+                            <div className="text-gray-400">{check.detail}</div>
+                          </div>
+                          <span className={`rounded-full px-2 py-0.5 text-xs ${
+                            check.ok ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'
+                          }`}>
+                            {check.ok ? 'ok' : 'attention'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <EmptyState text="Health snapshot unavailable." />
+            )}
+          </DashboardPanel>
+
+          <DashboardPanel
+            title="Live Ops"
+            subtitle="Queue pressure, run health, and current operator-facing live state."
+            actionLabel="Refresh"
+            onAction={() => void refreshOverview()}
+          >
+            {overview ? (
+              <div className="space-y-3 text-sm">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <OpsStatCard label="Queue pending" value={String(overview.queue.pending)} />
+                  <OpsStatCard label="Queue running" value={String(overview.queue.running)} />
+                  <OpsStatCard label="Recent successes" value={String(overview.local_load.recent_successes)} />
+                  <OpsStatCard label="Recent failures" value={String(overview.local_load.recent_failures)} />
+                </div>
+
+                <div className="rounded-lg border border-surface p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">Streams</span>
+                    <StatusPill tone={ws.connected ? 'success' : ws.connecting ? 'warning' : 'error'}>
+                      {ws.connected ? 'task events live' : ws.connecting ? 'task stream connecting' : 'task stream offline'}
+                    </StatusPill>
+                    <StatusPill tone={logStream.connected ? 'success' : logStream.error ? 'warning' : 'default'}>
+                      {logStream.connected ? 'log tail live' : logStream.error ? 'log tail reconnecting' : 'log tail idle'}
+                    </StatusPill>
+                  </div>
+                  <div className="mt-2 text-gray-400">
+                    avg duration {formatDuration(overview.local_load.recent_avg_duration_ms ?? undefined) || 'n/a'}
+                    {' · '}
+                    {overview.counts.pending_approvals} approvals pending
+                    {' · '}
+                    {overview.agent_runs.length} agent runs
+                    {' · '}
+                    {overview.workflow_runs.length} workflow runs
+                  </div>
+                  {logStream.error ? (
+                    <div className="mt-2 text-xs text-warning">{logStream.error}</div>
+                  ) : null}
+                </div>
+
+                <div className="rounded-lg border border-surface p-3">
+                  <div className="font-medium">Task outcome pulse</div>
+                  <div className="mt-2 text-gray-400">
+                    Local load reports {overview.local_load.pending_tasks} pending tasks and {overview.local_load.running_tasks} active tasks in the durable inbox.
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <EmptyState text="Live ops summary unavailable." />
             )}
           </DashboardPanel>
 
@@ -473,19 +747,80 @@ export default function MessagesPage() {
 
           <DashboardPanel
             title="Remote"
-            subtitle="Current node identity and mesh status."
+            subtitle="Current node identity, transport state, and fleet visibility."
             actionLabel="Open"
             onAction={() => (window.location.href = '/remote')}
           >
-            {overview?.remote ? (
+            {overview ? (
               <div className="space-y-3 text-sm">
                 <div className="rounded-lg border border-surface p-3">
-                  <div className="font-medium">{overview.remote.node.node_name}</div>
-                  <div className="mt-1 text-gray-400">{overview.remote.node.node_id}</div>
+                  <div className="font-medium">{overview.remote?.node.node_name ?? overview.health.node_name}</div>
+                  <div className="mt-1 text-gray-400">{overview.remote?.node.node_id ?? 'local-only runtime'}</div>
                   <div className="mt-2 text-gray-500">
-                    {overview.remote.paired_nodes} paired nodes · {overview.remote.transports.length} transports
+                    {overview.remote_nodes.length} paired nodes · {overview.remote_candidates.length} discovery candidates
                   </div>
                 </div>
+
+                {overview.zerotier ? (
+                  <div className="rounded-lg border border-surface p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-medium">ZeroTier</div>
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${
+                        overview.zerotier.joined
+                          ? 'bg-success/10 text-success'
+                          : overview.zerotier.enabled
+                            ? 'bg-warning/10 text-warning'
+                            : 'bg-surface2 text-gray-400'
+                      }`}>
+                        {overview.zerotier.joined ? 'joined' : overview.zerotier.enabled ? 'needs setup' : 'disabled'}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-gray-400">
+                      {overview.zerotier.network_name ?? overview.zerotier.network_id ?? 'no network configured'}
+                      {' · '}
+                      {overview.zerotier.candidate_count} candidates
+                      {' · '}
+                      sync {overview.zerotier.sync_state}
+                    </div>
+                  </div>
+                ) : null}
+
+                {overview.remote?.transports.length ? (
+                  <div className="rounded-lg border border-surface p-3">
+                    <div className="font-medium">Active transports</div>
+                    <div className="mt-2 space-y-2">
+                      {overview.remote.transports.map((transport) => (
+                        <div key={`${transport.kind}:${transport.address}`} className="text-sm">
+                          <div className="font-medium">{transport.kind}</div>
+                          <div className="text-gray-400">
+                            {transport.address}
+                            {transport.reachable ? ' · reachable' : transport.last_error ? ` · ${transport.last_error}` : ' · unknown'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {overview.remote_nodes.length ? (
+                  <div className="rounded-lg border border-surface p-3">
+                    <div className="font-medium">Paired nodes</div>
+                    <div className="mt-2 space-y-2">
+                      {overview.remote_nodes.slice(0, 4).map((node) => (
+                        <div key={node.identity.node_id} className="text-sm">
+                          <div className="font-medium">{node.identity.node_name}</div>
+                          <div className="text-gray-400">
+                            {node.profile.execution_role.replace('_', ' ')}
+                            {' · '}
+                            {node.transports.length} transport paths
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState text="No paired remote nodes yet." />
+                )}
               </div>
             ) : (
               <EmptyState text="Remote status unavailable." />
@@ -519,11 +854,17 @@ export default function MessagesPage() {
 
           <DashboardPanel
             title="Recent Logs"
-            subtitle="Bounded daemon tail for quick operator diagnosis."
+            subtitle="Live daemon tail for quick operator diagnosis."
           >
-            {overview?.recent_logs?.length ? (
+            <div className="mb-3 flex items-center gap-2">
+              <StatusPill tone={logStream.connected ? 'success' : logStream.error ? 'warning' : 'default'}>
+                {logStream.connected ? 'streaming' : logStream.error ? 'reconnecting' : 'snapshot'}
+              </StatusPill>
+              {logStream.error ? <span className="text-xs text-warning">{logStream.error}</span> : null}
+            </div>
+            {logLines.length ? (
               <pre className="max-h-80 overflow-auto rounded-lg border border-surface bg-background/40 p-3 text-xs text-gray-300">
-                {overview.recent_logs.join('\n')}
+                {logLines.join('\n')}
               </pre>
             ) : (
               <EmptyState text="No recent daemon logs yet." />
@@ -703,6 +1044,32 @@ function HealthPathRow({
   );
 }
 
+function OnboardingStepCard({ step }: { step: OnboardingStep }) {
+  const done = step.state === 'complete';
+  return (
+    <div className="rounded-lg border border-surface p-3 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-medium">{step.title}</div>
+          <div className="mt-1 text-gray-400">{step.summary}</div>
+        </div>
+        <span
+          className={`rounded-full px-2 py-0.5 text-xs ${
+            done ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'
+          }`}
+        >
+          {done ? 'done' : 'next'}
+        </span>
+      </div>
+      {!done ? (
+        <div className="mt-3 rounded-md border border-warning/20 bg-warning/5 px-3 py-2 text-xs text-gray-300">
+          {step.action}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function FullScreenMessage({ title, body }: { title: string; body: string }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -745,6 +1112,15 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl border border-surface2 bg-surface p-4">
       <p className="text-xs uppercase tracking-[0.2em] text-gray-500">{label}</p>
       <p className="mt-3 text-lg font-medium">{value}</p>
+    </div>
+  );
+}
+
+function OpsStatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-surface bg-background/40 p-3">
+      <p className="text-xs uppercase tracking-[0.2em] text-gray-500">{label}</p>
+      <p className="mt-2 text-base font-medium">{value}</p>
     </div>
   );
 }
@@ -816,8 +1192,27 @@ function formatSeconds(value: number | null | undefined): string {
   return `${minutes}m ${seconds}s`;
 }
 
+function formatAuthSummary(health: {
+  auth: {
+    password_state: string;
+    session_state?: string | null;
+  };
+}) {
+  return health.auth.session_state
+    ? `session ${health.auth.session_state.replaceAll('_', ' ')}`
+    : `auth ${health.auth.password_state.replaceAll('_', ' ')}`;
+}
+
 function daemonClient() {
   return new RoveDaemonClient(readStoredToken() ?? undefined);
+}
+
+function appendLogLine(current: string[], line: string) {
+  const next = [...current, line];
+  if (next.length > 400) {
+    next.splice(0, next.length - 400);
+  }
+  return next;
 }
 
 function normalizeEpochMillis(value: number) {

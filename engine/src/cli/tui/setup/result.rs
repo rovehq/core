@@ -8,4 +8,7 @@ pub struct SetupResult {
     pub api_key: String,
     pub max_risk_tier: u8,
     pub skipped_model: bool,
+    pub daemon_password: String,
+    pub recovery_code: Option<String>,
+    pub auth_protection: Option<String>,
 }

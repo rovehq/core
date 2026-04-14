@@ -36,6 +36,12 @@ pub fn print_summary(result: &SetupResult, config_path: &str, db_ready: bool) {
         "  {CYAN}│{RESET}  {DIM}Risk Tier{RESET}    {:<35} {CYAN}│{RESET}",
         result.max_risk_tier
     );
+    if let Some(auth_protection) = &result.auth_protection {
+        println!(
+            "  {CYAN}│{RESET}  {DIM}Auth{RESET}         {:<35} {CYAN}│{RESET}",
+            auth_protection
+        );
+    }
     println!(
         "  {CYAN}│{RESET}  {DIM}Config{RESET}       {:<35} {CYAN}│{RESET}",
         config_path
@@ -50,6 +56,13 @@ pub fn print_summary(result: &SetupResult, config_path: &str, db_ready: bool) {
     println!("  {CYAN}│{RESET}  Run {BOLD}`rove start`{RESET} to begin.                      {CYAN}│{RESET}");
     println!("  {CYAN}{BOLD}└──────────────────────────────────────────────────┘{RESET}");
     println!();
+    if let Some(recovery_code) = &result.recovery_code {
+        println!("  {BOLD}Recovery code{RESET}: {GREEN}{recovery_code}{RESET}");
+        println!(
+            "  {DIM}Store this once-only code somewhere safe. It can reset the local daemon password if the device seal is unavailable.{RESET}"
+        );
+        println!();
+    }
 }
 
 fn mask_key(key: &str) -> String {

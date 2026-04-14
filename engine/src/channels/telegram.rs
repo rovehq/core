@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::agent::AgentCore;
 use crate::config::metadata::SERVICE_NAME;
 use crate::secrets::SecretManager;
+use crate::storage::Database;
 use types::TelegramRateLimits;
 
 pub type TaskHandler = Arc<RwLock<AgentCore>>;
@@ -23,6 +24,7 @@ pub type TaskHandler = Arc<RwLock<AgentCore>>;
 pub struct TelegramBot {
     token: String,
     allowed_users: Vec<i64>,
+    admin_users: Vec<i64>,
     client: Client,
     api_base_url: String,
     agent: Option<TaskHandler>,
@@ -30,6 +32,7 @@ pub struct TelegramBot {
     rate_limits: Arc<Mutex<TelegramRateLimits>>,
     confirmation_chat_id: Option<i64>,
     secret_manager: Arc<SecretManager>,
+    db: Option<Arc<Database>>,
 }
 
 impl std::fmt::Debug for TelegramBot {
@@ -46,6 +49,7 @@ impl TelegramBot {
         Self {
             token,
             allowed_users,
+            admin_users: Vec::new(),
             client: Client::builder()
                 .timeout(Duration::from_secs(60))
                 .build()
@@ -56,7 +60,18 @@ impl TelegramBot {
             rate_limits: Arc::new(Mutex::new(TelegramRateLimits::new())),
             confirmation_chat_id: None,
             secret_manager: Arc::new(SecretManager::new(SERVICE_NAME)),
+            db: None,
         }
+    }
+
+    pub fn with_database(mut self, db: Arc<Database>) -> Self {
+        self.db = Some(db);
+        self
+    }
+
+    pub fn with_admin_users(mut self, admin_ids: Vec<i64>) -> Self {
+        self.admin_users = admin_ids;
+        self
     }
 
     pub fn with_agent(mut self, agent: TaskHandler) -> Self {
@@ -64,10 +79,7 @@ impl TelegramBot {
         self
     }
 
-    pub fn with_execution_profile(
-        mut self,
-        execution_profile: sdk::TaskExecutionProfile,
-    ) -> Self {
+    pub fn with_execution_profile(mut self, execution_profile: sdk::TaskExecutionProfile) -> Self {
         self.execution_profile = Some(execution_profile);
         self
     }
@@ -84,5 +96,35 @@ impl TelegramBot {
 
     pub(super) fn api_url(&self, method: &str) -> String {
         format!("{}/bot{}/{}", self.api_base_url, self.token, method)
+    }
+
+    pub(super) fn is_admin(&self, user_id: i64) -> bool {
+        self.admin_users.contains(&user_id)
+    }
+
+    pub(super) async fn log_telegram_audit(
+        &self,
+        event_type: &str,
+        telegram_user: i64,
+        chat_id: Option<i64>,
+        task_id: Option<&str>,
+        approval_key: Option<&str>,
+        approved: Option<bool>,
+        operation: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if let Some(ref db) = self.db {
+            db.telegram_audit()
+                .log(
+                    event_type,
+                    telegram_user,
+                    chat_id,
+                    task_id,
+                    approval_key,
+                    approved,
+                    operation,
+                )
+                .await?;
+        }
+        Ok(())
     }
 }

@@ -1,7 +1,12 @@
 //! Memory Consolidation
 //!
 //! Processes unconsolidated episodic memories into cross-cutting insights.
-//! Groups memories by domain and generates behavioral patterns using LLM.
+//! Supports three backends via `ConsolidationBackend`:
+//!
+//!   - `Llm`       — calls LLM for high-quality behavioral patterns
+//!   - `Heuristic` — entity co-occurrence counting, no LLM required
+//!   - `Disabled`  — skip consolidation entirely
+//!   - `Auto`      — try LLM, fall back to heuristic on failure (default)
 
 use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool};
@@ -10,26 +15,30 @@ use uuid::Uuid;
 
 use crate::conductor::memory_types::*;
 use crate::conductor::memory_utils::*;
+use crate::conductor::types::ConsolidationBackend;
 use crate::llm::router::LLMRouter;
 
 /// Consolidate unconsolidated episodic memories into cross-cutting insights.
 ///
-/// Fetches all rows where `consolidated = 0`, groups by domain, and processes
-/// each domain group separately. If a domain group has fewer than min_to_consolidate
-/// memories, it is skipped. Calls the LLM with `CONSOLIDATE_PROMPT` and stores
-/// each insight in `consolidation_insights` with the domain field, then marks the
-/// source memories as `consolidated = 1`.
-///
 /// # Arguments
-/// * `pool` - SQLite connection pool
-/// * `router` - LLM router for consolidation calls
-/// * `min_to_consolidate` - Minimum memories needed to trigger consolidation
+/// * `pool`              — SQLite connection pool
+/// * `router`            — LLM router (used only by Llm / Auto backends)
+/// * `min_to_consolidate`— minimum memories needed to trigger consolidation
+/// * `backend`           — which consolidation strategy to use
 pub async fn consolidate(
     pool: &SqlitePool,
     router: &LLMRouter,
     min_to_consolidate: usize,
+    backend: &ConsolidationBackend,
 ) -> Result<ConsolidationResult> {
-    // Fetch unconsolidated memories with domain field
+    // Handle disabled backend early
+    if matches!(backend, ConsolidationBackend::Disabled) {
+        return Ok(ConsolidationResult::Skipped {
+            reason: "consolidation disabled by configuration".to_string(),
+        });
+    }
+
+    // Fetch unconsolidated memories
     let rows = sqlx::query(
         r#"SELECT id, summary, entities, topics, importance, domain
            FROM episodic_memory
@@ -55,21 +64,23 @@ pub async fn consolidate(
         });
     }
 
-    info!("Consolidating {} memories", rows.len());
+    info!(
+        "Consolidating {} memories (backend: {:?})",
+        rows.len(),
+        backend
+    );
 
     // Group by domain
     let mut domain_groups: std::collections::HashMap<String, Vec<_>> =
         std::collections::HashMap::new();
-
     for row in &rows {
         let domain: String = row.get("domain");
         domain_groups.entry(domain).or_default().push(row);
     }
 
-    let mut total_memories = 0;
-    let mut total_insights = 0;
+    let mut total_memories = 0usize;
+    let mut total_insights = 0usize;
 
-    // Process each domain group
     for (domain, group) in domain_groups {
         if group.len() < min_to_consolidate {
             debug!(
@@ -80,7 +91,7 @@ pub async fn consolidate(
             continue;
         }
 
-        // Build prompt with memory summaries
+        // Build shared data for both paths
         let mut memories_text = String::new();
         let mut memory_ids: Vec<String> = Vec::new();
 
@@ -98,30 +109,41 @@ pub async fn consolidate(
             memory_ids.push(id);
         }
 
-        let content = format!(
-            "{}{}",
-            crate::conductor::memory_prompts::CONSOLIDATE_PROMPT,
-            memories_text
-        );
-
-        // Call LLM
-        let insights = match call_llm_for_text(router, &content).await {
-            Ok(text) => parse_consolidation_response(&text, &memory_ids),
-            Err(e) => {
-                warn!("LLM consolidation call failed for domain {}: {}", domain, e);
-                continue;
+        // Generate insights via configured backend
+        let insights: Vec<ConsolidationInsight> = match backend {
+            ConsolidationBackend::Llm | ConsolidationBackend::Auto => {
+                let content = format!(
+                    "{}{}",
+                    crate::conductor::memory_prompts::CONSOLIDATE_PROMPT,
+                    memories_text
+                );
+                match call_llm_for_text(router, &content).await {
+                    Ok(text) => parse_consolidation_response(&text, &memory_ids),
+                    Err(e) => {
+                        if matches!(backend, ConsolidationBackend::Auto) {
+                            warn!(
+                                "LLM consolidation failed for domain {}, using heuristic: {}",
+                                domain, e
+                            );
+                            heuristic_insights(&group, &domain)
+                        } else {
+                            warn!("LLM consolidation call failed for domain {}: {}", domain, e);
+                            continue;
+                        }
+                    }
+                }
             }
+            ConsolidationBackend::Heuristic => heuristic_insights(&group, &domain),
+            ConsolidationBackend::Disabled => unreachable!("handled above"),
         };
 
         if insights.is_empty() {
-            warn!("LLM returned no usable insights for domain {}", domain);
-            continue;
+            debug!("No insights generated for domain {}", domain);
+            // Still mark memories as consolidated so they don't block future runs
         }
 
-        // Begin transaction for this domain batch
+        // Store insights and mark memories as consolidated
         let mut tx = pool.begin().await.context("Failed to begin transaction")?;
-
-        // Store insights
         let consolidation_id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp();
 
@@ -131,7 +153,7 @@ pub async fn consolidate(
                 serde_json::to_string(&insight.source_ids).unwrap_or_else(|_| "[]".to_string());
 
             sqlx::query(
-                r#"INSERT INTO consolidation_insights 
+                r#"INSERT INTO consolidation_insights
                    (id, insight, domain, source_ids, created_at)
                    VALUES (?, ?, ?, ?, ?)"#,
             )
@@ -147,7 +169,6 @@ pub async fn consolidate(
             total_insights += 1;
         }
 
-        // Mark memories as consolidated
         for id in &memory_ids {
             sqlx::query(
                 r#"UPDATE episodic_memory
@@ -163,7 +184,6 @@ pub async fn consolidate(
             total_memories += 1;
         }
 
-        // Commit transaction for this domain
         tx.commit()
             .await
             .context("Failed to commit consolidation transaction")?;
@@ -180,14 +200,71 @@ pub async fn consolidate(
     })
 }
 
-/// Call the LLM router and extract the text content from FinalAnswer.
-async fn call_llm_for_text(router: &LLMRouter, user_content: &str) -> Result<String> {
+// ─────────────────────────────────────────────────────────────────────────────
+// Heuristic consolidation — entity co-occurrence counting
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build insights by counting entity/topic co-occurrences across memories.
+/// Any entity/topic appearing in ≥2 memories in the group gets an insight.
+fn heuristic_insights(
+    group: &[&sqlx::sqlite::SqliteRow],
+    domain: &str,
+) -> Vec<ConsolidationInsight> {
+    let mut entity_to_mids: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    for row in group {
+        let id: String = row.get("id");
+        let entities_raw: String = row.get::<Option<String>, _>("entities").unwrap_or_default();
+        let topics_raw: String = row.get::<Option<String>, _>("topics").unwrap_or_default();
+
+        let entities: Vec<String> = serde_json::from_str(&entities_raw).unwrap_or_default();
+        let topics: Vec<String> = serde_json::from_str(&topics_raw).unwrap_or_default();
+
+        for term in entities.iter().chain(topics.iter()) {
+            let term = term.trim();
+            if term.len() > 2 {
+                entity_to_mids
+                    .entry(term.to_string())
+                    .or_default()
+                    .push(id.clone());
+            }
+        }
+    }
+
+    entity_to_mids
+        .into_iter()
+        .filter(|(_, mids)| mids.len() >= 2)
+        .map(|(entity, mids)| {
+            let src = mids[..mids.len().min(5)].to_vec();
+            ConsolidationInsight {
+                insight: format!(
+                    "\"{}\" appears across {} related memories in domain {}.",
+                    entity,
+                    mids.len(),
+                    domain
+                ),
+                source_ids: src,
+            }
+        })
+        .take(10) // cap per domain to avoid noisy insight tables
+        .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LLM call helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+async fn call_llm_for_text(router: &LLMRouter, user_content: &str) -> anyhow::Result<String> {
     use crate::llm::Message;
     use std::time::Duration;
     use tokio::time::timeout;
 
     let messages = vec![
-        Message::system("You are a structured data extraction system. Respond with ONLY valid JSON, no markdown fences, no explanation."),
+        Message::system(
+            "You are a structured data extraction system. \
+             Respond with ONLY valid JSON, no markdown fences, no explanation.",
+        ),
         Message::user(user_content),
     ];
 
@@ -202,14 +279,16 @@ async fn call_llm_for_text(router: &LLMRouter, user_content: &str) -> Result<Str
     match response {
         crate::llm::LLMResponse::FinalAnswer(answer) => Ok(answer.content),
         crate::llm::LLMResponse::ToolCall(tc) => {
-            warn!("Memory LLM returned tool call instead of text, using arguments");
+            warn!("Memory LLM returned tool call, using arguments");
             Ok(tc.arguments)
         }
     }
 }
 
-/// Parse LLM response from consolidation prompt into insights.
-/// Validates that source_ids reference actual memory IDs.
+// ─────────────────────────────────────────────────────────────────────────────
+// Response parser
+// ─────────────────────────────────────────────────────────────────────────────
+
 fn parse_consolidation_response(text: &str, valid_ids: &[String]) -> Vec<ConsolidationInsight> {
     let cleaned = strip_markdown_fences(text);
 
@@ -221,7 +300,6 @@ fn parse_consolidation_response(text: &str, valid_ids: &[String]) -> Vec<Consoli
                     warn!("Skipping empty insight");
                     return false;
                 }
-                // Keep only insights whose source_ids reference valid memories
                 let valid_refs = i.source_ids.iter().all(|id| valid_ids.contains(id));
                 if !valid_refs {
                     warn!(
@@ -229,7 +307,7 @@ fn parse_consolidation_response(text: &str, valid_ids: &[String]) -> Vec<Consoli
                         i.source_ids
                     );
                 }
-                true // Accept even with bad refs — the insight text is still useful
+                true
             })
             .collect(),
         Err(e) => {
@@ -242,6 +320,10 @@ fn parse_consolidation_response(text: &str, valid_ids: &[String]) -> Vec<Consoli
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

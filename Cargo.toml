@@ -6,6 +6,7 @@ members = [
     "tools/notification",
     "tools/screenshot",
     "tools/terminal",
+    "tools/voice-native",
     "brain",
     "engine",
     "sdk",

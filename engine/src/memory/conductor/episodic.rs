@@ -1,8 +1,13 @@
 //! Episodic Memory Ingest
 //!
 //! Handles ingestion of completed tasks into episodic memory.
-//! Calls LLM to extract structured information and stores in episodic_memory table.
-//! Includes fire-and-forget knowledge graph extraction for high-importance memories.
+//! Uses the `MemoryExtractor` trait to extract structured information —
+//! no hard dependency on an LLM; the heuristic backend always works offline.
+//!
+//! Three optional enhancements (all controlled by `MemoryConfig`):
+//!   - `fact_store_enabled` — writes Fact/Preference kinds to `memory_facts`
+//!   - `embed_at_ingest`    — generates vector embedding inline (requires LocalBrain)
+//!   - knowledge graph extraction (fire-and-forget, importance ≥ 0.5)
 
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -12,33 +17,22 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::conductor::memory_types::*;
-use crate::conductor::memory_utils::*;
-use crate::conductor::types::TaskDomain;
-use crate::llm::router::LLMRouter;
+use crate::conductor::extract::MemoryExtractor;
+use crate::conductor::types::{GraphSourceKind, IngestResult, TaskDomain};
 use crate::security::secrets::scrub_text;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ingest() — public entry point
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// Ingest a completed task into episodic memory.
 ///
-/// Calls the LLM with `INGEST_PROMPT` + task content, parses the
-/// structured JSON, and INSERTs into `episodic_memory`. If the LLM
-/// call fails or the response cannot be parsed, a fallback raw
-/// memory is stored so no task is ever lost.
-///
-/// # Arguments
-/// * `pool` - SQLite connection pool
-/// * `router` - LLM router for extraction calls
-/// * `knowledge_graph` - Knowledge graph for entity extraction
-/// * `entity_extractor` - Entity extractor for knowledge graph
-/// * `task_input` - The input to the task
-/// * `task_result` - The result of the task
-/// * `task_id` - The task identifier
-/// * `domain` - The task domain for domain-gated queries
-/// * `sensitive` - Whether the memory contains sensitive information
+/// Delegates extraction to `extractor` (heuristic, LLM, or auto).
+/// Sensitive tasks always use the heuristic extractor to keep data local.
 #[allow(clippy::too_many_arguments)]
 pub async fn ingest(
     pool: &SqlitePool,
-    router: &LLMRouter,
+    extractor: &Arc<dyn MemoryExtractor>,
     knowledge_graph: &Arc<crate::knowledge_graph::KnowledgeGraph>,
     entity_extractor: &Arc<crate::knowledge_graph::EntityExtractor>,
     task_input: &str,
@@ -46,6 +40,9 @@ pub async fn ingest(
     task_id: &str,
     domain: &TaskDomain,
     sensitive: bool,
+    fact_store_enabled: bool,
+    embed_at_ingest: bool,
+    embedding_generator: Option<&Arc<crate::conductor::EmbeddingGenerator>>,
 ) -> Result<IngestResult> {
     let task_input = if sensitive {
         scrub_text(task_input)
@@ -57,64 +54,40 @@ pub async fn ingest(
     } else {
         task_result.to_string()
     };
+
     let memory_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp();
 
-    // Build the prompt
-    let content = format!(
-        "{}INPUT:\n{}\n\nRESULT:\n{}",
-        crate::conductor::memory_prompts::INGEST_PROMPT,
-        task_input,
-        task_result
-    );
-
-    // Sensitive memories must stay local-only. Skip extractor LLM calls entirely
-    // and rely on scrubbed fallback/heuristic summaries instead.
+    // Sensitive tasks always use heuristic to avoid leaking data to any LLM
     let extraction = if sensitive {
-        debug!(
-            "Skipping LLM memory extraction for sensitive task {}",
-            task_id
-        );
-        None
+        debug!("Using heuristic extraction for sensitive task {}", task_id);
+        crate::conductor::extract::extract_heuristic_combined(&task_input, &task_result)
     } else {
-        match call_llm_for_text(router, &content).await {
-            Ok(text) => parse_ingest_response(&text),
-            Err(e) => {
-                warn!("LLM ingest call failed, storing raw fallback: {}", e);
-                None
-            }
-        }
+        extractor.extract(&task_input, &task_result).await
     };
 
-    let extraction = extraction.unwrap_or_else(|| {
-        // Fallback: store a simple raw memory so nothing is lost
-        IngestExtraction {
-            summary: truncate(&task_input, 200),
-            entities: vec![],
-            topics: vec![],
-            importance: 0.3,
-        }
-    });
-    let mut extraction = apply_fact_heuristics(&task_input, extraction);
-    if sensitive {
-        extraction.summary = scrub_text(&extraction.summary);
-    }
-
-    // Clamp importance
     let importance = extraction.importance.clamp(0.0, 1.0);
     let entities_json =
         serde_json::to_string(&extraction.entities).unwrap_or_else(|_| "[]".to_string());
     let topics_json =
         serde_json::to_string(&extraction.topics).unwrap_or_else(|_| "[]".to_string());
+    let domain_str = format!("{:?}", domain).to_lowercase();
+    let kind_str = extraction.kind.as_str();
+    let sensitive_int = if sensitive { 1i64 } else { 0i64 };
 
-    // INSERT into episodic_memory
-    let domain_str = format!("{:?}", domain);
-    let sensitive_int = if sensitive { 1 } else { 0 };
+    // Optionally generate an embedding immediately (requires LocalBrain)
+    let embedding_blob: Option<Vec<u8>> = if embed_at_ingest {
+        generate_embedding_blob(embedding_generator, &extraction.summary).await
+    } else {
+        None
+    };
 
+    // INSERT base row
     sqlx::query(
         r#"INSERT INTO episodic_memory
-           (id, task_id, summary, entities, topics, importance, consolidated, created_at, domain, sensitive)
-           VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)"#,
+           (id, task_id, summary, entities, topics, importance,
+            consolidated, created_at, domain, sensitive, memory_kind)
+           VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)"#,
     )
     .bind(&memory_id)
     .bind(task_id)
@@ -125,19 +98,59 @@ pub async fn ingest(
     .bind(now)
     .bind(&domain_str)
     .bind(sensitive_int)
+    .bind(kind_str)
     .execute(pool)
     .await
     .context("Failed to insert episodic memory")?;
+
+    // Store embedding if generated
+    if let Some(blob) = embedding_blob {
+        let _ = sqlx::query(
+            r#"UPDATE episodic_memory
+               SET embedding = ?, embedding_model = ?, embedding_generated_at = ?
+               WHERE id = ?"#,
+        )
+        .bind(&blob)
+        .bind("local-brain")
+        .bind(now)
+        .bind(&memory_id)
+        .execute(pool)
+        .await;
+    }
+
+    // Write structured facts to the fact store
+    if fact_store_enabled && !extraction.facts.is_empty() {
+        for (key, value) in &extraction.facts {
+            if let Err(e) =
+                crate::conductor::fact_store::upsert_fact(pool, key, value, task_id, &memory_id)
+                    .await
+            {
+                warn!("Failed to upsert fact '{}': {}", key, e);
+            }
+        }
+    }
 
     info!(
         task_id = %task_id,
         memory_id = %memory_id,
         importance = importance,
+        kind = %kind_str,
+        extractor = %extractor.name(),
         "ingested memory"
     );
 
-    // Fire-and-forget: extract entities and relationships for knowledge graph
-    // Skip if sensitive (privacy) or low importance (noise reduction)
+    // Build memory-to-memory graph edges (deterministic, no LLM required)
+    let _ = crate::conductor::memory_graph::build_edges_for_memory(
+        pool,
+        &memory_id,
+        task_id,
+        &extraction.entities,
+        &domain_str,
+        now,
+    )
+    .await;
+
+    // Fire-and-forget: extract entities for the knowledge graph
     if !sensitive && importance >= 0.5 {
         persist_graph_facts(
             entity_extractor.as_ref(),
@@ -156,158 +169,98 @@ pub async fn ingest(
         entities: extraction.entities,
         topics: extraction.topics,
         importance,
+        kind: extraction.kind,
     })
 }
 
-/// Call the LLM router and extract the text content from FinalAnswer.
-/// Uses a simple system + user message pair. 60s timeout.
-async fn call_llm_for_text(router: &LLMRouter, user_content: &str) -> Result<String> {
-    use crate::llm::Message;
-    use std::time::Duration;
-    use tokio::time::timeout;
+/// Lightweight ingest used when `memory.mode = graph_only`.
+///
+/// This persists only explicit/pinned facts into `memory_facts`. It does not
+/// write broad episodic rows or trigger consolidation-oriented storage.
+#[allow(clippy::too_many_arguments)]
+pub async fn ingest_pinned_facts_only(
+    pool: &SqlitePool,
+    extractor: &Arc<dyn MemoryExtractor>,
+    task_input: &str,
+    task_result: &str,
+    task_id: &str,
+    _domain: &TaskDomain,
+    sensitive: bool,
+    fact_store_enabled: bool,
+) -> Result<IngestResult> {
+    let task_input = if sensitive {
+        scrub_text(task_input)
+    } else {
+        task_input.to_string()
+    };
+    let task_result = if sensitive {
+        scrub_text(task_result)
+    } else {
+        task_result.to_string()
+    };
 
-    let messages = vec![
-        Message::system("You are a structured data extraction system. Respond with ONLY valid JSON, no markdown fences, no explanation."),
-        Message::user(user_content),
-    ];
+    let extraction = if sensitive {
+        crate::conductor::extract::extract_heuristic_combined(&task_input, &task_result)
+    } else {
+        extractor.extract(&task_input, &task_result).await
+    };
 
-    let result = timeout(Duration::from_secs(60), router.call(&messages))
-        .await
-        .context("LLM call timed out")?
-        .map_err(|e| anyhow::anyhow!("LLM call failed: {}", e))?;
-
-    let (response, provider) = result;
-    debug!("Memory LLM call answered by {}", provider);
-
-    match response {
-        crate::llm::LLMResponse::FinalAnswer(answer) => Ok(answer.content),
-        crate::llm::LLMResponse::ToolCall(tc) => {
-            // Some providers may return this as a tool call; extract from arguments
-            warn!("Memory LLM returned tool call instead of text, using arguments");
-            Ok(tc.arguments)
+    if fact_store_enabled {
+        let memory_id = format!("graph-only:{task_id}");
+        for (key, value) in &extraction.facts {
+            if let Err(error) =
+                crate::conductor::fact_store::upsert_fact(pool, key, value, task_id, &memory_id)
+                    .await
+            {
+                warn!("Failed to upsert pinned fact '{}': {}", key, error);
+            }
         }
     }
+
+    let summary = if extraction.facts.is_empty() {
+        "graph_only mode keeps explicit pinned facts only; no fact was extracted.".to_string()
+    } else {
+        extraction.summary.clone()
+    };
+
+    Ok(IngestResult {
+        memory_id: format!("graph-only:{task_id}"),
+        summary,
+        entities: extraction.entities,
+        topics: extraction.topics,
+        importance: extraction.importance,
+        kind: extraction.kind,
+    })
 }
 
-/// Parse LLM response from ingest prompt into IngestExtraction.
-/// Returns None if parsing fails — caller handles fallback.
-fn parse_ingest_response(text: &str) -> Option<IngestExtraction> {
-    let cleaned = strip_markdown_fences(text);
+// ─────────────────────────────────────────────────────────────────────────────
+// Embedding helper
+// ─────────────────────────────────────────────────────────────────────────────
 
-    match serde_json::from_str::<IngestExtraction>(&cleaned) {
-        Ok(mut extraction) => {
-            // Clamp and validate
-            extraction.importance = extraction.importance.clamp(0.0, 1.0);
-            extraction.entities.truncate(10);
-            extraction.topics.truncate(5);
-            if extraction.summary.is_empty() {
-                warn!("LLM returned empty summary");
-                return None;
+async fn generate_embedding_blob(
+    generator: Option<&Arc<crate::conductor::EmbeddingGenerator>>,
+    text: &str,
+) -> Option<Vec<u8>> {
+    let gen = generator?;
+    let brain = gen.local_brain.as_ref()?;
+    match brain.embed(text).await {
+        Ok(emb) => match bincode::serialize(&emb) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                warn!("Failed to serialize embedding: {}", e);
+                None
             }
-            Some(extraction)
-        }
+        },
         Err(e) => {
-            warn!(
-                "Failed to parse ingest LLM response: {} — raw: {}",
-                e,
-                truncate(text, 200)
-            );
+            warn!("Failed to generate embedding at ingest: {}", e);
             None
         }
     }
 }
 
-fn apply_fact_heuristics(task_input: &str, mut extraction: IngestExtraction) -> IngestExtraction {
-    if let Some(fact) = remembered_fact(task_input) {
-        extraction.summary = fact;
-        extraction.importance = extraction.importance.max(0.85);
-        push_topic(&mut extraction.topics, "remembered_fact");
-    }
-
-    if let Some((key, value)) = user_property(task_input) {
-        extraction.summary = format!("User's {} is {}.", key, value);
-        extraction.importance = extraction.importance.max(0.9);
-        push_topic(&mut extraction.topics, "user_preference");
-    }
-
-    if let Some(preference) = verification_preference(task_input) {
-        extraction.summary = preference;
-        extraction.importance = extraction.importance.max(0.85);
-        push_topic(&mut extraction.topics, "verification_preference");
-    }
-
-    if let Some(workspace_fact) = project_workspace_summary(task_input) {
-        extraction.summary = workspace_fact;
-        extraction.importance = extraction.importance.max(0.8);
-        push_topic(&mut extraction.topics, "project_context");
-    }
-
-    extraction
-}
-
-fn push_topic(topics: &mut Vec<String>, topic: &str) {
-    if !topics.iter().any(|existing| existing == topic) {
-        topics.push(topic.to_string());
-    }
-}
-
-fn remembered_fact(task_input: &str) -> Option<String> {
-    let pattern = Regex::new(r"(?i)^\s*remember(?:\s+that)?\s+(.+?)\s*$").ok()?;
-    let captures = pattern.captures(task_input)?;
-    let fact = captures.get(1)?.as_str().trim().trim_end_matches('.');
-    if fact.is_empty() {
-        return None;
-    }
-
-    Some(format!("Remembered fact: {}.", fact))
-}
-
-fn user_property(task_input: &str) -> Option<(String, String)> {
-    let pattern = Regex::new(r"(?i)^\s*my\s+(.+?)\s+is\s+(.+?)\s*$").ok()?;
-    let captures = pattern.captures(task_input)?;
-    let key = captures.get(1)?.as_str().trim().to_ascii_lowercase();
-    let value = captures
-        .get(2)?
-        .as_str()
-        .trim()
-        .trim_end_matches('.')
-        .to_string();
-    if key.is_empty() || value.is_empty() {
-        return None;
-    }
-
-    Some((key, value))
-}
-
-fn verification_preference(task_input: &str) -> Option<String> {
-    let input = task_input.to_ascii_lowercase();
-    if input.contains("cargo test before saying done") {
-        return Some("User prefers cargo test before saying done.".to_string());
-    }
-    if input.contains("test it") || input.contains("run tests") || input.contains("cargo test") {
-        return Some("User prefers running cargo test before completion.".to_string());
-    }
-    None
-}
-
-fn project_workspace_summary(task_input: &str) -> Option<String> {
-    let pattern = Regex::new(
-        r"(?i)^\s*i work on(?:\s+the)?\s+(.+?)(?:\s+project)?\s+in\s+(\S+)\s+using\s+(.+?)\s*$",
-    )
-    .ok()?;
-    let captures = pattern.captures(task_input)?;
-    let project = captures.get(1)?.as_str().trim().trim_start_matches("the ");
-    let path = captures.get(2)?.as_str().trim();
-    let language = captures.get(3)?.as_str().trim().trim_end_matches('.');
-    if project.is_empty() || path.is_empty() || language.is_empty() {
-        return None;
-    }
-
-    Some(format!(
-        "The {} project is stored at {} and uses {}.",
-        project, path, language
-    ))
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Knowledge graph persistence (fire-and-forget)
+// ─────────────────────────────────────────────────────────────────────────────
 
 struct GraphFacts {
     entities: Vec<crate::knowledge_graph::Entity>,
@@ -397,12 +350,29 @@ fn extract_graph_facts(task_input: &str) -> GraphFacts {
     facts
 }
 
+fn project_workspace_summary(task_input: &str) -> Option<String> {
+    let pattern = Regex::new(
+        r"(?i)^\s*i work on(?:\s+the)?\s+(.+?)(?:\s+project)?\s+in\s+(\S+)\s+using\s+(.+?)\s*$",
+    )
+    .ok()?;
+    let captures = pattern.captures(task_input)?;
+    let project = captures.get(1)?.as_str().trim().trim_start_matches("the ");
+    let path = captures.get(2)?.as_str().trim();
+    let language = captures.get(3)?.as_str().trim().trim_end_matches('.');
+    if project.is_empty() || path.is_empty() || language.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "The {} project is stored at {} and uses {}.",
+        project, path, language
+    ))
+}
+
 fn dedupe_entities(
     entities: Vec<crate::knowledge_graph::Entity>,
 ) -> Vec<crate::knowledge_graph::Entity> {
     let mut deduped = Vec::new();
     let mut seen = HashMap::new();
-
     for entity in entities {
         let key = format!(
             "{}:{}",
@@ -413,7 +383,6 @@ fn dedupe_entities(
             deduped.push(entity);
         }
     }
-
     deduped
 }
 
@@ -422,7 +391,6 @@ fn dedupe_relationships(
 ) -> Vec<crate::knowledge_graph::Relationship> {
     let mut deduped = Vec::new();
     let mut seen = HashMap::new();
-
     for relationship in relationships {
         let key = format!(
             "{}:{}:{}",
@@ -434,7 +402,6 @@ fn dedupe_relationships(
             deduped.push(relationship);
         }
     }
-
     deduped
 }
 
@@ -446,7 +413,6 @@ async fn resolve_node_id(
     if let Some(node_id) = node_ids.get(&label.to_ascii_lowercase()) {
         return Ok(Some(node_id.clone()));
     }
-
     Ok(graph.find_node_by_label(label).await?.map(|node| node.id))
 }
 
@@ -498,6 +464,10 @@ async fn persist_graph_facts(
             label: entity.label.clone(),
             node_type: entity.entity_type.clone(),
             properties: entity.properties.clone(),
+            source_kind: GraphSourceKind::TaskTrace,
+            source_scope: "per_node".to_string(),
+            source_ref: Some(memory_id.to_string()),
+            confidence: 1.0,
             created_at,
             last_updated: created_at,
             access_count: 0,
@@ -523,11 +493,7 @@ async fn persist_graph_facts(
             Ok(Some(id)) => id,
             Ok(None) => continue,
             Err(error) => {
-                warn!(
-                    error = %error,
-                    label = %relationship.from_label,
-                    "failed to resolve relationship source"
-                );
+                warn!(error = %error, label = %relationship.from_label, "failed to resolve source");
                 continue;
             }
         };
@@ -535,11 +501,7 @@ async fn persist_graph_facts(
             Ok(Some(id)) => id,
             Ok(None) => continue,
             Err(error) => {
-                warn!(
-                    error = %error,
-                    label = %relationship.to_label,
-                    "failed to resolve relationship target"
-                );
+                warn!(error = %error, label = %relationship.to_label, "failed to resolve target");
                 continue;
             }
         };
@@ -555,7 +517,12 @@ async fn persist_graph_facts(
             relation: relationship.relation.clone(),
             weight: relationship.weight,
             properties: None,
+            source_kind: GraphSourceKind::TaskTrace,
+            source_scope: "per_node".to_string(),
+            source_ref: Some(memory_id.to_string()),
+            confidence: 1.0,
             created_at,
+            updated_at: created_at,
         };
 
         if let Err(error) = graph.add_edge(&edge).await {
@@ -576,68 +543,13 @@ async fn persist_graph_facts(
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_ingest_response_valid() {
-        let json = r#"{"summary":"Fixed a bug","entities":["Rust","tokio"],"topics":["debugging"],"importance":0.8}"#;
-        let result = parse_ingest_response(json);
-        assert!(result.is_some());
-        let ext = result.unwrap();
-        assert_eq!(ext.summary, "Fixed a bug");
-        assert_eq!(ext.entities, vec!["Rust", "tokio"]);
-        assert_eq!(ext.importance, 0.8);
-    }
-
-    #[test]
-    fn test_parse_ingest_response_with_fences() {
-        let json =
-            "```json\n{\"summary\":\"Test\",\"entities\":[],\"topics\":[],\"importance\":0.5}\n```";
-        let result = parse_ingest_response(json);
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_parse_ingest_response_invalid() {
-        let result = parse_ingest_response("not json at all");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_parse_ingest_response_empty_summary() {
-        let json = r#"{"summary":"","entities":[],"topics":[],"importance":0.5}"#;
-        let result = parse_ingest_response(json);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_parse_ingest_response_clamps_importance() {
-        let json = r#"{"summary":"Test","entities":[],"topics":[],"importance":5.0}"#;
-        let result = parse_ingest_response(json);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().importance, 1.0);
-    }
-
-    #[test]
-    fn test_apply_fact_heuristics_for_remembered_fact() {
-        let extraction = IngestExtraction {
-            summary: "fallback".to_string(),
-            entities: vec![],
-            topics: vec![],
-            importance: 0.3,
-        };
-
-        let updated = apply_fact_heuristics(
-            "remember that the deploy command is: cargo build --release",
-            extraction,
-        );
-
-        assert!(updated.summary.contains("cargo build --release"));
-        assert!(updated.importance >= 0.85);
-        assert!(updated.topics.contains(&"remembered_fact".to_string()));
-    }
 
     #[test]
     fn test_extract_graph_facts_for_workspace_statement() {
@@ -649,5 +561,18 @@ mod tests {
             .relationships
             .iter()
             .any(|rel| matches!(rel.relation, crate::knowledge_graph::RelationType::StoredAt)));
+    }
+
+    #[test]
+    fn test_project_workspace_summary_match() {
+        let s =
+            project_workspace_summary("I work on the rove project in ~/workspace/rove using Rust");
+        assert!(s.is_some());
+        assert!(s.unwrap().contains("rove"));
+    }
+
+    #[test]
+    fn test_project_workspace_summary_no_match() {
+        assert!(project_workspace_summary("just a regular message").is_none());
     }
 }

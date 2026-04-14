@@ -173,6 +173,7 @@ CREATE TABLE IF NOT EXISTS episodic_memory (
     created_at        INTEGER NOT NULL,
     domain            TEXT NOT NULL DEFAULT 'general',
     sensitive         INTEGER NOT NULL DEFAULT 0,
+    memory_kind       TEXT NOT NULL DEFAULT 'general',
     last_accessed     INTEGER,
     access_count      INTEGER NOT NULL DEFAULT 0,
     embedding         BLOB,
@@ -207,25 +208,26 @@ CREATE VIRTUAL TABLE IF NOT EXISTS episodic_fts USING fts5(
     topics,
     tags,
     domain,
+    memory_kind,
     content=episodic_memory,
     content_rowid=rowid
 );
 
 CREATE TRIGGER IF NOT EXISTS episodic_fts_ai AFTER INSERT ON episodic_memory BEGIN
-    INSERT INTO episodic_fts(rowid, summary, entities, topics, tags, domain)
-    VALUES (new.rowid, new.summary, new.entities, new.topics, new.tags, new.domain);
+    INSERT INTO episodic_fts(rowid, summary, entities, topics, tags, domain, memory_kind)
+    VALUES (new.rowid, new.summary, new.entities, new.topics, new.tags, new.domain, new.memory_kind);
 END;
 
 CREATE TRIGGER IF NOT EXISTS episodic_fts_ad AFTER DELETE ON episodic_memory BEGIN
-    INSERT INTO episodic_fts(episodic_fts, rowid, summary, entities, topics, tags, domain)
-    VALUES ('delete', old.rowid, old.summary, old.entities, old.topics, old.tags, old.domain);
+    INSERT INTO episodic_fts(episodic_fts, rowid, summary, entities, topics, tags, domain, memory_kind)
+    VALUES ('delete', old.rowid, old.summary, old.entities, old.topics, old.tags, old.domain, old.memory_kind);
 END;
 
 CREATE TRIGGER IF NOT EXISTS episodic_fts_au AFTER UPDATE ON episodic_memory BEGIN
-    INSERT INTO episodic_fts(episodic_fts, rowid, summary, entities, topics, tags, domain)
-    VALUES ('delete', old.rowid, old.summary, old.entities, old.topics, old.tags, old.domain);
-    INSERT INTO episodic_fts(rowid, summary, entities, topics, tags, domain)
-    VALUES (new.rowid, new.summary, new.entities, new.topics, new.tags, new.domain);
+    INSERT INTO episodic_fts(episodic_fts, rowid, summary, entities, topics, tags, domain, memory_kind)
+    VALUES ('delete', old.rowid, old.summary, old.entities, old.topics, old.tags, old.domain, old.memory_kind);
+    INSERT INTO episodic_fts(rowid, summary, entities, topics, tags, domain, memory_kind)
+    VALUES (new.rowid, new.summary, new.entities, new.topics, new.tags, new.domain, new.memory_kind);
 END;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS insights_fts USING fts5(
@@ -337,6 +339,13 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     input          TEXT NOT NULL,
     output         TEXT,
     error          TEXT,
+    steps_total    INTEGER NOT NULL DEFAULT 0,
+    steps_completed INTEGER NOT NULL DEFAULT 0,
+    current_step_index INTEGER,
+    current_step_id TEXT,
+    current_step_name TEXT,
+    retry_count    INTEGER NOT NULL DEFAULT 0,
+    last_task_id   TEXT,
     created_at     INTEGER NOT NULL,
     completed_at   INTEGER
 );
@@ -344,12 +353,41 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow
     ON workflow_runs(workflow_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS workflow_run_steps (
+    run_id         TEXT NOT NULL,
+    step_index     INTEGER NOT NULL,
+    step_id        TEXT NOT NULL,
+    step_name      TEXT NOT NULL,
+    agent_id       TEXT,
+    worker_preset  TEXT,
+    status         TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+    prompt         TEXT NOT NULL,
+    task_id        TEXT,
+    output         TEXT,
+    error          TEXT,
+    attempt_count  INTEGER NOT NULL DEFAULT 0,
+    started_at     INTEGER NOT NULL,
+    completed_at   INTEGER,
+    PRIMARY KEY (run_id, step_index),
+    FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_run_steps_run
+    ON workflow_run_steps(run_id, step_index);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_run_steps_status
+    ON workflow_run_steps(status, started_at DESC);
+
 -- 8. Knowledge Graph
 CREATE TABLE IF NOT EXISTS graph_nodes (
     id TEXT PRIMARY KEY,
     label TEXT NOT NULL,
     type TEXT NOT NULL,
     properties TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'deterministic',
+    source_scope TEXT NOT NULL DEFAULT 'per_node',
+    source_ref TEXT,
+    confidence REAL NOT NULL DEFAULT 1.0,
     created_at INTEGER NOT NULL,
     last_updated INTEGER NOT NULL,
     access_count INTEGER DEFAULT 0
@@ -366,7 +404,12 @@ CREATE TABLE IF NOT EXISTS graph_edges (
     relation TEXT NOT NULL,
     weight REAL DEFAULT 1.0,
     properties TEXT,
+    source_kind TEXT NOT NULL DEFAULT 'deterministic',
+    source_scope TEXT NOT NULL DEFAULT 'per_node',
+    source_ref TEXT,
+    confidence REAL NOT NULL DEFAULT 1.0,
     created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (from_id) REFERENCES graph_nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (to_id) REFERENCES graph_nodes(id) ON DELETE CASCADE
 );
@@ -388,6 +431,22 @@ CREATE TABLE IF NOT EXISTS memory_graph_links (
 
 CREATE INDEX IF NOT EXISTS idx_memory_graph_memory ON memory_graph_links(memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_graph_node ON memory_graph_links(node_id);
+
+CREATE TABLE IF NOT EXISTS memory_graph_sources (
+    source_id         TEXT PRIMARY KEY,
+    source_kind       TEXT NOT NULL,
+    source_scope      TEXT NOT NULL DEFAULT 'per_node',
+    workspace_path    TEXT,
+    repo_name         TEXT,
+    db_path           TEXT,
+    source_last_updated TEXT,
+    source_branch     TEXT,
+    source_commit     TEXT,
+    last_imported_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_graph_sources_kind
+    ON memory_graph_sources(source_kind, repo_name);
 
 CREATE TABLE IF NOT EXISTS graph_extraction_queue (
     memory_id TEXT PRIMARY KEY,
@@ -516,3 +575,119 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
 
 CREATE INDEX IF NOT EXISTS idx_pending_approvals_created
     ON pending_approvals(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS telegram_audit_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type      TEXT NOT NULL,
+    telegram_user   INTEGER NOT NULL,
+    chat_id         INTEGER,
+    task_id         TEXT,
+    approval_key    TEXT,
+    approved        INTEGER,
+    operation       TEXT,
+    created_at      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_audit_user
+    ON telegram_audit_log(telegram_user, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_audit_task
+    ON telegram_audit_log(task_id) WHERE task_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+    id              TEXT PRIMARY KEY,
+    source_type     TEXT NOT NULL,
+    source_path     TEXT NOT NULL,
+    title           TEXT,
+    content         TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    mime_type       TEXT,
+    size_bytes      INTEGER,
+    word_count      INTEGER,
+    domain          TEXT,
+    tags            TEXT,
+    indexed_at      INTEGER NOT NULL,
+    last_accessed   INTEGER,
+    access_count    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_source
+    ON knowledge_documents(source_type, source_path);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_domain
+    ON knowledge_documents(domain) WHERE domain IS NOT NULL;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts
+    USING fts5(title, content, tags, source_path,
+               content=knowledge_documents, content_rowid=rowid);
+
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_insert
+    AFTER INSERT ON knowledge_documents BEGIN
+        INSERT INTO knowledge_fts(rowid, title, content, tags, source_path)
+        VALUES (new.rowid, new.title, new.content, new.tags, new.source_path);
+    END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_delete
+    AFTER DELETE ON knowledge_documents BEGIN
+        INSERT INTO knowledge_fts(knowledge_fts, rowid, title, content, tags, source_path)
+        VALUES ('delete', old.rowid, old.title, old.content, old.tags, old.source_path);
+    END;
+
+-- 12. Memory Facts — structured KV store (never decayed, always injected first)
+-- Singleton facts use the key as PRIMARY KEY (upsert replaces old value).
+-- Remembered-fact entries use "remembered_fact:<hash>" keys so each is unique.
+CREATE TABLE IF NOT EXISTS memory_facts (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    task_id    TEXT,
+    memory_id  TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_facts_updated ON memory_facts(updated_at DESC);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_fts USING fts5(
+    key,
+    value,
+    content=memory_facts,
+    content_rowid=rowid
+);
+
+CREATE TRIGGER IF NOT EXISTS memory_facts_ai AFTER INSERT ON memory_facts BEGIN
+    INSERT INTO memory_facts_fts(rowid, key, value)
+    VALUES (new.rowid, new.key, new.value);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_facts_ad AFTER DELETE ON memory_facts BEGIN
+    INSERT INTO memory_facts_fts(memory_facts_fts, rowid, key, value)
+    VALUES ('delete', old.rowid, old.key, old.value);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_facts_au AFTER UPDATE ON memory_facts BEGIN
+    INSERT INTO memory_facts_fts(memory_facts_fts, rowid, key, value)
+    VALUES ('delete', old.rowid, old.key, old.value);
+    INSERT INTO memory_facts_fts(rowid, key, value)
+    VALUES (new.rowid, new.key, new.value);
+END;
+
+-- 13. Memory Graph — memory-to-memory edges for BFS traversal
+-- Connects episodic memories via shared entities, temporal proximity,
+-- consolidation lineage (derived_from), and observed corroboration/contradiction.
+-- Built deterministically at ingest time; no LLM required.
+CREATE TABLE IF NOT EXISTS memory_graph_edges (
+    id          TEXT PRIMARY KEY,
+    from_id     TEXT NOT NULL,        -- episodic_memory.id (source)
+    to_id       TEXT NOT NULL,        -- episodic_memory.id (target)
+    edge_type   TEXT NOT NULL,        -- 'shares_entity' | 'temporal' | 'derived_from' | 'supports' | 'contradicts'
+    entity      TEXT,                 -- entity name, set for shares_entity edges
+    weight      REAL NOT NULL DEFAULT 1.0,
+    confidence  REAL NOT NULL DEFAULT 1.0,
+    source_kind TEXT NOT NULL DEFAULT 'deterministic',
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_graph_from       ON memory_graph_edges(from_id);
+CREATE INDEX IF NOT EXISTS idx_mem_graph_to         ON memory_graph_edges(to_id);
+CREATE INDEX IF NOT EXISTS idx_mem_graph_entity     ON memory_graph_edges(entity) WHERE entity IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mem_graph_type_from  ON memory_graph_edges(edge_type, from_id);

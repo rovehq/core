@@ -3,37 +3,79 @@
 @tailwind utilities;
 
 :root {
-  --background: #0f0f0f;
-  --surface: #1a1a1a;
-  --surface2: #252525;
-  --primary: #3b82f6;
-  --success: #10b981;
-  --error: #ef4444;
-  --warning: #f59e0b;
-  --text: #ffffff;
-  --text-muted: #666666;
+  --background: #0d1114;
+  --surface: #151b20;
+  --surface2: #23303a;
+  --primary: #de6947;
+  --success: #2fb28b;
+  --error: #e16666;
+  --warning: #d5a24d;
+  --text: #f3ede7;
+  --text-muted: #b1a59a;
+}
+
+html {
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {
-  background: var(--background);
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top right, rgba(222, 105, 71, 0.14), transparent 22%),
+    radial-gradient(circle at top left, rgba(210, 176, 106, 0.08), transparent 18%),
+    linear-gradient(180deg, #13191d 0%, var(--background) 32%, #0b0f12 100%);
   color: var(--text);
+  letter-spacing: -0.01em;
 }
 
-/* Custom scrollbar */
+a {
+  color: inherit;
+}
+
+::selection {
+  background: rgba(222, 105, 71, 0.92);
+  color: #fff6f1;
+}
+
+button,
+input,
+select,
+textarea {
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  letter-spacing: -0.04em;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--surface);
+  background: rgba(21, 27, 32, 0.88);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--surface2);
+  background: rgba(35, 48, 58, 0.95);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: rgba(72, 89, 101, 0.95);
 }

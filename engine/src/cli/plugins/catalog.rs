@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use semver::Version;
 use serde::Deserialize;
+use tracing::warn;
 
 use crate::config::Config;
 use crate::runtime::{Manifest, PluginType, TrustTier};
@@ -184,8 +185,18 @@ async fn maybe_refresh_catalog_cache(
         || now - last_fetched.unwrap_or_default() >= CATALOG_REFRESH_INTERVAL_SECS;
 
     if should_refresh {
-        let entries = refresh_catalog_cache(config, database).await?;
-        return Ok(entries);
+        match refresh_catalog_cache(config, database).await {
+            Ok(entries) => return Ok(entries),
+            Err(error) => {
+                let cached = database.extension_catalog().list_entries().await?;
+                warn!(
+                    registry = %public_catalog_registry(),
+                    cached_entries = cached.len(),
+                    "extension catalog refresh failed, falling back to cached data: {error}"
+                );
+                return Ok(cached);
+            }
+        }
     }
 
     database.extension_catalog().list_entries().await
@@ -275,12 +286,13 @@ async fn resolve_install_plan(
 
     if let Some(registry) = registry {
         ensure_developer_mode(config, "installing from an explicit registry")?;
-        let trust_badge = if normalize_registry(registry) == normalize_registry(&public_catalog_registry()) {
-            let entry = get_catalog_entry(config, source, false).await.ok();
-            entry.map(|entry| entry.trust_badge.as_str().to_string())
-        } else {
-            Some(ExtensionTrustBadge::Unverified.as_str().to_string())
-        };
+        let trust_badge =
+            if normalize_registry(registry) == normalize_registry(&public_catalog_registry()) {
+                let entry = get_catalog_entry(config, source, false).await.ok();
+                entry.map(|entry| entry.trust_badge.as_str().to_string())
+            } else {
+                Some(ExtensionTrustBadge::Unverified.as_str().to_string())
+            };
         return Ok(InstallPlan {
             resolved_source: source.to_string(),
             registry: Some(registry.to_string()),
@@ -305,7 +317,12 @@ async fn resolve_install_plan(
 
     let entry = get_catalog_entry(config, source, false)
         .await
-        .with_context(|| format!("Extension '{}' is not available in the Rove catalog", source))?;
+        .with_context(|| {
+            format!(
+                "Extension '{}' is not available in the Rove catalog",
+                source
+            )
+        })?;
     if let Some(requested) = version {
         let _ = requested;
     }
@@ -475,7 +492,10 @@ mod tests {
     #[test]
     fn release_summary_skips_headings() {
         let summary = summarize_release_notes("# Heading\n\nAdds a safer shell.\nImproves docs.");
-        assert_eq!(summary.as_deref(), Some("Adds a safer shell. Improves docs."));
+        assert_eq!(
+            summary.as_deref(),
+            Some("Adds a safer shell. Improves docs.")
+        );
     }
 
     #[test]

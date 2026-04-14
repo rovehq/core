@@ -82,6 +82,10 @@ impl AgentCore {
         if profile.instructions.trim().is_empty()
             && profile.allowed_tools.is_empty()
             && profile.output_contract.is_none()
+            && profile.max_iterations.is_none()
+            && profile.agent_name.is_none()
+            && profile.worker_preset_name.is_none()
+            && profile.purpose.is_none()
         {
             return;
         }
@@ -91,7 +95,18 @@ impl AgentCore {
         if let Some(agent_name) = profile.agent_name.as_ref() {
             lines.push(format!("Agent: {}", agent_name));
         }
-        if let Some(purpose) = profile.purpose.as_ref().filter(|value| !value.trim().is_empty()) {
+        if let Some(worker_name) = profile
+            .worker_preset_name
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(format!("Worker preset: {}", worker_name));
+        }
+        if let Some(purpose) = profile
+            .purpose
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
             lines.push(format!("Purpose: {}", purpose.trim()));
         }
         if !profile.instructions.trim().is_empty() {
@@ -118,6 +133,13 @@ impl AgentCore {
             lines.push(String::new());
             lines.push("Output contract:".to_string());
             lines.push(output_contract.trim().to_string());
+        }
+        if let Some(max_iterations) = profile.max_iterations.filter(|value| *value > 0) {
+            lines.push(String::new());
+            lines.push(format!(
+                "Iteration bound: finish within {} reasoning iteration(s).",
+                max_iterations
+            ));
         }
 
         *system_prompt = format!("{}\n\n{}", lines.join("\n"), system_prompt);
@@ -249,23 +271,65 @@ impl AgentCore {
             return;
         };
 
-        match memory_system.query(task_input, &domain, None).await {
-            Ok(hits) => {
-                let hits: Vec<_> = hits
-                    .into_iter()
+        match memory_system
+            .build_context_bundle(task_input, &domain, None, Some(&self.config.core.workspace))
+            .await
+        {
+            Ok(bundle) => {
+                let mut sections = Vec::new();
+
+                let fact_lines: Vec<_> = bundle
+                    .facts
+                    .iter()
+                    .chain(bundle.preferences.iter())
+                    .chain(bundle.warnings.iter())
+                    .chain(bundle.errors.iter())
                     .filter(|hit| self.hit_matches_workspace(&hit.content))
+                    .map(|hit| format!("- [{}] {}", hit.source, hit.content))
                     .collect();
-                if hits.is_empty() {
+                if !fact_lines.is_empty() {
+                    sections.push(format!("typed\n{}", fact_lines.join("\n")));
+                }
+
+                let graph_lines: Vec<_> = bundle
+                    .graph_paths
+                    .iter()
+                    .filter(|path| self.hit_matches_workspace(&path.summary))
+                    .map(|path| format!("- {} [{}]", path.summary, path.source_kinds.join(", ")))
+                    .collect();
+                if !graph_lines.is_empty() {
+                    sections.push(format!("graph\n{}", graph_lines.join("\n")));
+                }
+
+                let semantic_lines: Vec<_> = bundle
+                    .flattened_hits()
+                    .into_iter()
+                    .filter(|hit| {
+                        matches!(
+                            hit.hit_type,
+                            crate::conductor::HitType::Episodic
+                                | crate::conductor::HitType::Insight
+                                | crate::conductor::HitType::TaskTrace
+                        )
+                    })
+                    .filter(|hit| self.hit_matches_workspace(&hit.content))
+                    .map(|hit| format!("- [{}] {}", hit.source, hit.content))
+                    .collect();
+                if !semantic_lines.is_empty() {
+                    sections.push(format!("semantic\n{}", semantic_lines.join("\n")));
+                }
+
+                if sections.is_empty() {
                     return;
                 }
 
                 let mut memory_context = String::from("\n\n<relevant_memories>\n");
-                for hit in &hits {
-                    memory_context.push_str(&format!("- [{}] {}\n", hit.source, hit.content));
+                for section in sections {
+                    memory_context.push_str(&format!("{}\n", section));
                 }
                 memory_context.push_str("</relevant_memories>");
                 system_prompt.push_str(&memory_context);
-                debug!("Injected {} memory hits into system prompt", hits.len());
+                debug!("Injected structured memory bundle into system prompt");
             }
             Err(error) => {
                 debug!("Memory query failed (non-fatal): {}", error);

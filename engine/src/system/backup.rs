@@ -93,7 +93,11 @@ impl BackupManager {
         )?;
 
         for name in ["rove.db", "rove.db-wal", "rove.db-shm"] {
-            copy_file_if_exists(&data_dir.join(name), &target.join("data").join(name), &mut included_paths)?;
+            copy_file_if_exists(
+                &data_dir.join(name),
+                &target.join("data").join(name),
+                &mut included_paths,
+            )?;
         }
         copy_file_if_exists(
             &logs::log_file_path(),
@@ -144,11 +148,7 @@ impl BackupManager {
         let config_root = config_root()?;
         let data_dir = expand_data_dir(&self.config.core.data_dir);
 
-        copy_tree_into(
-            &source.join("config"),
-            &config_root,
-            force,
-        )?;
+        copy_tree_into(&source.join("config"), &config_root, force)?;
         copy_tree_into(
             &source.join("specs").join("agents"),
             &config_root.join("agents"),
@@ -159,7 +159,11 @@ impl BackupManager {
             &config_root.join("workflows"),
             force,
         )?;
-        copy_tree_into(&source.join("policy"), self.config.policy.policy_dir(), force)?;
+        copy_tree_into(
+            &source.join("policy"),
+            self.config.policy.policy_dir(),
+            force,
+        )?;
         copy_tree_into(&source.join("data"), &data_dir, force)?;
 
         let config_from_backup = source.join("config").join("config.toml");
@@ -221,7 +225,11 @@ fn prepare_target_dir(path: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn copy_file_if_exists(source: &Path, target: &Path, included_paths: &mut Vec<String>) -> Result<()> {
+fn copy_file_if_exists(
+    source: &Path,
+    target: &Path,
+    included_paths: &mut Vec<String>,
+) -> Result<()> {
     if !source.exists() {
         return Ok(());
     }
@@ -230,18 +238,28 @@ fn copy_file_if_exists(source: &Path, target: &Path, included_paths: &mut Vec<St
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
     fs::copy(source, target).with_context(|| {
-        format!("Failed to copy {} to {}", source.display(), target.display())
+        format!(
+            "Failed to copy {} to {}",
+            source.display(),
+            target.display()
+        )
     })?;
     included_paths.push(target.display().to_string());
     Ok(())
 }
 
-fn copy_dir_if_exists(source: &Path, target: &Path, included_paths: &mut Vec<String>) -> Result<()> {
+fn copy_dir_if_exists(
+    source: &Path,
+    target: &Path,
+    included_paths: &mut Vec<String>,
+) -> Result<()> {
     if !source.exists() {
         return Ok(());
     }
 
-    for entry in fs::read_dir(source).with_context(|| format!("Failed to read {}", source.display()))? {
+    for entry in
+        fs::read_dir(source).with_context(|| format!("Failed to read {}", source.display()))?
+    {
         let entry = entry?;
         let entry_path = entry.path();
         let target_path = target.join(entry.file_name());
@@ -261,7 +279,9 @@ fn copy_tree_into(source: &Path, target: &Path, force: bool) -> Result<()> {
     }
     fs::create_dir_all(target).with_context(|| format!("Failed to create {}", target.display()))?;
 
-    for entry in fs::read_dir(source).with_context(|| format!("Failed to read {}", source.display()))? {
+    for entry in
+        fs::read_dir(source).with_context(|| format!("Failed to read {}", source.display()))?
+    {
         let entry = entry?;
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
@@ -340,7 +360,10 @@ mod tests {
 
         let restored_agent = fs::read_to_string(repo.agents_dir().join("roundtrip.toml")).unwrap();
         assert!(restored_agent.contains("Roundtrip"));
-        assert_eq!(fs::read_to_string(data_dir.join("rove.db")).unwrap(), "original-db");
+        assert_eq!(
+            fs::read_to_string(data_dir.join("rove.db")).unwrap(),
+            "original-db"
+        );
 
         std::env::remove_var("ROVE_CONFIG_PATH");
         std::env::remove_var("ROVE_DATA_DIR");

@@ -48,6 +48,7 @@ pub use system::services;
 pub use system::specs;
 pub use system::starter_catalog;
 pub use system::telemetry;
+pub use system::voice;
 pub use system::worker_presets;
 pub use system::workflow_runtime;
 pub use system::zerotier;

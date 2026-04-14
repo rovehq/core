@@ -1,7 +1,7 @@
 use async_stream::stream;
 use axum::{
     body::{Body, Bytes},
-    extract::{Json, Path, State},
+    extract::{Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -24,8 +24,8 @@ use crate::service_install::{ServiceInstallMode, ServiceInstaller};
 use crate::services::{ManagedService, ServiceManager};
 use crate::specs::{allowed_tools, SpecRepository};
 use crate::system::{
-    backup, browser as browser_surface, factory, health, logs, migrate, onboarding,
-    starter_catalog, worker_presets, workflow_runtime,
+    backup, browser as browser_surface, factory, health, logs, memory as memory_surface, migrate,
+    onboarding, starter_catalog, voice as voice_surface, worker_presets, workflow_runtime,
 };
 use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
@@ -134,6 +134,11 @@ pub struct UpdateDaemonConfigRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateApprovalModeRequest {
     pub mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MemoryGraphInspectQuery {
+    pub entity: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1218,6 +1223,243 @@ pub async fn update_browser(Json(payload): Json<sdk::BrowserSurfaceUpdate>) -> i
     match Config::load_or_create() {
         Ok(config) => match browser_surface::BrowserManager::new(config).replace(payload) {
             Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn voice_status() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match voice_surface::VoiceManager::new(config).status().await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn install_voice_engine(
+    Json(payload): Json<sdk::VoiceEngineInstallRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match voice_surface::VoiceManager::new(config)
+            .install_engine(payload)
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn uninstall_voice_engine(
+    Json(payload): Json<sdk::VoiceEngineSelectionRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match voice_surface::VoiceManager::new(config)
+            .uninstall_engine(payload.engine)
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn activate_voice_input(
+    Json(payload): Json<sdk::VoiceEngineSelectionRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match voice_surface::VoiceManager::new(config)
+            .activate_input(payload.engine)
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn activate_voice_output(
+    Json(payload): Json<sdk::VoiceEngineSelectionRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match voice_surface::VoiceManager::new(config)
+            .activate_output(payload.engine)
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn test_voice_input() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match voice_surface::VoiceManager::new(config).test_input().await {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn test_voice_output(
+    Json(payload): Json<sdk::VoiceOutputTestRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match voice_surface::VoiceManager::new(config)
+            .test_output(payload)
+            .await
+        {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn update_voice(Json(payload): Json<sdk::VoiceSurfaceUpdate>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match voice_surface::VoiceManager::new(config)
+            .replace(payload)
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn memory_status() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config).status().await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn update_memory(
+    Json(payload): Json<memory_surface::MemorySurfaceUpdate>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .replace(payload)
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn query_memory(
+    Json(payload): Json<memory_surface::MemoryQueryRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .query(payload)
+            .await
+        {
+            Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn inspect_memory_graph(
+    Query(query): Query<MemoryGraphInspectQuery>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .inspect_graph(query.entity)
+            .await
+        {
+            Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn reindex_memory() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config).reindex().await {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn backfill_memory_embeddings(
+    Json(payload): Json<memory_surface::MemoryBackfillRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = memory_surface::MemoryManager::new(config);
+            let batch_size = payload.batch_size.unwrap_or(100).max(1);
+            match manager.backfill_embeddings(batch_size).await {
+                Ok(backfilled) => match manager.status().await {
+                    Ok(status) => (
+                        StatusCode::OK,
+                        Json(memory_surface::MemoryBackfillResponse { backfilled, status }),
+                    )
+                        .into_response(),
+                    Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+                },
+                Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+            }
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn memory_adapters() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .adapter_status()
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn refresh_memory_adapters() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .refresh_adapters()
+            .await
+        {
+            Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn ingest_memory_note(
+    Json(payload): Json<memory_surface::MemoryIngestRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .ingest_note(payload)
+            .await
+        {
+            Ok(hit) => (StatusCode::OK, Json(hit)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),

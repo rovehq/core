@@ -9,6 +9,9 @@ pub struct TelegramConfig {
     pub enabled: bool,
     #[serde(default)]
     pub allowed_ids: Vec<i64>,
+    /// Admin users can approve/deny operations for any user.
+    #[serde(default)]
+    pub admin_ids: Option<Vec<i64>>,
     #[serde(default)]
     pub confirmation_chat_id: Option<i64>,
     #[serde(default)]

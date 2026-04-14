@@ -1,21 +1,25 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use zeroize::Zeroize;
 
 use crate::cli::database_path::database_path;
 use crate::config::{metadata::SERVICE_NAME, Config, CustomProvider};
 use crate::security::secrets::SecretManager;
+use crate::security::{configure_password_for_config, describe_protection_state};
 use crate::storage::Database;
 
 use super::tui::setup;
 
 pub async fn handle_setup() -> Result<()> {
-    let result = setup::run_setup_wizard()?;
+    let mut result = setup::run_setup_wizard()?;
 
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    let config_dir = home.join(".rove");
-    std::fs::create_dir_all(&config_dir)?;
+    let config_path = Config::config_path()?;
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
     if !result.api_key.is_empty() && !result.secret_key.is_empty() {
         let secret_manager = SecretManager::new(SERVICE_NAME);
@@ -24,7 +28,11 @@ pub async fn handle_setup() -> Result<()> {
             .await?;
     }
 
-    let mut config = Config::default();
+    let mut config = if config_path.exists() {
+        Config::load_from_path(&config_path)?
+    } else {
+        Config::default()
+    };
     config.core.workspace = PathBuf::from(&result.workspace);
     config.security.max_risk_tier = result.max_risk_tier;
 
@@ -34,9 +42,13 @@ pub async fn handle_setup() -> Result<()> {
         apply_provider(&mut config, &result);
     }
 
-    let config_path = config_dir.join("config.toml");
-    let config_content = toml::to_string_pretty(&config)?;
-    std::fs::write(&config_path, config_content)?;
+    let auth_artifacts =
+        configure_password_for_config(&config_path, &mut config.webui, &result.daemon_password)?;
+    result.daemon_password.zeroize();
+    result.recovery_code = Some(auth_artifacts.recovery_code);
+    result.auth_protection =
+        Some(describe_protection_state(auth_artifacts.protection_state).to_string());
+    config.save_to_path(&config_path)?;
 
     let db_path = database_path(&config);
     let db_exists = db_path.exists();

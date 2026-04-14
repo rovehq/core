@@ -66,6 +66,7 @@ pub mod steering;
 pub mod telegram;
 pub mod tools;
 pub mod transport;
+pub mod voice;
 pub mod webui;
 
 pub use agent::*;
@@ -86,6 +87,7 @@ pub use security::*;
 pub use telegram::*;
 pub use tools::*;
 pub use transport::*;
+pub use voice::*;
 pub use webui::*;
 
 use sdk::config_handle::{
@@ -319,6 +321,7 @@ impl Config {
         ensure_directory_writable(&self.core.data_dir)?;
         ensure_database_path_writable(&self.core.data_dir.join("rove.db"))?;
         normalize_and_validate_browser(&mut self.browser)?;
+        normalize_and_validate_voice(&mut self.voice)?;
 
         Ok(())
     }
@@ -411,6 +414,7 @@ fn config_to_toml(config: &Config) -> Result<String, toml::ser::Error> {
     table.insert("remote".to_string(), Value::try_from(&config.remote)?);
     table.insert("gateway".to_string(), Value::try_from(&config.gateway)?);
     table.insert("mcp".to_string(), Value::try_from(&config.mcp)?);
+    table.insert("voice".to_string(), Value::try_from(&config.voice)?);
     table.insert(
         "services".to_string(),
         Value::Table(public_services_table(config)),
@@ -635,6 +639,99 @@ fn normalize_and_validate_browser(browser: &mut BrowserConfig) -> Result<(), Eng
             return Err(EngineError::Config(format!(
                 "browser.default_profile_id '{}' does not match any browser profile",
                 default_profile_id
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_and_validate_voice(voice: &mut VoiceConfig) -> Result<(), EngineError> {
+    voice.selected_input_device_id =
+        normalize_optional_string(voice.selected_input_device_id.take());
+    voice.selected_output_device_id =
+        normalize_optional_string(voice.selected_output_device_id.take());
+
+    let mut seen_ids = std::collections::HashSet::new();
+    for engine in &mut voice.engines {
+        engine.model = normalize_optional_string(engine.model.take());
+        engine.voice = normalize_optional_string(engine.voice.take());
+        engine.runtime_path = normalize_optional_string(engine.runtime_path.take());
+        engine.asset_dir = normalize_optional_string(engine.asset_dir.take());
+        engine.notes = normalize_optional_string(engine.notes.take());
+
+        if !seen_ids.insert(engine.kind.as_str().to_string()) {
+            return Err(EngineError::Config(format!(
+                "duplicate voice engine '{}'",
+                engine.kind.as_str()
+            )));
+        }
+
+        match engine.kind {
+            crate::config::VoiceEngineKind::NativeOs => {}
+            crate::config::VoiceEngineKind::LocalWhisper => {
+                if engine.enabled && engine.model.is_none() {
+                    return Err(EngineError::Config(
+                        "voice engine 'local_whisper' requires model when enabled".to_string(),
+                    ));
+                }
+            }
+            crate::config::VoiceEngineKind::LocalPiper => {
+                if engine.enabled && engine.voice.is_none() {
+                    return Err(EngineError::Config(
+                        "voice engine 'local_piper' requires voice when enabled".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(active_input_engine) = voice.active_input_engine {
+        let engine = voice
+            .engines
+            .iter()
+            .find(|engine| engine.kind == active_input_engine)
+            .ok_or_else(|| {
+                EngineError::Config(format!(
+                    "voice.active_input_engine '{}' does not match any voice engine",
+                    active_input_engine.as_str()
+                ))
+            })?;
+        if !engine.enabled {
+            return Err(EngineError::Config(format!(
+                "voice.active_input_engine '{}' is disabled",
+                active_input_engine.as_str()
+            )));
+        }
+        if !active_input_engine.supports_input() {
+            return Err(EngineError::Config(format!(
+                "voice.active_input_engine '{}' does not support input",
+                active_input_engine.as_str()
+            )));
+        }
+    }
+
+    if let Some(active_output_engine) = voice.active_output_engine {
+        let engine = voice
+            .engines
+            .iter()
+            .find(|engine| engine.kind == active_output_engine)
+            .ok_or_else(|| {
+                EngineError::Config(format!(
+                    "voice.active_output_engine '{}' does not match any voice engine",
+                    active_output_engine.as_str()
+                ))
+            })?;
+        if !engine.enabled {
+            return Err(EngineError::Config(format!(
+                "voice.active_output_engine '{}' is disabled",
+                active_output_engine.as_str()
+            )));
+        }
+        if !active_output_engine.supports_output() {
+            return Err(EngineError::Config(format!(
+                "voice.active_output_engine '{}' does not support output",
+                active_output_engine.as_str()
             )));
         }
     }
@@ -874,6 +971,48 @@ max_risk_tier = 2
             .clamp_and_validate()
             .expect_err("remote cdp should require cdp url");
         assert!(error.to_string().contains("has no cdp_url"));
+    }
+
+    #[test]
+    fn enabled_local_whisper_requires_model() {
+        let mut config = Config::default();
+        config.core.workspace = std::env::current_dir().expect("cwd");
+        config.core.data_dir = config
+            .core
+            .workspace
+            .join("target/config-tests/voice-local-whisper-model");
+        config.voice.enabled = true;
+        config.voice.engines = vec![crate::config::VoiceEngineConfig {
+            kind: crate::config::VoiceEngineKind::LocalWhisper,
+            ..Default::default()
+        }];
+
+        let error = config
+            .clamp_and_validate()
+            .expect_err("enabled local whisper should require model");
+        assert!(error.to_string().contains("requires model"));
+    }
+
+    #[test]
+    fn active_voice_engine_must_match_capability() {
+        let mut config = Config::default();
+        config.core.workspace = std::env::current_dir().expect("cwd");
+        config.core.data_dir = config
+            .core
+            .workspace
+            .join("target/config-tests/voice-active-capability");
+        config.voice.enabled = true;
+        config.voice.active_input_engine = Some(crate::config::VoiceEngineKind::LocalPiper);
+        config.voice.engines = vec![crate::config::VoiceEngineConfig {
+            kind: crate::config::VoiceEngineKind::LocalPiper,
+            voice: Some("en_US-lessac-medium".to_string()),
+            ..Default::default()
+        }];
+
+        let error = config
+            .clamp_and_validate()
+            .expect_err("active input engine should need input support");
+        assert!(error.to_string().contains("does not support input"));
     }
 }
 

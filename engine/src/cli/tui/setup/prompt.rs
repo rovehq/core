@@ -61,3 +61,11 @@ pub fn prompt_text(stdout: &mut io::Stdout, label: &str, default: &str) -> Resul
         Ok(input)
     }
 }
+
+pub fn prompt_secret(_stdout: &mut io::Stdout, label: &str) -> Result<String> {
+    terminal::disable_raw_mode()?;
+    let result = rpassword::read_password_from_tty(Some(&format!("  {label}: ")));
+    terminal::enable_raw_mode()?;
+    let value = result?;
+    Ok(value.trim().to_string())
+}

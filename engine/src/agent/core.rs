@@ -400,28 +400,32 @@ impl AgentCore {
         sensitive: bool,
     ) {
         if let Some(memory_system) = self.memory_system.clone() {
-            let memory_task_input = task_input.clone();
-            let memory_answer = answer.clone();
-            let memory_task_id = task_id.clone();
+            if memory_system.config().always_on_enabled()
+                || memory_system.config().should_persist_pinned_facts()
+            {
+                let memory_task_input = task_input.clone();
+                let memory_answer = answer.clone();
+                let memory_task_id = task_id.clone();
 
-            self.background_jobs.push(tokio::spawn(async move {
-                if let Err(error) = memory_system
-                    .ingest(
-                        &memory_task_input,
-                        &memory_answer,
-                        &memory_task_id,
-                        &domain,
-                        sensitive,
-                    )
-                    .await
-                {
-                    warn!(
-                        task_id = %memory_task_id,
-                        "Memory ingest failed (non-fatal): {}",
-                        scrub_text(&error.to_string())
-                    );
-                }
-            }));
+                self.background_jobs.push(tokio::spawn(async move {
+                    if let Err(error) = memory_system
+                        .ingest(
+                            &memory_task_input,
+                            &memory_answer,
+                            &memory_task_id,
+                            &domain,
+                            sensitive,
+                        )
+                        .await
+                    {
+                        warn!(
+                            task_id = %memory_task_id,
+                            "Memory ingest failed (non-fatal): {}",
+                            scrub_text(&error.to_string())
+                        );
+                    }
+                }));
+            }
         }
 
         if !sensitive {

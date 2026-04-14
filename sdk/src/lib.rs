@@ -57,7 +57,10 @@ pub use control::{
     NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, NodeSummary, PolicyScope,
     RemoteDiscoveryCandidate, RemoteEnvelope, RemoteExecutionPlan, RemoteTransportRecord,
     RunContextId, RunIsolation, RunMode, ServiceKind, SessionInfo, StarterCatalogEntry,
-    StarterCatalogKind, StarterCatalogStatus, ZeroTierStatus,
+    StarterCatalogKind, StarterCatalogStatus, VoiceAssetStatus, VoiceDeviceKind, VoiceDeviceRecord,
+    VoiceEngineInput, VoiceEngineInstallRequest, VoiceEngineKind, VoiceEngineReadiness,
+    VoiceEngineRecord, VoiceEngineSelectionRequest, VoiceOutputTestRequest, VoicePolicyControls,
+    VoiceRuntimeStatus, VoiceSurfaceStatus, VoiceSurfaceUpdate, VoiceTestResult, ZeroTierStatus,
 };
 pub use core_tool::{CoreContext, CoreTool};
 pub use crypto_handle::{CryptoHandle, CryptoHandleImpl};

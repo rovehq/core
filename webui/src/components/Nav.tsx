@@ -5,8 +5,10 @@ import { usePathname } from 'next/navigation';
 
 const tabs = [
   { href: '/', label: 'Home', icon: '⌂' },
+  { href: '/memory', label: 'Memory', icon: '⛓' },
   { href: '/starters', label: 'Starters', icon: '✦' },
   { href: '/browser', label: 'Browser', icon: '◎' },
+  { href: '/voice', label: 'Voice', icon: '◍' },
   { href: '/brains', label: 'Brains', icon: '◉' },
   { href: '/policy', label: 'Policy', icon: '⟡' },
   { href: '/remote', label: 'Remote', icon: '⇄' },
@@ -23,7 +25,7 @@ export default function Nav() {
   const pathname = usePathname();
 
   return (
-    <nav className="flex items-center gap-2 bg-surface rounded-lg p-2">
+    <nav className="flex flex-wrap items-center gap-2 rounded-2xl border border-surface2/80 bg-surface/80 p-2 shadow-[0_18px_40px_rgba(0,0,0,0.22)] backdrop-blur">
       {tabs.map((tab) => {
         const isActive = pathname === tab.href;
         return (
@@ -31,14 +33,21 @@ export default function Nav() {
             key={tab.href}
             href={tab.href}
             className={`
-              flex items-center gap-2 px-4 py-2 rounded-md transition-all
+              flex items-center gap-2 rounded-xl px-3 py-2 transition-all
               ${isActive 
-                ? 'bg-primary text-white' 
-                : 'text-gray-400 hover:text-white hover:bg-surface2'
+                ? 'border border-primary/70 bg-primary/90 text-white shadow-[0_14px_28px_rgba(222,105,71,0.24)]'
+                : 'border border-transparent text-gray-400 hover:border-surface2 hover:bg-surface2/80 hover:text-white'
               }
             `}
           >
-            <span>{tab.icon}</span>
+            <span
+              className={`
+                inline-flex h-7 w-7 items-center justify-center rounded-full border text-xs
+                ${isActive ? 'border-white/20 bg-white/10' : 'border-surface2 bg-background/60'}
+              `}
+            >
+              {tab.icon}
+            </span>
             <span className="hidden sm:inline">{tab.label}</span>
           </Link>
         );

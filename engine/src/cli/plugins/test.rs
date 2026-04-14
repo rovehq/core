@@ -242,7 +242,11 @@ fn call_wasm_tool(artifact: &Path, tool_name: &str, payload: &Value) -> Result<V
         .map_err(|error| anyhow::anyhow!("Plugin tool '{}' failed: {}", tool_name, error))
 }
 
-fn call_native_tool(artifact: &Path, tool_name: &str, payload: &Value) -> Result<Vec<u8>> {
+pub(crate) fn call_native_tool(
+    artifact: &Path,
+    tool_name: &str,
+    payload: &Value,
+) -> Result<Vec<u8>> {
     let mut tool = load_native_tool(artifact)?;
     tool.start(noop_core_context())
         .map_err(|error| anyhow::anyhow!("Failed to start native tool: {}", error))?;
@@ -275,7 +279,7 @@ fn call_native_tool(artifact: &Path, tool_name: &str, payload: &Value) -> Result
     }
 }
 
-fn load_native_tool(artifact: &Path) -> Result<Box<dyn CoreTool>> {
+pub(crate) fn load_native_tool(artifact: &Path) -> Result<Box<dyn CoreTool>> {
     let library = unsafe { libloading::Library::new(artifact) }
         .with_context(|| format!("Failed to load native artifact '{}'", artifact.display()))?;
     let create_tool: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn CoreTool> =
@@ -298,7 +302,7 @@ fn load_native_tool(artifact: &Path) -> Result<Box<dyn CoreTool>> {
     Ok(tool)
 }
 
-fn noop_core_context() -> CoreContext {
+pub(crate) fn noop_core_context() -> CoreContext {
     CoreContext::new(
         AgentHandle::new(Arc::new(NoopAgentHandle)),
         DbHandle::new(Arc::new(NoopDbHandle)),

@@ -52,6 +52,12 @@ pub struct SpecProvenance {
     pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_for: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -165,6 +171,61 @@ pub struct AgentTemplate {
     pub agent: AgentSpec,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FactoryFieldChange {
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FactoryReview {
+    pub kind: String,
+    pub target_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_id: Option<String>,
+    pub target_exists: bool,
+    pub review_status: String,
+    pub suggested_action: String,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<FactoryFieldChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentFactoryResult {
+    pub spec: AgentSpec,
+    pub review: FactoryReview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WorkflowFactoryResult {
+    pub spec: WorkflowSpec,
+    pub review: FactoryReview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WorkerPreset {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub role: String,
+    pub instructions: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_contract: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<u32>,
+    pub max_steps: u32,
+    pub timeout_secs: u64,
+    pub memory_budget: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowStepSpec {
     pub id: String,
@@ -172,6 +233,8 @@ pub struct WorkflowStepSpec {
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_preset: Option<String>,
     #[serde(default)]
     pub continue_on_error: bool,
 }
@@ -221,6 +284,10 @@ pub struct TaskExecutionProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_preset_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
     #[serde(default)]
     pub instructions: String,
@@ -228,6 +295,8 @@ pub struct TaskExecutionProfile {
     pub allowed_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,9 +328,54 @@ pub struct WorkflowRunRecord {
     pub output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    pub steps_total: i64,
+    pub steps_completed: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_step_index: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_step_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_step_name: Option<String>,
+    #[serde(default)]
+    pub retry_count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_task_id: Option<String>,
+    #[serde(default)]
+    pub resumable: bool,
     pub created_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRunStepRecord {
+    pub run_id: String,
+    pub step_index: i64,
+    pub step_id: String,
+    pub step_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_preset: Option<String>,
+    pub status: SpecRunStatus,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub attempt_count: i64,
+    pub started_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRunDetail {
+    pub run: WorkflowRunRecord,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<WorkflowRunStepRecord>,
 }
 
 fn default_true() -> bool {

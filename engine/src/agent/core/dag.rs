@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use sdk::{Complexity, Route, SubagentRole, SubagentSpec, TaskDomain, TaskSource};
+use sdk::{Complexity, Route, SubagentSpec, TaskDomain, TaskSource};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::debug;
@@ -16,6 +16,7 @@ use crate::gateway::Task;
 use crate::llm::{Message, MessageRole};
 use crate::remote::{RemoteManager, RemoteSendResult, RemoteTaskEvent};
 use crate::security::secrets::scrub_text;
+use crate::system::worker_presets;
 
 use super::orchestration::OrchestrationDecision;
 use super::prompt::TaskContext;
@@ -107,15 +108,22 @@ impl DagNodeExecutor for AgentDagExecutor {
 
 impl AgentDagExecutor {
     async fn subagent_spec_for_step(&self, step: &PlanStep) -> SubagentSpec {
-        SubagentSpec {
-            role: step_role_to_subagent_role(&step.role),
-            task: step.description.clone(),
-            tools_allowed: tools_allowed_for_step(step, self.domain, &self.tools).await,
-            memory_budget: memory_budget_for_step(step, self.complexity),
-            model_override: None,
-            max_steps: 8,
-            timeout_secs: 120,
+        let tools_allowed = tools_allowed_for_step(step, self.domain, &self.tools).await;
+        let preset_id = worker_preset_for_step_role(&step.role);
+        let mut spec = worker_presets::subagent_spec_for_preset(
+            preset_id,
+            step.description.clone(),
+            tools_allowed,
+        )
+        .expect("built-in DAG step role must map to a built-in worker preset");
+
+        match self.complexity {
+            Complexity::Simple => {}
+            Complexity::Medium => spec.memory_budget += 100,
+            Complexity::Complex => spec.memory_budget += 250,
         }
+
+        spec
     }
 
     async fn try_remote_execute(
@@ -424,14 +432,6 @@ fn message_role(message: &Message) -> &'static str {
     }
 }
 
-fn step_role_to_subagent_role(role: &StepRole) -> SubagentRole {
-    match role {
-        StepRole::Researcher => SubagentRole::Researcher,
-        StepRole::Executor => SubagentRole::Executor,
-        StepRole::Verifier => SubagentRole::Verifier,
-    }
-}
-
 fn build_remote_step_prompt(step: &PlanStep, dependency_context: &str) -> String {
     let role_prefix = match step.role {
         StepRole::Researcher => {
@@ -509,16 +509,11 @@ fn remote_event_payload(
     .to_string()
 }
 
-fn memory_budget_for_step(step: &PlanStep, complexity: Complexity) -> usize {
-    let base = match step.role {
-        StepRole::Researcher => 1200,
-        StepRole::Executor => 900,
-        StepRole::Verifier => 800,
-    };
-    match complexity {
-        Complexity::Simple => base,
-        Complexity::Medium => base + 100,
-        Complexity::Complex => base + 250,
+fn worker_preset_for_step_role(role: &StepRole) -> &'static str {
+    match role {
+        StepRole::Researcher => "researcher",
+        StepRole::Executor => "executor",
+        StepRole::Verifier => "verifier",
     }
 }
 

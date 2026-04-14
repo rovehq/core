@@ -38,4 +38,3 @@ fn restore_inner(path: PathBuf, force: bool) -> Result<()> {
     }
     Ok(())
 }
-

@@ -36,6 +36,7 @@ type AppScreenState =
   | 'offline'
   | 'uninitialized'
   | 'locked'
+  | 'tampered'
   | 'unlocked'
   | 'reauth_required';
 
@@ -157,6 +158,8 @@ function deriveAppState(authState: AuthState, hasToken: boolean): AppScreenState
   switch (authState) {
     case 'uninitialized':
       return 'uninitialized';
+    case 'tampered':
+      return 'tampered';
     case 'reauth_required':
       return 'reauth_required';
     case 'unlocked':
@@ -356,6 +359,19 @@ function summarizeEvent(event: unknown): string | null {
   return null;
 }
 
+function settledValue<T>(
+  result: PromiseSettledResult<T>,
+  fallback: T,
+  warnings: string[],
+  label: string,
+): T {
+  if (result.status === 'fulfilled') {
+    return result.value;
+  }
+  warnings.push(`${label}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+  return fallback;
+}
+
 export const useRoveStore = create<RoveStore>((set, get) => ({
   appState: 'checking',
   hello: null,
@@ -392,19 +408,23 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
       const daemonUrl = daemon.currentBaseUrl();
       const daemonPort = daemon.currentPort() ?? DEFAULT_DAEMON_PORT;
       const nextState = deriveAppState(hello.auth_state, Boolean(storedToken));
+      const nextToken = nextState === 'tampered' ? null : storedToken;
+      if (nextState === 'tampered') {
+        setStoredSession(null);
+      }
 
       set({
         hello,
         daemonUrl,
         daemonPort,
-        token: storedToken,
+        token: nextToken,
         appState: nextState,
         error: null,
       });
 
-      if (storedToken && (nextState === 'unlocked' || nextState === 'reauth_required')) {
+      if (nextToken && (nextState === 'unlocked' || nextState === 'reauth_required')) {
         const authStatus = await daemon.authStatus();
-        const [services, extensions, extensionCatalog, extensionUpdates, config, brains, policies, remoteStatus, remoteNodes, remoteCandidates, approvals, approvalRules, serviceInstall, zeroTier] = await Promise.all([
+        const results = await Promise.allSettled([
           daemon.listServices(),
           daemon.listExtensions(),
           daemon.listExtensionCatalog(),
@@ -420,6 +440,21 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           daemon.serviceInstallStatus(),
           daemon.zeroTierStatus(),
         ]);
+        const warnings: string[] = [];
+        const services = settledValue(results[0], [], warnings, 'services');
+        const extensions = settledValue(results[1], [], warnings, 'extensions');
+        const extensionCatalog = settledValue(results[2], [], warnings, 'extension catalog');
+        const extensionUpdates = settledValue(results[3], [], warnings, 'extension updates');
+        const config = settledValue(results[4], null, warnings, 'config');
+        const brains = settledValue(results[5], null, warnings, 'brains');
+        const policies = settledValue(results[6], [], warnings, 'policies');
+        const remoteStatus = settledValue(results[7], null, warnings, 'remote status');
+        const remoteNodes = settledValue(results[8], [], warnings, 'remote nodes');
+        const remoteCandidates = settledValue(results[9], [], warnings, 'remote discovery');
+        const approvals = settledValue(results[10], [], warnings, 'approvals');
+        const approvalRules = settledValue(results[11], { rules: [] }, warnings, 'approval rules');
+        const serviceInstall = settledValue(results[12], null, warnings, 'service install');
+        const zeroTier = settledValue(results[13], null, warnings, 'zerotier');
         set({
           authStatus,
           services,
@@ -438,6 +473,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           zeroTier,
           daemonPort,
           appState: deriveAppState(authStatus.state, true),
+          error: warnings.length > 0 ? `Some dashboard data could not be loaded: ${warnings.join(' · ')}` : null,
         });
         await get().refreshTasks();
         connectEvents(get);
@@ -462,7 +498,10 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
           approvals: [],
           serviceInstall: null,
           zeroTier: null,
-          tasks: nextState === 'locked' || nextState === 'uninitialized' ? [] : get().tasks,
+          tasks:
+            nextState === 'locked' || nextState === 'uninitialized' || nextState === 'tampered'
+              ? []
+              : get().tasks,
           ws: { connected: false, connecting: false, error: null },
         });
       }

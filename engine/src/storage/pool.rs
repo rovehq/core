@@ -8,8 +8,8 @@ use tracing::{debug, info};
 
 use super::{
     AgentRunRepository, AuthRepository, ExtensionCatalogRepository, InstalledPluginRepository,
-    PendingTaskRepository, PluginRepository, RemoteDiscoveryRepository, ScheduleRepository,
-    TaskRepository, TelegramAuditRepository,
+    KnowledgeRepository, PendingTaskRepository, PluginRepository, RemoteDiscoveryRepository,
+    ScheduleRepository, TaskRepository, TelegramAuditRepository,
 };
 
 /// Database connection pool.
@@ -70,6 +70,15 @@ impl Database {
         self.ensure_workflow_run_columns()
             .await
             .context("Failed to apply workflow run schema patch")?;
+        self.ensure_graph_provenance_columns()
+            .await
+            .context("Failed to apply graph provenance schema patch")?;
+        self.ensure_episodic_memory_kind_column()
+            .await
+            .context("Failed to apply episodic memory_kind schema patch")?;
+        self.ensure_memory_graph_edges_table()
+            .await
+            .context("Failed to apply memory_graph_edges schema patch")?;
 
         info!("Database schema loaded successfully");
         Ok(())
@@ -183,6 +192,89 @@ impl Database {
         Ok(())
     }
 
+    async fn ensure_graph_provenance_columns(&self) -> Result<()> {
+        if self.table_exists("graph_nodes").await? {
+            let columns = self.table_columns("graph_nodes").await?;
+            for (column, sql_type, default_clause) in [
+                ("source_kind", "TEXT", " NOT NULL DEFAULT 'deterministic'"),
+                ("source_scope", "TEXT", " NOT NULL DEFAULT 'per_node'"),
+                ("source_ref", "TEXT", ""),
+                ("confidence", "REAL", " NOT NULL DEFAULT 1.0"),
+            ] {
+                if !columns.iter().any(|existing| existing == column) {
+                    sqlx::query(&format!(
+                        "ALTER TABLE graph_nodes ADD COLUMN {column} {sql_type}{default_clause}"
+                    ))
+                    .execute(&self.pool)
+                    .await
+                    .with_context(|| format!("Failed to add graph_nodes.{column}"))?;
+                }
+            }
+        }
+
+        if self.table_exists("graph_edges").await? {
+            let columns = self.table_columns("graph_edges").await?;
+            for (column, sql_type, default_clause) in [
+                ("source_kind", "TEXT", " NOT NULL DEFAULT 'deterministic'"),
+                ("source_scope", "TEXT", " NOT NULL DEFAULT 'per_node'"),
+                ("source_ref", "TEXT", ""),
+                ("confidence", "REAL", " NOT NULL DEFAULT 1.0"),
+                ("updated_at", "INTEGER", " NOT NULL DEFAULT 0"),
+            ] {
+                if !columns.iter().any(|existing| existing == column) {
+                    sqlx::query(&format!(
+                        "ALTER TABLE graph_edges ADD COLUMN {column} {sql_type}{default_clause}"
+                    ))
+                    .execute(&self.pool)
+                    .await
+                    .with_context(|| format!("Failed to add graph_edges.{column}"))?;
+                }
+            }
+
+            sqlx::query(
+                "UPDATE graph_edges SET updated_at = created_at WHERE updated_at = 0 OR updated_at IS NULL",
+            )
+            .execute(&self.pool)
+            .await
+            .context("Failed to backfill graph_edges.updated_at")?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_memory_graph_edges_table(&self) -> Result<()> {
+        // CREATE TABLE IF NOT EXISTS in base.sql handles new installs.
+        // For existing DBs that predate Section 13, the table simply won't exist
+        // yet — base.sql will create it on the next run. Nothing else to migrate.
+        // Add the indexes explicitly in case the base.sql run skipped partial execution.
+        for idx in [
+            "CREATE INDEX IF NOT EXISTS idx_mem_graph_from ON memory_graph_edges(from_id)",
+            "CREATE INDEX IF NOT EXISTS idx_mem_graph_to ON memory_graph_edges(to_id)",
+            "CREATE INDEX IF NOT EXISTS idx_mem_graph_type_from ON memory_graph_edges(edge_type, from_id)",
+        ] {
+            if self.table_exists("memory_graph_edges").await? {
+                let _ = sqlx::query(idx).execute(&self.pool).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn ensure_episodic_memory_kind_column(&self) -> Result<()> {
+        if !self.table_exists("episodic_memory").await? {
+            return Ok(());
+        }
+        let columns = self.table_columns("episodic_memory").await?;
+        if !columns.iter().any(|c| c == "memory_kind") {
+            sqlx::query(
+                "ALTER TABLE episodic_memory ADD COLUMN memory_kind TEXT NOT NULL DEFAULT 'general'",
+            )
+            .execute(&self.pool)
+            .await
+            .context("Failed to add episodic_memory.memory_kind")?;
+        }
+        Ok(())
+    }
+
     async fn table_exists(&self, table: &str) -> Result<bool> {
         let row =
             sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
@@ -240,6 +332,10 @@ impl Database {
 
     pub fn telegram_audit(&self) -> TelegramAuditRepository {
         TelegramAuditRepository::new(self.pool.clone())
+    }
+
+    pub fn knowledge(&self) -> KnowledgeRepository {
+        KnowledgeRepository::new(self.pool.clone())
     }
 
     pub fn plugins(&self) -> PluginRepository {

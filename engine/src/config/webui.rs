@@ -17,6 +17,10 @@ pub struct WebUIConfig {
     pub token: Option<String>,
     #[serde(default)]
     pub password_hash: Option<String>,
+    #[serde(default)]
+    pub password_integrity: Option<String>,
+    #[serde(default)]
+    pub recovery_code_hash: Option<String>,
     #[serde(default = "default_webui_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
     #[serde(default = "default_webui_absolute_timeout_secs")]
@@ -38,6 +42,8 @@ impl Default for WebUIConfig {
             bind_addr: default_webui_bind_addr(),
             token: None,
             password_hash: None,
+            password_integrity: None,
+            recovery_code_hash: None,
             idle_timeout_secs: default_webui_idle_timeout_secs(),
             absolute_timeout_secs: default_webui_absolute_timeout_secs(),
             reauth_window_secs: default_webui_reauth_window_secs(),

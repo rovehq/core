@@ -134,8 +134,8 @@ async fn handle_local_run(
                     dispatch: completion_dispatch.as_ref(),
                 },
                 format,
-                    view,
-                )?;
+                view,
+            )?;
             Ok(())
         }
         Err(error) => {

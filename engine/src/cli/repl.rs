@@ -49,7 +49,7 @@ pub async fn run() -> Result<()> {
         match input.as_str() {
             "/quit" | "/exit" | "/q" => break,
             "/help" | "/h" => print_help(),
-            "/status" => status::show()?,
+            "/status" => status::show().await?,
             "/history" => print_history(&database).await?,
             "quit" | "exit" => break,
             _ => run_task(&database, &gateway, &input).await?,

@@ -2,13 +2,13 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::cli::database_path::database_path;
 use crate::cli::commands::DaemonProfileArg;
+use crate::cli::database_path::database_path;
 use crate::config::{Config, DaemonProfile};
 use crate::remote::RemoteManager;
 use crate::storage::Database;
-use crate::system::health;
 use crate::system::specs::SpecRepository;
+use crate::system::{health, onboarding};
 
 pub async fn handle_init(
     node_name: Option<String>,
@@ -47,11 +47,14 @@ pub async fn handle_init(
     }
 
     let database = Database::new(&database_path(&config)).await?;
-    drop(database);
     let repo = SpecRepository::new()?;
     let health = health::collect_snapshot(&config).await?;
+    let onboarding = onboarding::collect(&config, &database, &health).await?;
 
-    println!("Initialized Rove {}", if existed { "layout" } else { "config" });
+    println!(
+        "Initialized Rove {}",
+        if existed { "layout" } else { "config" }
+    );
     println!("Config: {}", Config::config_path()?.display());
     println!("Workspace: {}", config.core.workspace.display());
     println!("Data dir: {}", config.core.data_dir.display());
@@ -77,6 +80,8 @@ pub async fn handle_init(
     for issue in health.issues {
         println!("  - {}", issue);
     }
+    println!();
+    onboarding::print_text(&onboarding);
 
     Ok(())
 }

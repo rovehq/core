@@ -127,6 +127,18 @@ pub enum Command {
         action: BrowserAction,
     },
 
+    /// Manage the optional daemon-native voice runtime and engines.
+    Voice {
+        #[command(subcommand)]
+        action: VoiceAction,
+    },
+
+    /// Manage graph-first and always-on memory behavior.
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+
     /// Replay a task and show every recorded step.
     Replay {
         /// Task UUID to replay.
@@ -320,6 +332,12 @@ pub enum Command {
 
     /// Show the current security posture (trust, approvals, sandbox, secrets).
     Security,
+
+    /// Manage knowledge base: ingest files, URLs, folders, sitemaps.
+    Knowledge {
+        #[command(subcommand)]
+        action: KnowledgeAction,
+    },
 
     /// Generate or verify signing keys.
     Keys,
@@ -1136,6 +1154,179 @@ pub enum BrowserProfileModeArg {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum VoiceAction {
+    /// Show current voice surface status.
+    Status,
+    /// Install an optional voice engine or runtime pack.
+    Install {
+        #[arg(value_enum)]
+        engine: VoiceEngineKindArg,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        voice: Option<String>,
+        #[arg(long = "runtime-path")]
+        runtime_path: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Remove an optional voice engine or runtime pack.
+    Uninstall {
+        #[arg(value_enum)]
+        engine: VoiceEngineKindArg,
+    },
+    /// Enable the voice surface.
+    Enable,
+    /// Disable the voice surface.
+    Disable,
+    /// Activate the input side of an installed voice engine.
+    ActivateInput {
+        #[arg(value_enum)]
+        engine: VoiceEngineKindArg,
+    },
+    /// Activate the output side of an installed voice engine.
+    ActivateOutput {
+        #[arg(value_enum)]
+        engine: VoiceEngineKindArg,
+    },
+    /// Inspect device state exposed by the Voice Pack.
+    Devices {
+        #[command(subcommand)]
+        action: VoiceDeviceAction,
+    },
+    /// Run a speech-input smoke test through the active input engine.
+    TestInput,
+    /// Run a spoken-output smoke test through the active output engine.
+    TestOutput {
+        text: String,
+        #[arg(long)]
+        voice: Option<String>,
+    },
+    /// Manage voice policy controls.
+    Policy {
+        #[command(subcommand)]
+        action: VoicePolicyAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum VoicePolicyAction {
+    /// Show current voice policy.
+    Show,
+    /// Update voice policy.
+    Set {
+        #[arg(long)]
+        require_tts_approval: Option<bool>,
+        #[arg(long)]
+        require_stt_approval: Option<bool>,
+        #[arg(long)]
+        allow_remote_audio_input: Option<bool>,
+        #[arg(long)]
+        allow_remote_audio_output: Option<bool>,
+        #[arg(long)]
+        persist_transcripts: Option<bool>,
+    },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum VoiceEngineKindArg {
+    NativeOs,
+    LocalWhisper,
+    LocalPiper,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum VoiceDeviceAction {
+    /// List the currently visible input and output devices.
+    List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryAction {
+    /// Show memory mode, graph health, and current warnings.
+    Status,
+    /// Change the memory mode contract.
+    Mode {
+        #[command(subcommand)]
+        action: MemoryModeAction,
+    },
+    /// Query memory and optionally explain why context was selected.
+    Query {
+        #[arg(long)]
+        explain: bool,
+        #[arg(long)]
+        domain: Option<String>,
+        question: Vec<String>,
+    },
+    /// Inspect structural graph state for an entity or path-like query.
+    Graph {
+        #[command(subcommand)]
+        action: MemoryGraphAction,
+    },
+    /// Reimport code-review-graph data into the local memory graph.
+    Reindex,
+    /// Backfill embeddings for memories created before LocalBrain was attached.
+    Backfill {
+        #[arg(long, default_value_t = 100)]
+        batch: usize,
+    },
+    /// Manually ingest a note into memory. In graph_only mode only pinned facts are retained.
+    Ingest {
+        #[arg(long)]
+        domain: Option<String>,
+        note: Vec<String>,
+    },
+    /// Inspect or refresh optional structural adapters.
+    Adapters {
+        #[command(subcommand)]
+        action: MemoryAdapterAction,
+    },
+    /// Toggle always-on memory quickly without spelling the mode directly.
+    AlwaysOn {
+        #[command(subcommand)]
+        action: MemoryAlwaysOnAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryModeAction {
+    /// Set the top-level memory mode.
+    Set {
+        #[arg(value_enum)]
+        mode: MemoryModeArg,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryGraphAction {
+    /// Inspect the graph state overall or around a specific entity.
+    Inspect {
+        #[arg(long)]
+        entity: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryAlwaysOnAction {
+    Enable,
+    Disable,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryAdapterAction {
+    /// List configured structural adapter status.
+    List,
+    /// Refresh the active structural adapter import.
+    Refresh,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum MemoryModeArg {
+    GraphOnly,
+    AlwaysOn,
+}
+
+#[derive(Subcommand, Debug)]
 pub enum ChannelAction {
     /// List runtime channels and setup state.
     List,
@@ -1777,4 +1968,62 @@ pub enum McpAction {
     Test { name: String },
     /// List tools exposed by a configured MCP server.
     Tools { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KnowledgeAction {
+    /// Ingest a file, folder, URL, or sitemap into the knowledge base.
+    Ingest {
+        #[command(subcommand)]
+        source: KnowledgeIngestSource,
+
+        /// Tag the ingested content with a domain for targeted retrieval.
+        #[arg(long)]
+        domain: Option<String>,
+
+        /// Add tags for categorization.
+        #[arg(long)]
+        tags: Option<Vec<String>>,
+
+        /// Reindex even if already present.
+        #[arg(long)]
+        force: bool,
+
+        /// Show what would be ingested without actually doing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List knowledge documents.
+    List {
+        #[arg(long, default_value = "20")]
+        limit: usize,
+
+        #[arg(long, default_value = "0")]
+        offset: usize,
+    },
+    /// Show a specific knowledge document.
+    Show { id: String },
+    /// Search the knowledge base.
+    Search {
+        query: String,
+
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+    /// Remove a knowledge document.
+    Remove { id: String },
+    /// Show knowledge base statistics.
+    Stats,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KnowledgeIngestSource {
+    /// Ingest a single file.
+    File { path: PathBuf },
+    /// Recursively ingest all supported files from a directory.
+    Folder { path: PathBuf },
+    /// Fetch and ingest content from a URL.
+    Url { url: String },
+    /// Crawl a sitemap.xml and ingest all discovered URLs.
+    Sitemap { url: String },
 }

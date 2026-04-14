@@ -53,9 +53,11 @@ sha2.workspace = true
 
 # Additional dependencies
 async-trait = "0.1"
+async-stream = "0.3"
 which = "6.0"
 futures = "0.3"
 hex = "0.4"
+hmac = "0.12"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = "0.4"
 self-replace = "1.5"

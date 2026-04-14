@@ -8,7 +8,7 @@ use crate::agent::AgentCore;
 use crate::api::gateway::WorkspaceLocks;
 use crate::config::Config;
 use crate::llm::router::LLMRouter;
-use crate::memory::conductor::MemorySystem;
+use crate::memory::conductor::{EmbeddingGenerator, MemorySystem};
 use crate::policy::PolicyEngine;
 use crate::policy::{
     active_workspace_policy_dir, legacy_policy_workspace_dir, policy_workspace_dir,
@@ -27,14 +27,16 @@ pub async fn init_agent_with_db(database: Arc<Database>) -> Result<Arc<RwLock<Ag
         crate::remote::local_execution_role_for_config(&config).unwrap_or(NodeExecutionRole::Full);
     let agent = build_task_agent_with_role(database.clone(), None, execution_role).await?;
 
-    if let Some(memory_system) = agent_memory_system(&agent) {
-        tokio::spawn(async move {
-            memory_system
-                .start_consolidation_loop(std::time::Duration::from_secs(
-                    memory_config.consolidation_interval_mins * 60,
-                ))
-                .await;
-        });
+    if memory_config.always_on_enabled() {
+        if let Some(memory_system) = agent_memory_system(&agent) {
+            tokio::spawn(async move {
+                memory_system
+                    .start_consolidation_loop(std::time::Duration::from_secs(
+                        memory_config.consolidation_interval_mins * 60,
+                    ))
+                    .await;
+            });
+        }
     }
 
     Ok(Arc::new(RwLock::new(agent)))
@@ -73,11 +75,14 @@ async fn build_task_agent_with_role(
     let rate_limiter = Arc::new(RateLimiter::new(db_pool.clone()));
     let risk_assessor = RiskAssessor::new();
     let task_repo = Arc::new(TaskRepository::new(db_pool.clone()));
-    let memory_system = Arc::new(MemorySystem::new_with_config(
-        db_pool,
-        router.clone(),
-        config.memory.clone(),
-    ));
+    let base_sys =
+        MemorySystem::new_with_config(db_pool.clone(), router.clone(), config.memory.clone());
+    let memory_system = Arc::new(if let Some(brain) = router.local_brain() {
+        let generator = Arc::new(EmbeddingGenerator::new(db_pool, Some(brain)));
+        base_sys.with_embedding_generator(generator)
+    } else {
+        base_sys
+    });
 
     let tools = plugins::build(&database, &config).await?;
     let policy_engine = load_policy_engine(&config).await?;

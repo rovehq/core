@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
+use sdk::{AgentSpec, ChannelBinding, SpecProvenance, WorkflowSpec, WorkflowStepSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sdk::{AgentSpec, ChannelBinding, SpecProvenance, WorkflowSpec, WorkflowStepSpec};
 
 use crate::specs::{slugify, SpecRepository};
 
@@ -30,8 +30,8 @@ impl MigrationSource {
     }
 
     pub fn default_root(&self) -> Result<PathBuf> {
-        let home =
-            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
         Ok(match self {
             Self::OpenClaw => home.join(".openclaw"),
             Self::ZeroClaw => home.join(".zeroclaw"),
@@ -66,6 +66,7 @@ pub struct MigrationImportResult {
     pub imported_agents: Vec<String>,
     pub imported_workflows: Vec<String>,
     pub warnings: Vec<String>,
+    pub dry_run: bool,
 }
 
 pub fn inspect(source: MigrationSource, root_override: Option<&Path>) -> Result<MigrationReport> {
@@ -149,6 +150,7 @@ pub fn import(
     repo: &SpecRepository,
     source: MigrationSource,
     root_override: Option<&Path>,
+    dry_run: bool,
 ) -> Result<MigrationImportResult> {
     let report = inspect(source, root_override)?;
     if !report.exists {
@@ -162,25 +164,48 @@ pub fn import(
 
     for artifact in &report.agent_candidates {
         let path = PathBuf::from(&artifact.path);
-        match build_imported_agent(repo, source, &path) {
-            Ok(spec) => imported_agents.push(spec.id),
-            Err(error) => warnings.push(format!(
-                "Failed to import agent candidate {}: {}",
-                path.display(),
-                error
-            )),
+        if dry_run {
+            // Simulate: build spec but don't save
+            match build_imported_agent_simulated(source, &path) {
+                Ok(id) => imported_agents.push(id),
+                Err(error) => warnings.push(format!(
+                    "Would fail to import agent candidate {}: {}",
+                    path.display(),
+                    error
+                )),
+            }
+        } else {
+            match build_imported_agent(repo, source, &path) {
+                Ok(spec) => imported_agents.push(spec.id),
+                Err(error) => warnings.push(format!(
+                    "Failed to import agent candidate {}: {}",
+                    path.display(),
+                    error
+                )),
+            }
         }
     }
 
     for artifact in &report.workflow_candidates {
         let path = PathBuf::from(&artifact.path);
-        match build_imported_workflow(repo, source, &path) {
-            Ok(spec) => imported_workflows.push(spec.id),
-            Err(error) => warnings.push(format!(
-                "Failed to import workflow candidate {}: {}",
-                path.display(),
-                error
-            )),
+        if dry_run {
+            match build_imported_workflow_simulated(source, &path) {
+                Ok(id) => imported_workflows.push(id),
+                Err(error) => warnings.push(format!(
+                    "Would fail to import workflow candidate {}: {}",
+                    path.display(),
+                    error
+                )),
+            }
+        } else {
+            match build_imported_workflow(repo, source, &path) {
+                Ok(spec) => imported_workflows.push(spec.id),
+                Err(error) => warnings.push(format!(
+                    "Failed to import workflow candidate {}: {}",
+                    path.display(),
+                    error
+                )),
+            }
         }
     }
 
@@ -196,6 +221,7 @@ pub fn import(
         imported_agents,
         imported_workflows,
         warnings,
+        dry_run,
     })
 }
 
@@ -344,7 +370,9 @@ fn detect_channels_for_path(path: &Path) -> BTreeSet<String> {
 }
 
 fn channel_keywords() -> &'static [&'static str] {
-    &["telegram", "slack", "discord", "whatsapp", "wechat", "wecom", "lark", "feishu"]
+    &[
+        "telegram", "slack", "discord", "whatsapp", "wechat", "wecom", "lark", "feishu",
+    ]
 }
 
 fn build_imported_agent(
@@ -352,8 +380,8 @@ fn build_imported_agent(
     source: MigrationSource,
     path: &Path,
 ) -> Result<AgentSpec> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
     let structured = read_structured_value(path, &raw).ok();
     let extracted = extract_agent_content(path, &raw, structured.as_ref());
 
@@ -368,12 +396,11 @@ fn build_imported_agent(
             &format!(
                 "{}-{}",
                 source.as_str(),
-                slugify(
-                    extracted
-                        .name
-                        .as_deref()
-                        .unwrap_or_else(|| path.file_stem().and_then(|value| value.to_str()).unwrap_or("imported-agent"))
-                )
+                slugify(extracted.name.as_deref().unwrap_or_else(|| {
+                    path.file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("imported-agent")
+                }))
             ),
         ),
         name: extracted
@@ -409,8 +436,8 @@ fn build_imported_workflow(
     source: MigrationSource,
     path: &Path,
 ) -> Result<WorkflowSpec> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
     let structured = read_structured_value(path, &raw).ok();
     let extracted = extract_workflow_content(path, &raw, structured.as_ref());
 
@@ -425,12 +452,11 @@ fn build_imported_workflow(
             &format!(
                 "{}-{}",
                 source.as_str(),
-                slugify(
-                    extracted
-                        .name
-                        .as_deref()
-                        .unwrap_or_else(|| path.file_stem().and_then(|value| value.to_str()).unwrap_or("imported-workflow"))
-                )
+                slugify(extracted.name.as_deref().unwrap_or_else(|| {
+                    path.file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("imported-workflow")
+                }))
             ),
         ),
         name: extracted
@@ -449,6 +475,40 @@ fn build_imported_workflow(
         ..WorkflowSpec::default()
     };
     repo.save_workflow(&spec)
+}
+
+/// Simulate building an imported agent — computes the ID without saving.
+fn build_imported_agent_simulated(source: MigrationSource, path: &Path) -> Result<String> {
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let extracted = extract_agent_content(path, &raw, None);
+    let id = format!(
+        "{}-{}",
+        source.as_str(),
+        slugify(extracted.name.as_deref().unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("imported-agent")
+        }))
+    );
+    Ok(id)
+}
+
+/// Simulate building an imported workflow — computes the ID without saving.
+fn build_imported_workflow_simulated(source: MigrationSource, path: &Path) -> Result<String> {
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let extracted = extract_workflow_content(path, &raw, None);
+    let id = format!(
+        "{}-{}",
+        source.as_str(),
+        slugify(extracted.name.as_deref().unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("imported-workflow")
+        }))
+    );
+    Ok(id)
 }
 
 fn read_structured_value(path: &Path, raw: &str) -> Result<Value> {
@@ -478,14 +538,35 @@ struct ExtractedAgentContent {
     channels: Vec<ChannelBinding>,
 }
 
-fn extract_agent_content(path: &Path, raw: &str, structured: Option<&Value>) -> ExtractedAgentContent {
+fn extract_agent_content(
+    path: &Path,
+    raw: &str,
+    structured: Option<&Value>,
+) -> ExtractedAgentContent {
     let name = structured
         .and_then(|value| string_field(value, &["name", "title", "id"]))
         .or_else(|| markdown_heading(raw))
-        .or_else(|| path.file_stem().and_then(|value| value.to_str()).map(title_case));
-    let purpose = structured.and_then(|value| string_field(value, &["purpose", "description", "summary"]));
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .map(title_case)
+        });
+    let purpose =
+        structured.and_then(|value| string_field(value, &["purpose", "description", "summary"]));
     let instructions = structured
-        .and_then(|value| string_field(value, &["instructions", "prompt", "system_prompt", "system", "persona", "soul"]))
+        .and_then(|value| {
+            string_field(
+                value,
+                &[
+                    "instructions",
+                    "prompt",
+                    "system_prompt",
+                    "system",
+                    "persona",
+                    "soul",
+                ],
+            )
+        })
         .unwrap_or_else(|| raw.trim().to_string());
     let channels = detect_channel_bindings(raw, structured);
 
@@ -511,8 +592,13 @@ fn extract_workflow_content(
     let name = structured
         .and_then(|value| string_field(value, &["name", "title", "id"]))
         .or_else(|| markdown_heading(raw))
-        .or_else(|| path.file_stem().and_then(|value| value.to_str()).map(title_case));
-    let description = structured.and_then(|value| string_field(value, &["description", "summary", "purpose"]));
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .map(title_case)
+        });
+    let description =
+        structured.and_then(|value| string_field(value, &["description", "summary", "purpose"]));
     let steps = structured
         .and_then(value_steps)
         .filter(|steps| !steps.is_empty())
@@ -522,6 +608,7 @@ fn extract_workflow_content(
                 name: "Imported Step".to_string(),
                 prompt: raw.trim().to_string(),
                 agent_id: None,
+                worker_preset: None,
                 continue_on_error: false,
             }]
         });
@@ -544,12 +631,17 @@ fn value_steps(value: &Value) -> Option<Vec<WorkflowStepSpec>> {
     let steps = value.get("steps")?.as_array()?;
     let mut extracted = Vec::new();
     for (index, step) in steps.iter().enumerate() {
-        if let Some(prompt) = step.as_str().map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(prompt) = step
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             extracted.push(WorkflowStepSpec {
                 id: format!("step-{}", index + 1),
                 name: format!("Step {}", index + 1),
                 prompt: prompt.to_string(),
                 agent_id: None,
+                worker_preset: None,
                 continue_on_error: false,
             });
             continue;
@@ -562,6 +654,7 @@ fn value_steps(value: &Value) -> Option<Vec<WorkflowStepSpec>> {
                     .unwrap_or_else(|| format!("Step {}", index + 1)),
                 prompt,
                 agent_id: string_field(step, &["agent_id", "agent"]),
+                worker_preset: string_field(step, &["worker_preset"]),
                 continue_on_error: step
                     .get("continue_on_error")
                     .and_then(Value::as_bool)
@@ -617,7 +710,91 @@ fn import_provenance(source: MigrationSource, path: &Path) -> SpecProvenance {
         import_source: Some(source.as_str().to_string()),
         notes: Some(format!("Imported from {}", path.display())),
         imported_at: Some(Utc::now().timestamp()),
+        draft_for: None,
+        review_status: None,
+        reviewed_at: None,
     }
+}
+
+/// Report previously imported specs and their current state.
+pub fn migrate_status(repo: &SpecRepository) -> Result<MigrationStatusReport> {
+    let sources = [
+        MigrationSource::OpenClaw,
+        MigrationSource::ZeroClaw,
+        MigrationSource::Moltis,
+    ];
+    let mut per_source: Vec<MigrationSourceStatus> = Vec::new();
+
+    for source in sources {
+        let agents = repo
+            .list_agents()?
+            .into_iter()
+            .filter(|a| {
+                a.provenance
+                    .as_ref()
+                    .and_then(|p| p.import_source.as_ref())
+                    .map(|s| s == source.as_str())
+                    .unwrap_or(false)
+            })
+            .map(|a| ImportedSpecStatus {
+                id: a.id,
+                name: a.name,
+                kind: "agent".to_string(),
+                enabled: a.enabled,
+                imported_at: a.provenance.and_then(|p| p.imported_at).unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
+
+        let workflows = repo
+            .list_workflows()?
+            .into_iter()
+            .filter(|w| {
+                w.provenance
+                    .as_ref()
+                    .and_then(|p| p.import_source.as_ref())
+                    .map(|s| s == source.as_str())
+                    .unwrap_or(false)
+            })
+            .map(|w| ImportedSpecStatus {
+                id: w.id,
+                name: w.name,
+                kind: "workflow".to_string(),
+                enabled: w.enabled,
+                imported_at: w.provenance.and_then(|p| p.imported_at).unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
+
+        if !agents.is_empty() || !workflows.is_empty() {
+            per_source.push(MigrationSourceStatus {
+                source: source.as_str().to_string(),
+                agents,
+                workflows,
+            });
+        }
+    }
+
+    Ok(MigrationStatusReport { per_source })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationStatusReport {
+    pub per_source: Vec<MigrationSourceStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationSourceStatus {
+    pub source: String,
+    pub agents: Vec<ImportedSpecStatus>,
+    pub workflows: Vec<ImportedSpecStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedSpecStatus {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub imported_at: i64,
 }
 
 fn markdown_heading(raw: &str) -> Option<String> {
@@ -696,7 +873,11 @@ mod tests {
         let root = temp_dir.path();
         fs::create_dir_all(root.join("agents")).unwrap();
         fs::create_dir_all(root.join("workflows")).unwrap();
-        fs::write(root.join("agents").join("support-agent.md"), "# Support\nHandle Telegram requests").unwrap();
+        fs::write(
+            root.join("agents").join("support-agent.md"),
+            "# Support\nHandle Telegram requests",
+        )
+        .unwrap();
         fs::write(
             root.join("workflows").join("ops-workflow.json"),
             r#"{"name":"Ops workflow","steps":["check status","restart service"]}"#,
@@ -716,7 +897,11 @@ mod tests {
         let root = temp_dir.path().join("source");
         fs::create_dir_all(root.join("agents")).unwrap();
         fs::create_dir_all(root.join("workflows")).unwrap();
-        fs::write(root.join("agents").join("assistant.md"), "# Helper\nRead files safely").unwrap();
+        fs::write(
+            root.join("agents").join("assistant.md"),
+            "# Helper\nRead files safely",
+        )
+        .unwrap();
         fs::write(
             root.join("workflows").join("flow.toml"),
             r#"name = "Flow"
@@ -729,7 +914,7 @@ steps = ["step one", "step two"]"#,
         std::env::set_var("ROVE_CONFIG_PATH", config_dir.join("config.toml"));
         let repo = SpecRepository::new().unwrap();
 
-        let result = import(&repo, MigrationSource::OpenClaw, Some(&root)).unwrap();
+        let result = import(&repo, MigrationSource::OpenClaw, Some(&root), false).unwrap();
         assert_eq!(result.imported_agents.len(), 1);
         assert_eq!(result.imported_workflows.len(), 1);
 
@@ -754,4 +939,3 @@ steps = ["step one", "step two"]"#,
         std::env::remove_var("ROVE_CONFIG_PATH");
     }
 }
-

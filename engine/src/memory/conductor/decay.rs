@@ -17,7 +17,8 @@ use tracing::info;
 /// # Arguments
 /// * `pool` - SQLite connection pool
 /// * `enabled` - Whether decay is enabled (from config.importance_decay_enabled)
-pub async fn decay_importance(pool: &SqlitePool, enabled: bool) -> Result<()> {
+/// * `retention_days` - Maximum age for episodic memory rows before pruning
+pub async fn decay_importance(pool: &SqlitePool, enabled: bool, retention_days: u32) -> Result<()> {
     if !enabled {
         return Ok(());
     }
@@ -25,6 +26,7 @@ pub async fn decay_importance(pool: &SqlitePool, enabled: bool) -> Result<()> {
     let now = crate::conductor::scorer::unix_now();
     let thirty_days_ago = now - 30 * 86_400;
     let ninety_days_ago = now - 90 * 86_400;
+    let retention_cutoff = now - retention_days as i64 * 86_400;
 
     // Mild decay for memories not accessed in 30 days
     sqlx::query(
@@ -63,6 +65,48 @@ pub async fn decay_importance(pool: &SqlitePool, enabled: bool) -> Result<()> {
         info!("Pruned {} fully decayed memories", deleted.rows_affected());
     }
 
+    if retention_days > 0 {
+        let expired_ids: Vec<String> = sqlx::query_scalar(
+            r#"SELECT id
+               FROM episodic_memory
+               WHERE created_at < ?"#,
+        )
+        .bind(retention_cutoff)
+        .fetch_all(pool)
+        .await
+        .context("Failed to query expired memories")?;
+
+        if !expired_ids.is_empty() {
+            for memory_id in &expired_ids {
+                let _ = sqlx::query(
+                    r#"DELETE FROM memory_graph_edges
+                       WHERE from_id = ? OR to_id = ?"#,
+                )
+                .bind(memory_id)
+                .bind(memory_id)
+                .execute(pool)
+                .await;
+            }
+
+            let deleted_expired = sqlx::query(
+                r#"DELETE FROM episodic_memory
+                   WHERE created_at < ?"#,
+            )
+            .bind(retention_cutoff)
+            .execute(pool)
+            .await
+            .context("Failed to prune expired episodic memories")?;
+
+            if deleted_expired.rows_affected() > 0 {
+                info!(
+                    "Pruned {} episodic memories older than {} days",
+                    deleted_expired.rows_affected(),
+                    retention_days
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -81,7 +125,7 @@ mod tests {
         let pool = sqlx::SqlitePool::connect_with(opts).await.unwrap();
 
         // Should return Ok without doing anything when disabled
-        let result = decay_importance(&pool, false).await;
+        let result = decay_importance(&pool, false, 30).await;
         assert!(result.is_ok());
     }
 
@@ -182,7 +226,7 @@ mod tests {
         .unwrap();
 
         // Run decay
-        decay_importance(&pool, true).await.unwrap();
+        decay_importance(&pool, true, 30).await.unwrap();
 
         // Verify results
         // Memory 1 should be unchanged
@@ -220,5 +264,89 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_decay_importance_enforces_retention_window() {
+        use std::str::FromStr;
+
+        let opts = sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        let pool = sqlx::SqlitePool::connect_with(opts).await.unwrap();
+
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS episodic_memory (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                entities TEXT,
+                topics TEXT,
+                importance REAL NOT NULL,
+                consolidated INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                last_accessed INTEGER,
+                access_count INTEGER NOT NULL DEFAULT 0
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS memory_graph_edges (
+                id TEXT PRIMARY KEY,
+                from_id TEXT NOT NULL,
+                to_id TEXT NOT NULL,
+                edge_type TEXT NOT NULL,
+                entity TEXT,
+                weight REAL NOT NULL DEFAULT 1.0,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                created_at INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let now = crate::conductor::scorer::unix_now();
+        let expired = now - 40 * 86_400;
+
+        sqlx::query(
+            r#"INSERT INTO episodic_memory
+               (id, task_id, summary, importance, consolidated, created_at, last_accessed, access_count)
+               VALUES ('old', 'task-old', 'expired memory', 0.9, 0, ?, ?, 0)"#,
+        )
+        .bind(expired)
+        .bind(expired)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"INSERT INTO memory_graph_edges
+               (id, from_id, to_id, edge_type, entity, weight, confidence, created_at)
+               VALUES ('edge-old', 'old', 'other', 'shares_entity', NULL, 1.0, 1.0, ?)"#,
+        )
+        .bind(expired)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        decay_importance(&pool, true, 30).await.unwrap();
+
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM episodic_memory WHERE id = 'old'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0);
+
+        let remaining_edges: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM memory_graph_edges WHERE id = 'edge-old'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining_edges, 0);
     }
 }

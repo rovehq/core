@@ -46,6 +46,8 @@ pub async fn handle_agents(action: AgentAction, config: &Config) -> Result<()> {
         ),
         AgentAction::Enable { id } => set_enabled(&repo, &id, true),
         AgentAction::Disable { id } => set_enabled(&repo, &id, false),
+        AgentAction::Review { id } => review_agent(&repo, &id),
+        AgentAction::Approve { id } => approve_agent(&repo, &id),
         AgentAction::Run { id, prompt } => run_agent(&repo, config, &id, prompt.join(" ")).await,
         AgentAction::Export { id, path } => export_agent(&repo, &id, &path),
         AgentAction::Import { path } => import_agent(&repo, &path),
@@ -74,13 +76,14 @@ fn handle_factory(action: AgentFactoryAction, repo: &SpecRepository) -> Result<(
             name,
             requirement,
         } => {
-            let spec = factory::preview_agent(
+            let result = factory::preview_agent_result(
+                Some(repo),
                 &requirement.join(" "),
                 template.as_deref(),
                 id.as_deref(),
                 name.as_deref(),
             )?;
-            println!("{}", toml::to_string_pretty(&spec)?);
+            println!("{}", toml::to_string_pretty(&result)?);
             Ok(())
         }
         AgentFactoryAction::Create {
@@ -89,14 +92,14 @@ fn handle_factory(action: AgentFactoryAction, repo: &SpecRepository) -> Result<(
             name,
             requirement,
         } => {
-            let spec = factory::create_agent(
+            let result = factory::create_agent(
                 repo,
                 &requirement.join(" "),
                 template.as_deref(),
                 id.as_deref(),
                 name.as_deref(),
             )?;
-            println!("{}", toml::to_string_pretty(&spec)?);
+            println!("{}", toml::to_string_pretty(&result)?);
             Ok(())
         }
     }
@@ -143,6 +146,18 @@ fn set_enabled(repo: &SpecRepository, id: &str, enabled: bool) -> Result<()> {
     Ok(())
 }
 
+fn review_agent(repo: &SpecRepository, id: &str) -> Result<()> {
+    let review = factory::get_agent_review(repo, id)?;
+    println!("{}", toml::to_string_pretty(&review)?);
+    Ok(())
+}
+
+fn approve_agent(repo: &SpecRepository, id: &str) -> Result<()> {
+    let saved = factory::approve_agent(repo, id)?;
+    println!("Approved agent {} ({})", saved.id, saved.name);
+    Ok(())
+}
+
 async fn run_agent(repo: &SpecRepository, config: &Config, id: &str, prompt: String) -> Result<()> {
     if prompt.trim().is_empty() {
         anyhow::bail!("Agent run requires a non-empty prompt");
@@ -164,10 +179,13 @@ async fn run_agent(repo: &SpecRepository, config: &Config, id: &str, prompt: Str
     let execution_profile = TaskExecutionProfile {
         agent_id: Some(spec.id.clone()),
         agent_name: Some(spec.name.clone()),
+        worker_preset_id: None,
+        worker_preset_name: None,
         purpose: Some(spec.purpose.clone()),
         instructions: spec.instructions.clone(),
         allowed_tools: allowed_tools(&spec),
         output_contract: spec.output_contract.clone(),
+        max_iterations: None,
     };
 
     let result = execute_local_task_request(
@@ -244,7 +262,7 @@ async fn create_agent_from_task(
     let db = Database::new(&database_path(config))
         .await
         .context("Failed to open database for task conversion")?;
-    let spec = factory::agent_from_task(repo, &db, task_id, id, name).await?;
-    println!("{}", toml::to_string_pretty(&spec)?);
+    let result = factory::agent_from_task(repo, &db, task_id, id, name).await?;
+    println!("{}", toml::to_string_pretty(&result)?);
     Ok(())
 }

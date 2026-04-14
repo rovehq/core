@@ -723,6 +723,266 @@ export interface BrowserSurfaceUpdate {
   profiles: BrowserProfileInput[];
 }
 
+export type VoiceEngineKind = 'native_os' | 'local_whisper' | 'local_piper';
+export type VoiceEngineReadiness = 'ready' | 'needs_setup' | 'warning' | 'unsupported';
+export type VoiceAssetStatus = 'none_required' | 'managed' | 'missing' | 'ready';
+export type VoiceDeviceKind = 'input' | 'output';
+export type MemoryMode = 'graph_only' | 'always_on';
+export type MemoryGraphEnrichment = 'deterministic' | 'deterministic_plus_llm';
+export type MemoryBundleStrategy = 'adaptive';
+export type MemoryRetrievalAssist = 'off' | 'rerank' | 'compress';
+export type MemoryAdapterMode = 'off' | 'auto' | 'required';
+
+export interface VoicePolicyControls {
+  require_approval_for_tts: boolean;
+  require_approval_for_stt: boolean;
+  allow_remote_audio_input: boolean;
+  allow_remote_audio_output: boolean;
+  persist_transcripts: boolean;
+}
+
+export interface VoiceEngineInput {
+  kind: VoiceEngineKind;
+  enabled: boolean;
+  model?: string | null;
+  voice?: string | null;
+  runtime_path?: string | null;
+  asset_dir?: string | null;
+  notes?: string | null;
+}
+
+export interface VoiceDeviceRecord {
+  id: string;
+  name: string;
+  kind: VoiceDeviceKind;
+  default: boolean;
+  available: boolean;
+}
+
+export interface VoiceRuntimeStatus {
+  system_id: string;
+  installed: boolean;
+  enabled: boolean;
+  version?: string | null;
+  artifact_path?: string | null;
+  warnings: string[];
+}
+
+export interface VoiceEngineRecord extends VoiceEngineInput {
+  id: string;
+  name: string;
+  installed: boolean;
+  supports_input: boolean;
+  supports_output: boolean;
+  active_input: boolean;
+  active_output: boolean;
+  asset_status: VoiceAssetStatus;
+  readiness: VoiceEngineReadiness;
+  approval_required_for_input: boolean;
+  approval_required_for_output: boolean;
+  warnings: string[];
+}
+
+export interface VoiceSurfaceStatus {
+  enabled: boolean;
+  runtime: VoiceRuntimeStatus;
+  active_input_engine?: VoiceEngineKind | null;
+  active_output_engine?: VoiceEngineKind | null;
+  selected_input_device_id?: string | null;
+  selected_output_device_id?: string | null;
+  policy: VoicePolicyControls;
+  devices: VoiceDeviceRecord[];
+  engines: VoiceEngineRecord[];
+  warnings: string[];
+}
+
+export interface VoiceSurfaceUpdate {
+  enabled: boolean;
+  active_input_engine?: VoiceEngineKind | null;
+  active_output_engine?: VoiceEngineKind | null;
+  selected_input_device_id?: string | null;
+  selected_output_device_id?: string | null;
+  policy: VoicePolicyControls;
+  engines: VoiceEngineInput[];
+}
+
+export interface VoiceEngineInstallRequest {
+  engine: VoiceEngineKind;
+  model?: string | null;
+  voice?: string | null;
+  runtime_path?: string | null;
+  notes?: string | null;
+}
+
+export interface VoiceEngineSelectionRequest {
+  engine: VoiceEngineKind;
+}
+
+export interface VoiceOutputTestRequest {
+  text: string;
+  voice?: string | null;
+}
+
+export interface VoiceTestResult {
+  ok: boolean;
+  engine: VoiceEngineKind;
+  message: string;
+}
+
+export interface MemoryGraphRepoStatus {
+  repo_name: string;
+  repo_path: string;
+  db_path: string;
+  available: boolean;
+  imported: boolean;
+  stale: boolean;
+  nodes: number;
+  edges: number;
+  files: number;
+  last_updated?: string | null;
+  built_branch?: string | null;
+  built_commit?: string | null;
+  current_branch?: string | null;
+  current_commit?: string | null;
+  message?: string | null;
+}
+
+export interface MemoryGraphWorkspaceStatus {
+  healthy: boolean;
+  available_count: number;
+  imported_count: number;
+  stale_count: number;
+  repos: MemoryGraphRepoStatus[];
+}
+
+export interface MemorySurfaceStatus {
+  mode: MemoryMode;
+  bundle_strategy: MemoryBundleStrategy;
+  retrieval_assist: MemoryRetrievalAssist;
+  graph_enrichment: MemoryGraphEnrichment;
+  scope: string;
+  code_graph_required: boolean;
+  code_adapter_mode: MemoryAdapterMode;
+  always_on_enabled: boolean;
+  persist_pinned_facts: boolean;
+  persist_task_traces: boolean;
+  graph_status: MemoryGraphWorkspaceStatus;
+  graph_stats: Record<string, number>;
+  memory_stats: MemorySurfaceStats;
+  warnings: string[];
+}
+
+export interface MemorySurfaceUpdate {
+  mode?: MemoryMode | null;
+  bundle_strategy?: MemoryBundleStrategy | null;
+  retrieval_assist?: MemoryRetrievalAssist | null;
+  graph_enrichment?: MemoryGraphEnrichment | null;
+  code_graph_required?: boolean | null;
+  code_adapter_mode?: MemoryAdapterMode | null;
+  persist_pinned_facts?: boolean | null;
+  persist_task_traces?: boolean | null;
+}
+
+export interface GraphPathHit {
+  summary: string;
+  path: string[];
+  source_kinds: string[];
+  source_refs: string[];
+  confidence: number;
+  score: number;
+}
+
+export interface MemoryHit {
+  id: string;
+  source: string;
+  content: string;
+  rank: number;
+  hit_type: 'episodic' | 'insight' | 'knowledge_graph' | 'task_trace' | 'fact';
+  importance: number;
+  created_at: number;
+  final_score: number;
+}
+
+export interface MemoryExplainResponse {
+  intent: string;
+  mode: MemoryMode;
+  sources: string[];
+  fallback_reason?: string | null;
+  graph_paths_used: number;
+  memory_graph_hits_used: number;
+  task_trace_hits_used: number;
+  llm_enrichment_enabled: boolean;
+}
+
+export interface MemorySurfaceStats {
+  facts: number;
+  task_traces: number;
+  episodic: number;
+  insights: number;
+  total_episodic: number;
+  embedded_episodic: number;
+  embedding_coverage_pct: number;
+  memory_graph_edges: number;
+  edge_types: Record<string, number>;
+}
+
+export interface MemoryQueryRequest {
+  question: string;
+  explain: boolean;
+  domain?: string | null;
+}
+
+export interface MemoryGraphHit {
+  id: string;
+  content: string;
+  memory_kind: string;
+  importance: number;
+  domain: string;
+  created_at: number;
+  /** IDs of nodes traversed from seed to this node, inclusive */
+  path: string[];
+  /** Edge types along the path */
+  path_edge_types: string[];
+  depth: number;
+  /** importance × decay^depth × edge weight */
+  graph_score: number;
+}
+
+export interface MemoryQueryResponse {
+  facts: MemoryHit[];
+  preferences: MemoryHit[];
+  warnings: MemoryHit[];
+  errors: MemoryHit[];
+  graph_paths: GraphPathHit[];
+  memory_graph_hits: MemoryGraphHit[];
+  episodic_hits: MemoryHit[];
+  insight_hits: MemoryHit[];
+  task_trace_hits: MemoryHit[];
+  project_context?: string | null;
+  explain?: MemoryExplainResponse | null;
+}
+
+export interface MemoryGraphInspectResponse {
+  entity?: string | null;
+  graph_status: MemoryGraphWorkspaceStatus;
+  graph_stats: Record<string, number>;
+  paths: GraphPathHit[];
+}
+
+export interface MemoryIngestRequest {
+  note: string;
+  domain?: string | null;
+}
+
+export interface MemoryBackfillRequest {
+  batch_size?: number | null;
+}
+
+export interface MemoryBackfillResponse {
+  backfilled: number;
+  status: MemorySurfaceStatus;
+}
+
 export interface DispatchBrainView {
   root: string;
   active?: string | null;
@@ -953,6 +1213,114 @@ export class RoveDaemonClient {
   async updateBrowserSurface(payload: BrowserSurfaceUpdate): Promise<BrowserSurfaceStatus> {
     return this.request<BrowserSurfaceStatus>('/v1/browser', {
       method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async getVoiceSurface(): Promise<VoiceSurfaceStatus> {
+    return this.request<VoiceSurfaceStatus>('/v1/voice');
+  }
+
+  async getMemorySurface(): Promise<MemorySurfaceStatus> {
+    return this.request<MemorySurfaceStatus>('/v1/memory');
+  }
+
+  async updateMemorySurface(payload: MemorySurfaceUpdate): Promise<MemorySurfaceStatus> {
+    return this.request<MemorySurfaceStatus>('/v1/memory', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async queryMemory(payload: MemoryQueryRequest): Promise<MemoryQueryResponse> {
+    return this.request<MemoryQueryResponse>('/v1/memory/query', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async inspectMemoryGraph(entity?: string | null): Promise<MemoryGraphInspectResponse> {
+    const suffix = entity ? `?entity=${encodeURIComponent(entity)}` : '';
+    return this.request<MemoryGraphInspectResponse>(`/v1/memory/graph${suffix}`);
+  }
+
+  async reindexMemory(): Promise<MemorySurfaceStatus> {
+    return this.request<MemorySurfaceStatus>('/v1/memory/reindex', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  async backfillMemory(payload: MemoryBackfillRequest): Promise<MemoryBackfillResponse> {
+    return this.request<MemoryBackfillResponse>('/v1/memory/backfill', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async listMemoryAdapters(): Promise<MemoryGraphWorkspaceStatus> {
+    return this.request<MemoryGraphWorkspaceStatus>('/v1/memory/adapters');
+  }
+
+  async refreshMemoryAdapters(): Promise<MemoryGraphWorkspaceStatus> {
+    return this.request<MemoryGraphWorkspaceStatus>('/v1/memory/adapters/refresh', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  async ingestMemoryNote(payload: MemoryIngestRequest): Promise<MemoryHit> {
+    return this.request<MemoryHit>('/v1/memory/ingest', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateVoiceSurface(payload: VoiceSurfaceUpdate): Promise<VoiceSurfaceStatus> {
+    return this.request<VoiceSurfaceStatus>('/v1/voice', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async installVoiceEngine(payload: VoiceEngineInstallRequest): Promise<VoiceSurfaceStatus> {
+    return this.request<VoiceSurfaceStatus>('/v1/voice/install', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async uninstallVoiceEngine(payload: VoiceEngineSelectionRequest): Promise<VoiceSurfaceStatus> {
+    return this.request<VoiceSurfaceStatus>('/v1/voice/uninstall', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async activateVoiceInput(payload: VoiceEngineSelectionRequest): Promise<VoiceSurfaceStatus> {
+    return this.request<VoiceSurfaceStatus>('/v1/voice/activate-input', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async activateVoiceOutput(payload: VoiceEngineSelectionRequest): Promise<VoiceSurfaceStatus> {
+    return this.request<VoiceSurfaceStatus>('/v1/voice/activate-output', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async testVoiceInput(): Promise<VoiceTestResult> {
+    return this.request<VoiceTestResult>('/v1/voice/test-input', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  async testVoiceOutput(payload: VoiceOutputTestRequest): Promise<VoiceTestResult> {
+    return this.request<VoiceTestResult>('/v1/voice/test-output', {
+      method: 'POST',
       body: JSON.stringify(payload),
     });
   }

@@ -7,7 +7,7 @@ use std::io::{self, Write};
 
 use super::menu::{select_menu, select_menu_default};
 use super::preset::{presets, ModelPreset};
-use super::prompt::{print_line, prompt_text};
+use super::prompt::{print_line, prompt_secret, prompt_text};
 use super::result::SetupResult;
 use super::{BOLD, CYAN, DIM, RESET};
 
@@ -69,6 +69,26 @@ fn run_wizard_inner() -> Result<SetupResult> {
     print_line(&mut stdout, &format!("  {BOLD}Maximum risk tier{RESET}"))?;
     print_line(&mut stdout, "")?;
     let risk_idx = select_menu_default(&mut stdout, &risk_labels, 2)?;
+    print_line(&mut stdout, "")?;
+
+    let daemon_password = loop {
+        let password = prompt_secret(&mut stdout, "Daemon password")?;
+        if password.trim().len() < 8 {
+            print_line(
+                &mut stdout,
+                "  Password must be at least 8 characters. Try again.",
+            )?;
+            continue;
+        }
+
+        let confirm = prompt_secret(&mut stdout, "Confirm daemon password")?;
+        if password != confirm {
+            print_line(&mut stdout, "  Passwords did not match. Try again.")?;
+            continue;
+        }
+        print_line(&mut stdout, "")?;
+        break password;
+    };
 
     Ok(SetupResult {
         workspace,
@@ -80,6 +100,9 @@ fn run_wizard_inner() -> Result<SetupResult> {
         api_key,
         max_risk_tier: risk_idx as u8,
         skipped_model: skipped,
+        daemon_password,
+        recovery_code: None,
+        auth_protection: None,
     })
 }
 

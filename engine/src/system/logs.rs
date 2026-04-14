@@ -24,8 +24,8 @@ pub fn recent_lines(limit: usize) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
 
-    let raw = fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
     let mut lines = raw.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
     if lines.len() > limit {
         let drain = lines.len() - limit;

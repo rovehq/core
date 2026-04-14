@@ -88,7 +88,9 @@ pub(crate) async fn load_registry_catalog(registry: &str) -> Result<RegistryCata
     let raw = match &location {
         RegistryLocation::Local(root) => fs::read_to_string(root.join(REGISTRY_FILE))
             .with_context(|| format!("Failed to read '{}'", root.join(REGISTRY_FILE).display()))?,
-        RegistryLocation::Remote(base) => fetch_remote_text(&join_remote(base, REGISTRY_FILE)).await?,
+        RegistryLocation::Remote(base) => {
+            fetch_remote_text(&join_remote(base, REGISTRY_FILE)).await?
+        }
     };
 
     if matches!(location, RegistryLocation::Remote(_)) {

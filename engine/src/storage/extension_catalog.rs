@@ -114,10 +114,12 @@ impl ExtensionCatalogRepository {
     }
 
     pub async fn last_fetched_at(&self) -> Result<Option<i64>> {
-        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(fetched_at) FROM extension_catalog_entries")
-            .fetch_one(&self.pool)
-            .await
-            .context("Failed to query extension catalog cache freshness")
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(fetched_at) FROM extension_catalog_entries",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("Failed to query extension catalog cache freshness")
     }
 }
 
@@ -133,8 +135,10 @@ fn map_entry(row: SqliteRow) -> Result<ExtensionCatalogEntry> {
         registry_source: row.get("registry_source"),
         index_path: row.get("index_path"),
         manifest_json: row.get("manifest_json"),
-        permission_summary: serde_json::from_str(row.get::<String, _>("permission_summary_json").as_str())
-            .context("Failed to parse extension catalog permission summary")?,
+        permission_summary: serde_json::from_str(
+            row.get::<String, _>("permission_summary_json").as_str(),
+        )
+        .context("Failed to parse extension catalog permission summary")?,
         permission_warnings: serde_json::from_str(
             row.get::<String, _>("permission_warnings_json").as_str(),
         )

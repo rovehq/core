@@ -4,10 +4,15 @@
 //! a semantic knowledge graph. Enables multi-hop reasoning and discovery
 //! of connections between concepts, files, functions, and other entities.
 
+pub mod code_review_graph;
 pub mod extractor;
 pub mod graph;
 pub mod query;
 
+pub use code_review_graph::{
+    ensure_workspace_imported, workspace_status, CodeReviewGraphImportReport,
+    CodeReviewGraphRepoStatus, CodeReviewGraphWorkspaceStatus,
+};
 pub use extractor::EntityExtractor;
 pub use graph::{GraphEdge, GraphNode, KnowledgeGraph};
 pub use query::GraphQuery;
@@ -60,6 +65,8 @@ pub enum RelationType {
     References,
     DependsOn,
     ImplementsFor,
+    Contains,
+    TestedBy,
     WorksOn,
     StoredAt,
     Uses,
@@ -79,6 +86,8 @@ impl RelationType {
             RelationType::References => "references",
             RelationType::DependsOn => "depends_on",
             RelationType::ImplementsFor => "implements",
+            RelationType::Contains => "contains",
+            RelationType::TestedBy => "tested_by",
             RelationType::WorksOn => "works_on",
             RelationType::StoredAt => "stored_at",
             RelationType::Uses => "uses",

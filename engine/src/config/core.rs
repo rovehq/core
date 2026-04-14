@@ -19,6 +19,7 @@ use super::security::SecurityConfig;
 use super::telegram::TelegramConfig;
 use super::tools::{PluginsConfig, ToolsConfig};
 use super::transport::{McpConfig, WsClientConfig};
+use super::voice::VoiceConfig;
 use super::webui::WebUIConfig;
 
 /// Main configuration structure loaded from `~/.rove/config.toml`.
@@ -66,6 +67,8 @@ pub struct Config {
     pub telegram: TelegramConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub voice: VoiceConfig,
 }
 
 fn default_config_schema_version() -> u32 {

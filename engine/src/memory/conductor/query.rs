@@ -449,3 +449,309 @@ pub async fn query_hybrid(
     );
     Ok(hits)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Typed query functions — load only the relevant memory subset
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Query episodic memories by `MemoryKind` (typed/scoped query).
+///
+/// Does a direct `WHERE memory_kind = ?` scan — no FTS — so it returns
+/// all matching memories above the importance threshold, sorted by importance.
+/// Use this when you want all warnings, all preferences, etc.
+pub async fn query_by_kind(
+    pool: &SqlitePool,
+    kind: &crate::conductor::types::MemoryKind,
+    domain: &TaskDomain,
+    limit: usize,
+    min_importance: f32,
+) -> Result<Vec<MemoryHit>> {
+    let kind_str = kind.as_str();
+    let domain_str = format!("{:?}", domain).to_lowercase();
+    let now = crate::conductor::scorer::unix_now();
+
+    let rows = match sqlx::query(
+        r#"SELECT id, summary, importance, created_at
+           FROM episodic_memory
+           WHERE memory_kind = ?
+             AND (domain = ? OR domain = 'general')
+             AND sensitive = 0
+             AND importance >= ?
+           ORDER BY importance DESC, created_at DESC
+           LIMIT ?"#,
+    )
+    .bind(kind_str)
+    .bind(&domain_str)
+    .bind(min_importance)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            debug!("query_by_kind failed: {}", e);
+            return Ok(vec![]);
+        }
+    };
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let id: String = row.get("id");
+            let content: String = row.get("summary");
+            let importance: f32 = row.get("importance");
+            let created_at: i64 = row.get("created_at");
+            let final_score = importance * crate::conductor::scorer::recency_decay(created_at, now);
+            MemoryHit {
+                id,
+                source: format!("episodic:{}", kind_str),
+                content,
+                rank: 0.0,
+                hit_type: HitType::Episodic,
+                importance,
+                created_at,
+                final_score,
+            }
+        })
+        .collect())
+}
+
+/// Query episodic memories mentioning a specific entity or concept.
+///
+/// Uses FTS5 to search the `entities` and `summary` columns. Good for
+/// queries like "find all memories about tokio" or "find memories about E0499".
+pub async fn query_entity_scoped(
+    pool: &SqlitePool,
+    entity_name: &str,
+    domain: &TaskDomain,
+    limit: usize,
+) -> Result<Vec<MemoryHit>> {
+    if entity_name.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
+    let domain_str = format!("{:?}", domain).to_lowercase();
+    let now = crate::conductor::scorer::unix_now();
+
+    let rows = match sqlx::query(
+        r#"SELECT e.id, e.summary, e.importance, e.created_at,
+                  bm25(episodic_fts) as bm25_rank
+           FROM episodic_fts
+           JOIN episodic_memory e ON e.rowid = episodic_fts.rowid
+           WHERE episodic_fts MATCH ?
+             AND e.sensitive = 0
+             AND (e.domain = ? OR e.domain = 'general')
+           ORDER BY bm25_rank
+           LIMIT ?"#,
+    )
+    .bind(entity_name)
+    .bind(&domain_str)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            debug!("query_entity_scoped failed: {}", e);
+            return Ok(vec![]);
+        }
+    };
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let id: String = row.get("id");
+            let content: String = row.get("summary");
+            let importance: f32 = row.get("importance");
+            let created_at: i64 = row.get("created_at");
+            let bm25_rank: f32 = row.get("bm25_rank");
+            let final_score =
+                crate::conductor::scorer::score(bm25_rank, importance, created_at, now);
+            MemoryHit {
+                id,
+                source: "episodic".to_string(),
+                content,
+                rank: bm25_rank as f64,
+                hit_type: HitType::Episodic,
+                importance,
+                created_at,
+                final_score,
+            }
+        })
+        .collect())
+}
+
+/// Return the N most recent episodic memories for a domain, sorted by time.
+///
+/// Useful for injecting recent context at the top of a prompt without
+/// requiring a specific search query.
+pub async fn query_recent(
+    pool: &SqlitePool,
+    domain: &TaskDomain,
+    limit: usize,
+    min_importance: f32,
+) -> Result<Vec<MemoryHit>> {
+    let domain_str = format!("{:?}", domain).to_lowercase();
+    let now = crate::conductor::scorer::unix_now();
+
+    let rows = match sqlx::query(
+        r#"SELECT id, summary, importance, created_at
+           FROM episodic_memory
+           WHERE (domain = ? OR domain = 'general')
+             AND sensitive = 0
+             AND importance >= ?
+           ORDER BY created_at DESC
+           LIMIT ?"#,
+    )
+    .bind(&domain_str)
+    .bind(min_importance)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            debug!("query_recent failed: {}", e);
+            return Ok(vec![]);
+        }
+    };
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let id: String = row.get("id");
+            let content: String = row.get("summary");
+            let importance: f32 = row.get("importance");
+            let created_at: i64 = row.get("created_at");
+            let final_score = importance * crate::conductor::scorer::recency_decay(created_at, now);
+            MemoryHit {
+                id,
+                source: "episodic".to_string(),
+                content,
+                rank: 0.0,
+                hit_type: HitType::Episodic,
+                importance,
+                created_at,
+                final_score,
+            }
+        })
+        .collect())
+}
+
+/// Query task traces relevant to a question using FTS over agent events.
+pub async fn query_task_traces(
+    pool: &SqlitePool,
+    question: &str,
+    domain: &TaskDomain,
+    limit: usize,
+) -> Result<Vec<MemoryHit>> {
+    if question.trim().is_empty() || limit == 0 {
+        return Ok(vec![]);
+    }
+
+    let domain_str = format!("{:?}", domain).to_lowercase();
+    let now = crate::conductor::scorer::unix_now();
+
+    let rows = match sqlx::query(
+        r#"SELECT ae.id, ae.event_type, ae.payload, ae.created_at,
+                  bm25(agent_events_fts) as bm25_rank
+           FROM agent_events_fts
+           JOIN agent_events ae ON ae.rowid = agent_events_fts.rowid
+           WHERE agent_events_fts MATCH ?
+             AND (ae.domain = ? OR ae.domain IS NULL)
+           ORDER BY bm25_rank
+           LIMIT ?"#,
+    )
+    .bind(question)
+    .bind(&domain_str)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            debug!("query_task_traces failed: {}", e);
+            return Ok(vec![]);
+        }
+    };
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let id: String = row.get("id");
+            let event_type: String = row.get("event_type");
+            let payload: String = row.get("payload");
+            let created_at: i64 = row.get("created_at");
+            let bm25_rank: f32 = row.get("bm25_rank");
+            let content = format!("[{}] {}", event_type, payload);
+            let final_score = crate::conductor::scorer::score(bm25_rank, 0.8, created_at, now);
+
+            MemoryHit {
+                id,
+                source: "task_trace".to_string(),
+                content,
+                rank: bm25_rank as f64,
+                hit_type: HitType::TaskTrace,
+                importance: 0.8,
+                created_at,
+                final_score,
+            }
+        })
+        .collect())
+}
+
+/// Return the N most recent task traces for a domain.
+pub async fn query_recent_task_traces(
+    pool: &SqlitePool,
+    domain: &TaskDomain,
+    limit: usize,
+) -> Result<Vec<MemoryHit>> {
+    if limit == 0 {
+        return Ok(vec![]);
+    }
+
+    let domain_str = format!("{:?}", domain).to_lowercase();
+    let now = crate::conductor::scorer::unix_now();
+
+    let rows = match sqlx::query(
+        r#"SELECT id, event_type, payload, created_at
+           FROM agent_events
+           WHERE (domain = ? OR domain IS NULL)
+           ORDER BY created_at DESC
+           LIMIT ?"#,
+    )
+    .bind(&domain_str)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            debug!("query_recent_task_traces failed: {}", e);
+            return Ok(vec![]);
+        }
+    };
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let id: String = row.get("id");
+            let event_type: String = row.get("event_type");
+            let payload: String = row.get("payload");
+            let created_at: i64 = row.get("created_at");
+            let content = format!("[{}] {}", event_type, payload);
+            let final_score = 0.8 * crate::conductor::scorer::recency_decay(created_at, now);
+
+            MemoryHit {
+                id,
+                source: "task_trace".to_string(),
+                content,
+                rank: 0.0,
+                hit_type: HitType::TaskTrace,
+                importance: 0.8,
+                created_at,
+                final_score,
+            }
+        })
+        .collect())
+}

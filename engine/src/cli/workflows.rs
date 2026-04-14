@@ -1,13 +1,11 @@
 use anyhow::{Context, Result};
-use sdk::{SpecRunStatus, TaskExecutionProfile, WorkflowSpec, WorkflowStepSpec};
-use uuid::Uuid;
+use sdk::{WorkflowSpec, WorkflowStepSpec};
 
 use crate::cli::database_path::database_path;
-use crate::cli::run::execute_local_task_request;
 use crate::config::Config;
 use crate::storage::Database;
-use crate::system::factory;
-use crate::system::specs::{allowed_tools, slugify, SpecRepository};
+use crate::system::specs::{slugify, SpecRepository};
+use crate::system::{factory, worker_presets, workflow_runtime};
 
 use super::commands::{WorkflowAction, WorkflowFactoryAction};
 
@@ -15,6 +13,7 @@ pub async fn handle_workflows(action: WorkflowAction, config: &Config) -> Result
     let repo = SpecRepository::new()?;
     match action {
         WorkflowAction::List => list_workflows(&repo),
+        WorkflowAction::WorkerPresets => list_worker_presets(),
         WorkflowAction::Show { id } => show_workflow(&repo, &id),
         WorkflowAction::Create {
             id,
@@ -22,11 +21,26 @@ pub async fn handle_workflows(action: WorkflowAction, config: &Config) -> Result
             description,
             step,
             agent,
+            worker_preset,
             disabled,
-        } => create_workflow(&repo, id, name, description, step, agent, disabled),
+        } => create_workflow(
+            &repo,
+            id,
+            name,
+            description,
+            step,
+            agent,
+            worker_preset,
+            disabled,
+        ),
         WorkflowAction::Enable { id } => set_enabled(&repo, &id, true),
         WorkflowAction::Disable { id } => set_enabled(&repo, &id, false),
-        WorkflowAction::Run { id, input } => run_workflow(&repo, config, &id, input.join(" ")).await,
+        WorkflowAction::Review { id } => review_workflow(&repo, &id),
+        WorkflowAction::Approve { id } => approve_workflow(&repo, &id),
+        WorkflowAction::Run { id, input } => {
+            run_workflow(&repo, config, &id, input.join(" ")).await
+        }
+        WorkflowAction::ResumeRun { run_id } => resume_workflow_run(&repo, config, &run_id).await,
         WorkflowAction::Export { id, path } => export_workflow(&repo, &id, &path),
         WorkflowAction::Import { path } => import_workflow(&repo, &path),
         WorkflowAction::Runs { limit } => list_runs(config, limit).await,
@@ -54,13 +68,14 @@ fn handle_factory(action: WorkflowFactoryAction, repo: &SpecRepository) -> Resul
             name,
             requirement,
         } => {
-            let spec = factory::preview_workflow(
+            let result = factory::preview_workflow_result(
+                Some(repo),
                 &requirement.join(" "),
                 template.as_deref(),
                 id.as_deref(),
                 name.as_deref(),
             )?;
-            println!("{}", toml::to_string_pretty(&spec)?);
+            println!("{}", toml::to_string_pretty(&result)?);
             Ok(())
         }
         WorkflowFactoryAction::Create {
@@ -69,14 +84,14 @@ fn handle_factory(action: WorkflowFactoryAction, repo: &SpecRepository) -> Resul
             name,
             requirement,
         } => {
-            let spec = factory::create_workflow(
+            let result = factory::create_workflow(
                 repo,
                 &requirement.join(" "),
                 template.as_deref(),
                 id.as_deref(),
                 name.as_deref(),
             )?;
-            println!("{}", toml::to_string_pretty(&spec)?);
+            println!("{}", toml::to_string_pretty(&result)?);
             Ok(())
         }
     }
@@ -99,6 +114,22 @@ fn list_workflows(repo: &SpecRepository) -> Result<()> {
     Ok(())
 }
 
+fn list_worker_presets() -> Result<()> {
+    for preset in worker_presets::list_worker_presets() {
+        println!(
+            "{}\t{}\titerations={}\t{}",
+            preset.id,
+            preset.name,
+            preset
+                .max_iterations
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unbounded".to_string()),
+            preset.description
+        );
+    }
+    Ok(())
+}
+
 fn show_workflow(repo: &SpecRepository, id: &str) -> Result<()> {
     let spec = repo.load_workflow(id)?;
     println!("{}", toml::to_string_pretty(&spec)?);
@@ -112,6 +143,7 @@ fn create_workflow(
     description: Option<String>,
     step: Vec<String>,
     agent: Vec<String>,
+    worker_preset: Vec<String>,
     disabled: bool,
 ) -> Result<()> {
     if step.is_empty() {
@@ -126,6 +158,7 @@ fn create_workflow(
             name: format!("Step {}", index + 1),
             prompt,
             agent_id: agent.get(index).cloned(),
+            worker_preset: worker_preset.get(index).cloned(),
             continue_on_error: false,
         })
         .collect();
@@ -155,6 +188,18 @@ fn set_enabled(repo: &SpecRepository, id: &str, enabled: bool) -> Result<()> {
     Ok(())
 }
 
+fn review_workflow(repo: &SpecRepository, id: &str) -> Result<()> {
+    let review = factory::get_workflow_review(repo, id)?;
+    println!("{}", toml::to_string_pretty(&review)?);
+    Ok(())
+}
+
+fn approve_workflow(repo: &SpecRepository, id: &str) -> Result<()> {
+    let saved = factory::approve_workflow(repo, id)?;
+    println!("Approved workflow {} ({})", saved.id, saved.name);
+    Ok(())
+}
+
 async fn run_workflow(
     repo: &SpecRepository,
     config: &Config,
@@ -170,69 +215,27 @@ async fn run_workflow(
         anyhow::bail!("Workflow '{}' is disabled", workflow.id);
     }
 
-    let run_id = Uuid::new_v4().to_string();
     let db = Database::new(&database_path(config))
         .await
         .context("Failed to open database for workflow run")?;
-    db.agent_runs()
-        .start_workflow_run(&run_id, &workflow.id, &input)
-        .await?;
-
-    let mut last_output = input.clone();
-    for step in &workflow.steps {
-        let prompt = render_step_prompt(&step.prompt, &input, &last_output);
-        let execution_profile = if let Some(agent_id) = step.agent_id.as_deref() {
-            let spec = repo.load_agent(agent_id)?;
-            Some(TaskExecutionProfile {
-                agent_id: Some(spec.id.clone()),
-                agent_name: Some(spec.name.clone()),
-                purpose: Some(spec.purpose.clone()),
-                instructions: spec.instructions.clone(),
-                allowed_tools: allowed_tools(&spec),
-                output_contract: spec.output_contract.clone(),
-            })
-        } else {
-            None
-        };
-
-        match execute_local_task_request(
-            prompt,
-            config,
-            sdk::RunMode::Serial,
-            sdk::RunIsolation::None,
-            execution_profile,
-        )
-        .await
-        {
-            Ok(task_result) => {
-                last_output = task_result.answer;
-            }
-            Err(error) => {
-                db.agent_runs()
-                    .finish_workflow_run(
-                        &run_id,
-                        SpecRunStatus::Failed,
-                        None,
-                        Some(&error.to_string()),
-                    )
-                    .await?;
-                return Err(error);
-            }
-        }
-    }
-
-    db.agent_runs()
-        .finish_workflow_run(&run_id, SpecRunStatus::Completed, Some(&last_output), None)
-        .await?;
-    println!("{}", last_output);
-    println!("Workflow Run ID: {}", run_id);
+    let result = workflow_runtime::start_new_run(repo, &db, config, &workflow, &input).await?;
+    println!("{}", result.final_output);
+    println!("Workflow Run ID: {}", result.run.run_id);
     Ok(())
 }
 
-fn render_step_prompt(template: &str, input: &str, last_output: &str) -> String {
-    template
-        .replace("{{input}}", input)
-        .replace("{{last_output}}", last_output)
+async fn resume_workflow_run(repo: &SpecRepository, config: &Config, run_id: &str) -> Result<()> {
+    let db = Database::new(&database_path(config))
+        .await
+        .context("Failed to open database for workflow resume")?;
+    let result = workflow_runtime::resume_run(repo, &db, config, run_id).await?;
+    println!("{}", result.final_output);
+    println!("Workflow Run ID: {}", result.run.run_id);
+    println!(
+        "Progress: {}/{} steps, retries={}",
+        result.run.steps_completed, result.run.steps_total, result.run.retry_count
+    );
+    Ok(())
 }
 
 fn export_workflow(repo: &SpecRepository, id: &str, path: &std::path::Path) -> Result<()> {
@@ -253,8 +256,14 @@ async fn list_runs(config: &Config, limit: i64) -> Result<()> {
         .context("Failed to open database for run listing")?;
     for run in db.agent_runs().list_workflow_runs(limit).await? {
         println!(
-            "{}\t{}\t{:?}\t{}",
-            run.run_id, run.workflow_id, run.status, run.input
+            "{}\t{}\t{:?}\t{}/{}\tretries={}\t{}",
+            run.run_id,
+            run.workflow_id,
+            run.status,
+            run.steps_completed,
+            run.steps_total,
+            run.retry_count,
+            run.input
         );
     }
     Ok(())
@@ -270,7 +279,7 @@ async fn create_workflow_from_task(
     let db = Database::new(&database_path(config))
         .await
         .context("Failed to open database for task conversion")?;
-    let spec = factory::workflow_from_task(repo, &db, task_id, id, name).await?;
-    println!("{}", toml::to_string_pretty(&spec)?);
+    let result = factory::workflow_from_task(repo, &db, task_id, id, name).await?;
+    println!("{}", toml::to_string_pretty(&result)?);
     Ok(())
 }

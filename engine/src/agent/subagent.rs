@@ -808,24 +808,28 @@ fn memory_priority(role: &SubagentRole, hit_type: &HitType) -> u8 {
             HitType::Insight | HitType::KnowledgeGraph => 4,
             HitType::Episodic => 3,
             HitType::TaskTrace => 2,
+            HitType::Fact => 3,
         },
         SubagentRole::Executor => match hit_type {
             HitType::TaskTrace => 4,
             HitType::Episodic => 3,
             HitType::Insight => 2,
             HitType::KnowledgeGraph => 1,
+            HitType::Fact => 2,
         },
         SubagentRole::Verifier => match hit_type {
             HitType::TaskTrace => 4,
             HitType::Insight => 3,
             HitType::Episodic => 3,
             HitType::KnowledgeGraph => 1,
+            HitType::Fact => 2,
         },
         SubagentRole::Summariser => match hit_type {
             HitType::Insight => 4,
             HitType::Episodic => 3,
             HitType::KnowledgeGraph => 2,
             HitType::TaskTrace => 2,
+            HitType::Fact => 3,
         },
         SubagentRole::Custom(_) => 2,
     }
@@ -837,6 +841,7 @@ fn hit_type_label(hit_type: &HitType) -> &'static str {
         HitType::Insight => "insight",
         HitType::KnowledgeGraph => "knowledge_graph",
         HitType::TaskTrace => "task_trace",
+        HitType::Fact => "fact",
     }
 }
 

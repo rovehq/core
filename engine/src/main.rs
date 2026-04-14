@@ -101,6 +101,12 @@ async fn main() -> Result<()> {
         Some(Command::Browser { action }) => {
             rove_engine::cli::browser::handle_browser(action).await?;
         }
+        Some(Command::Voice { action }) => {
+            rove_engine::cli::voice::handle_voice(action).await?;
+        }
+        Some(Command::Memory { action }) => {
+            rove_engine::cli::memory::handle_memory(action).await?;
+        }
         Some(Command::Replay { task_id }) => {
             let config = rove_engine::config::Config::load_or_create()?;
             rove_engine::cli::replay::handle_replay(task_id, &config, OutputFormat::Text).await?;
@@ -202,6 +208,10 @@ async fn main() -> Result<()> {
         }
         Some(Command::Security) => {
             rove_engine::cli::security::show_security().await?;
+        }
+        Some(Command::Knowledge { action }) => {
+            let config = rove_engine::config::Config::load_or_create()?;
+            rove_engine::cli::knowledge::handle_knowledge(action, &config).await?;
         }
         Some(Command::Keys) => println!("Use: python3 scripts/generate_keys.py"),
         Some(Command::Update { check }) => {

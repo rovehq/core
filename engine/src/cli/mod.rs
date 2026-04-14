@@ -14,8 +14,10 @@ pub mod doctor;
 pub mod extensions;
 pub mod history;
 pub mod init;
+pub mod knowledge;
 pub mod logs;
 pub mod mcp;
+pub mod memory;
 pub mod migrate;
 pub mod model;
 pub mod output;
@@ -36,6 +38,7 @@ pub mod task_view;
 pub mod tui;
 pub mod unlock;
 pub mod update;
+pub mod voice;
 pub mod workflows;
 
 pub use commands::*;

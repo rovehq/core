@@ -157,14 +157,19 @@ impl AgentCore {
         if profile.allowed_tools.is_empty() {
             return Ok(());
         }
-        if profile.allowed_tools.iter().any(|allowed| allowed == tool_name) {
+        if profile
+            .allowed_tools
+            .iter()
+            .any(|allowed| allowed == tool_name)
+        {
             return Ok(());
         }
-        anyhow::bail!(
-            "tool '{}' is not allowed for agent '{}'",
-            tool_name,
-            profile.agent_name.as_deref().unwrap_or("unknown")
-        )
+        let label = profile
+            .agent_name
+            .as_deref()
+            .or(profile.worker_preset_name.as_deref())
+            .unwrap_or("unknown");
+        anyhow::bail!("tool '{}' is not allowed for '{}'", tool_name, label)
     }
 
     async fn dispatch_tool(

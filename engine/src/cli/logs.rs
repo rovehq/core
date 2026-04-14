@@ -51,4 +51,3 @@ fn read_all_lines() -> Result<Vec<String>> {
         .map(ToOwned::to_owned)
         .collect())
 }
-

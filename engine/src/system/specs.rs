@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use sdk::{AgentSpec, CapabilityRef, WorkflowSpec};
 
 use crate::config::Config;
+use crate::system::worker_presets;
 
 const DEFAULT_AGENT_ID: &str = "default-assistant";
 
@@ -148,7 +149,9 @@ impl SpecRepository {
         T: serde::de::DeserializeOwned,
     {
         let mut specs = Vec::new();
-        for entry in fs::read_dir(dir).with_context(|| format!("Failed to read {}", dir.display()))? {
+        for entry in
+            fs::read_dir(dir).with_context(|| format!("Failed to read {}", dir.display()))?
+        {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
@@ -201,7 +204,9 @@ impl SpecRepository {
         }
 
         let selector_lower = selector.trim().to_ascii_lowercase();
-        for entry in fs::read_dir(dir).with_context(|| format!("Failed to read {}", dir.display()))? {
+        for entry in
+            fs::read_dir(dir).with_context(|| format!("Failed to read {}", dir.display()))?
+        {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
@@ -329,6 +334,29 @@ fn validate_workflow(spec: &WorkflowSpec) -> Result<()> {
         {
             bail!("Workflow steps require non-empty id, name, and prompt");
         }
+        if step
+            .agent_id
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("Workflow step '{}' has an empty agent id", step.id);
+        }
+        if step
+            .worker_preset
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("Workflow step '{}' has an empty worker preset", step.id);
+        }
+        if step.agent_id.is_some() && step.worker_preset.is_some() {
+            bail!(
+                "Workflow step '{}' cannot define both `agent_id` and `worker_preset`",
+                step.id
+            );
+        }
+        if let Some(worker_preset) = step.worker_preset.as_deref() {
+            worker_presets::worker_preset(worker_preset)?;
+        }
     }
     Ok(())
 }
@@ -336,6 +364,7 @@ fn validate_workflow(spec: &WorkflowSpec) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{slugify, SpecRepository};
+    use sdk::{WorkflowSpec, WorkflowStepSpec};
     use tempfile::TempDir;
 
     #[test]
@@ -351,5 +380,33 @@ mod tests {
         let repo = SpecRepository::new().unwrap();
         let agents = repo.list_agents().unwrap();
         assert!(agents.iter().any(|agent| agent.id == "default-assistant"));
+    }
+
+    #[test]
+    fn repository_rejects_step_with_agent_and_worker_preset() {
+        let temp_dir = TempDir::new().unwrap();
+        std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
+        let repo = SpecRepository::new().unwrap();
+
+        let workflow = WorkflowSpec {
+            id: "bad-workflow".to_string(),
+            name: "Bad Workflow".to_string(),
+            steps: vec![WorkflowStepSpec {
+                id: "step-1".to_string(),
+                name: "Conflicted".to_string(),
+                prompt: "Do the thing".to_string(),
+                agent_id: Some("default-assistant".to_string()),
+                worker_preset: Some("executor".to_string()),
+                continue_on_error: false,
+            }],
+            ..WorkflowSpec::default()
+        };
+
+        let error = repo
+            .save_workflow(&workflow)
+            .expect_err("workflow should be rejected");
+        assert!(error
+            .to_string()
+            .contains("cannot define both `agent_id` and `worker_preset`"));
     }
 }

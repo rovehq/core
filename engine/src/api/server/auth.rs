@@ -7,23 +7,22 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2,
-};
 use axum::{
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use rand_core::OsRng;
 use sdk::{AuthState, AuthStatus, SessionInfo};
 use uuid::Uuid;
 
 use super::AppState;
 use crate::config::Config;
 use crate::remote::RemoteManager;
+use crate::security::{
+    configure_password_for_config, password_protection_state, verify_password,
+    PasswordProtectionState,
+};
 use crate::storage::{AuthSession, Database};
 
 const SENSITIVE_AREAS: &[&str] = &["secrets", "extensions", "remote_trust", "policy"];
@@ -40,10 +39,12 @@ impl AuthManager {
 
     pub fn auth_state(&self) -> Result<AuthState> {
         let config = Config::load_or_create()?;
-        Ok(if config.webui.password_hash.is_some() {
-            AuthState::Locked
-        } else {
-            AuthState::Uninitialized
+        Ok(match password_protection_state(&config)? {
+            PasswordProtectionState::Uninitialized => AuthState::Uninitialized,
+            PasswordProtectionState::Tampered => AuthState::Tampered,
+            PasswordProtectionState::LegacyUnsealed | PasswordProtectionState::Sealed => {
+                AuthState::Locked
+            }
         })
     }
 
@@ -79,7 +80,8 @@ impl AuthManager {
             bail!("Daemon password is already configured");
         }
 
-        config.webui.password_hash = Some(hash_password(password)?);
+        let config_path = Config::config_path()?;
+        configure_password_for_config(&config_path, &mut config.webui, password)?;
         if let Some(mode) = privacy_mode.filter(|value| !value.trim().is_empty()) {
             config.webui.privacy_mode = mode.trim().to_string();
         }
@@ -97,6 +99,14 @@ impl AuthManager {
         self.ensure_origin_allowed(headers)?;
 
         let config = Config::load_or_create()?;
+        if matches!(
+            password_protection_state(&config)?,
+            PasswordProtectionState::Tampered
+        ) {
+            bail!(
+                "Password integrity check failed. Run `rove auth reset-password` on this machine"
+            );
+        }
         let Some(password_hash) = &config.webui.password_hash else {
             bail!("Daemon password has not been configured yet");
         };
@@ -118,6 +128,14 @@ impl AuthManager {
         let validated = self.validate_session(token, true).await?;
 
         let config = Config::load_or_create()?;
+        if matches!(
+            password_protection_state(&config)?,
+            PasswordProtectionState::Tampered
+        ) {
+            bail!(
+                "Password integrity check failed. Run `rove auth reset-password` on this machine"
+            );
+        }
         let Some(password_hash) = &config.webui.password_hash else {
             bail!("Daemon password has not been configured yet");
         };
@@ -147,8 +165,14 @@ impl AuthManager {
 
     pub async fn validate_session(&self, token: &str, touch: bool) -> Result<ValidatedSession> {
         let config = Config::load_or_create()?;
-        if config.webui.password_hash.is_none() {
-            bail!("Daemon password has not been configured yet");
+        match password_protection_state(&config)? {
+            PasswordProtectionState::Uninitialized => {
+                bail!("Daemon password has not been configured yet");
+            }
+            PasswordProtectionState::Tampered => {
+                bail!("Password integrity check failed. Run `rove auth reset-password` on this machine");
+            }
+            PasswordProtectionState::LegacyUnsealed | PasswordProtectionState::Sealed => {}
         }
 
         let Some(mut session) = self.db.auth().get_session(token).await? else {
@@ -266,26 +290,6 @@ pub async fn require_session_token(
     }
 }
 
-fn hash_password(password: &str) -> Result<String> {
-    if password.trim().len() < 8 {
-        bail!("Password must be at least 8 characters");
-    }
-
-    let salt = SaltString::generate(&mut OsRng);
-    Ok(Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|error| anyhow::anyhow!("failed to hash password: {error}"))?
-        .to_string())
-}
-
-fn verify_password(password: &str, password_hash: &str) -> Result<bool> {
-    let parsed = PasswordHash::new(password_hash)
-        .map_err(|error| anyhow::anyhow!("invalid stored password hash: {error}"))?;
-    Ok(Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
-        .is_ok())
-}
-
 fn header_to_str(value: &HeaderValue) -> Option<&str> {
     value.to_str().ok()
 }
@@ -302,9 +306,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn password_hash_roundtrip() {
-        let hash = hash_password("correct horse battery staple").expect("hash");
-        assert!(verify_password("correct horse battery staple", &hash).expect("verify"));
-        assert!(!verify_password("wrong", &hash).expect("verify wrong"));
+    fn bearer_token_extracts_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", HeaderValue::from_static("Bearer abc123"));
+        assert_eq!(
+            AuthManager::bearer_token(&headers).as_deref(),
+            Some("abc123")
+        );
     }
 }

@@ -27,11 +27,13 @@ pub struct TelegramChannelStatus {
     pub token_configured: bool,
     pub can_receive: bool,
     pub allowed_ids: Vec<i64>,
+    pub admin_ids: Vec<i64>,
     pub confirmation_chat_id: Option<i64>,
     pub api_base_url: Option<String>,
     pub default_agent_id: Option<String>,
     pub default_agent_name: Option<String>,
     pub doctor: Vec<String>,
+    pub approval_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,19 +129,28 @@ impl ChannelManager {
             token_configured,
             can_receive: self.config.telegram.enabled && configured,
             allowed_ids: self.config.telegram.allowed_ids.clone(),
+            admin_ids: self.config.telegram.admin_ids.clone().unwrap_or_default(),
             confirmation_chat_id: self.config.telegram.confirmation_chat_id,
             api_base_url: self.config.telegram.api_base_url.clone(),
             default_agent_id,
             default_agent_name,
             doctor,
+            approval_timeout_secs: 300,
         })
     }
 
     pub async fn telegram_setup(&self, input: TelegramSetupInput) -> Result<TelegramChannelStatus> {
         let mut config = self.config.clone();
 
-        if let Some(token) = input.token.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-            self.secret_manager().set_secret("telegram_token", token).await?;
+        if let Some(token) = input
+            .token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            self.secret_manager()
+                .set_secret("telegram_token", token)
+                .await?;
         }
         config.telegram.allowed_ids = input.allowed_ids;
         config.telegram.confirmation_chat_id = input.confirmation_chat_id;
@@ -206,10 +217,7 @@ impl ChannelManager {
         }
     }
 
-    pub fn start_enabled(
-        &self,
-        agent: Arc<RwLock<AgentCore>>,
-    ) {
+    pub fn start_enabled(&self, agent: Arc<RwLock<AgentCore>>) {
         if !self.config.telegram.enabled {
             return;
         }
@@ -238,10 +246,13 @@ impl ChannelManager {
                 let execution_profile = sdk::TaskExecutionProfile {
                     agent_id: Some(agent_spec.id.clone()),
                     agent_name: Some(agent_spec.name.clone()),
+                    worker_preset_id: None,
+                    worker_preset_name: None,
                     purpose: Some(agent_spec.purpose.clone()),
                     instructions: agent_spec.instructions.clone(),
                     allowed_tools: allowed_tools(&agent_spec),
                     output_contract: agent_spec.output_contract.clone(),
+                    max_iterations: None,
                 };
                 bot = bot
                     .with_agent(agent)
@@ -304,7 +315,10 @@ impl ChannelManager {
     }
 
     async fn load_telegram_token(&self) -> Option<String> {
-        self.secret_manager().lookup_secret("telegram_token").await.map(|(token, _)| token)
+        self.secret_manager()
+            .lookup_secret("telegram_token")
+            .await
+            .map(|(token, _)| token)
     }
 
     fn secret_manager(&self) -> SecretManager {

@@ -51,6 +51,9 @@ mod tests {
     #[test]
     fn leaves_normal_input_unchanged() {
         let detector = PromptOverrideDetector::new().unwrap();
-        assert_eq!(detector.guard_input("write 2+2 to temp.txt"), "write 2+2 to temp.txt");
+        assert_eq!(
+            detector.guard_input("write 2+2 to temp.txt"),
+            "write 2+2 to temp.txt"
+        );
     }
 }

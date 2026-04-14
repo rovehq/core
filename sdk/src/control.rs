@@ -394,6 +394,279 @@ pub struct BrowserSurfaceUpdate {
     pub profiles: Vec<BrowserProfileInput>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceEngineKind {
+    #[default]
+    NativeOs,
+    LocalWhisper,
+    LocalPiper,
+}
+
+impl VoiceEngineKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NativeOs => "native_os",
+            Self::LocalWhisper => "local_whisper",
+            Self::LocalPiper => "local_piper",
+        }
+    }
+
+    pub fn supports_input(&self) -> bool {
+        matches!(self, Self::NativeOs | Self::LocalWhisper)
+    }
+
+    pub fn supports_output(&self) -> bool {
+        matches!(self, Self::NativeOs | Self::LocalPiper)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceEngineReadiness {
+    #[default]
+    Ready,
+    NeedsSetup,
+    Warning,
+    Unsupported,
+}
+
+impl VoiceEngineReadiness {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::NeedsSetup => "needs_setup",
+            Self::Warning => "warning",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceAssetStatus {
+    #[default]
+    NoneRequired,
+    Managed,
+    Missing,
+    Ready,
+}
+
+impl VoiceAssetStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NoneRequired => "none_required",
+            Self::Managed => "managed",
+            Self::Missing => "missing",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceDeviceKind {
+    #[default]
+    Input,
+    Output,
+}
+
+impl VoiceDeviceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Input => "input",
+            Self::Output => "output",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoicePolicyControls {
+    #[serde(default)]
+    pub require_approval_for_tts: bool,
+    #[serde(default)]
+    pub require_approval_for_stt: bool,
+    #[serde(default)]
+    pub allow_remote_audio_input: bool,
+    #[serde(default)]
+    pub allow_remote_audio_output: bool,
+    #[serde(default)]
+    pub persist_transcripts: bool,
+}
+
+impl Default for VoicePolicyControls {
+    fn default() -> Self {
+        Self {
+            require_approval_for_tts: true,
+            require_approval_for_stt: true,
+            allow_remote_audio_input: false,
+            allow_remote_audio_output: false,
+            persist_transcripts: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceEngineInput {
+    #[serde(default)]
+    pub kind: VoiceEngineKind,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceDeviceRecord {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub kind: VoiceDeviceKind,
+    #[serde(default)]
+    pub default: bool,
+    #[serde(default)]
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceRuntimeStatus {
+    pub system_id: String,
+    #[serde(default)]
+    pub installed: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceEngineRecord {
+    #[serde(default)]
+    pub kind: VoiceEngineKind,
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub installed: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub supports_input: bool,
+    #[serde(default)]
+    pub supports_output: bool,
+    #[serde(default)]
+    pub active_input: bool,
+    #[serde(default)]
+    pub active_output: bool,
+    #[serde(default)]
+    pub asset_status: VoiceAssetStatus,
+    pub readiness: VoiceEngineReadiness,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub approval_required_for_input: bool,
+    #[serde(default)]
+    pub approval_required_for_output: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceSurfaceStatus {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub runtime: VoiceRuntimeStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_input_engine: Option<VoiceEngineKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_output_engine: Option<VoiceEngineKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_input_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_output_device_id: Option<String>,
+    #[serde(default)]
+    pub policy: VoicePolicyControls,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<VoiceDeviceRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub engines: Vec<VoiceEngineRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceSurfaceUpdate {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_input_engine: Option<VoiceEngineKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_output_engine: Option<VoiceEngineKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_input_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_output_device_id: Option<String>,
+    #[serde(default)]
+    pub policy: VoicePolicyControls,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub engines: Vec<VoiceEngineInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceEngineInstallRequest {
+    #[serde(default)]
+    pub engine: VoiceEngineKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceEngineSelectionRequest {
+    #[serde(default)]
+    pub engine: VoiceEngineKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceOutputTestRequest {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceTestResult {
+    #[serde(default)]
+    pub ok: bool,
+    pub engine: VoiceEngineKind,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionTrustBadge {

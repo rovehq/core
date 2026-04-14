@@ -87,22 +87,78 @@ impl ContextAssembler {
 
         // 4. Inject relevant Episodic Memory if available
         if let Some(memory) = memory_system {
-            // Query domain-gated memories with importance filtering
-            match memory.query(query, domain, None).await {
-                Ok(hits) if !hits.is_empty() => {
+            let workspace_root = project_memory.map(|pm| pm.workspace_path.as_path());
+            match memory
+                .build_context_bundle(query, domain, None, workspace_root)
+                .await
+            {
+                Ok(bundle)
+                    if !bundle.graph_paths.is_empty()
+                        || !bundle.memory_graph_hits.is_empty()
+                        || !bundle.facts.is_empty()
+                        || !bundle.preferences.is_empty()
+                        || !bundle.warnings.is_empty()
+                        || !bundle.errors.is_empty()
+                        || !bundle.episodic_hits.is_empty()
+                        || !bundle.insight_hits.is_empty()
+                        || !bundle.task_trace_hits.is_empty() =>
+                {
                     sys_prompt.push_str("\n\n--- Relevant Past Context ---\n");
-                    let hits_len = hits.len();
-                    for hit in &hits {
+                    for hit in bundle
+                        .facts
+                        .iter()
+                        .chain(bundle.preferences.iter())
+                        .chain(bundle.warnings.iter())
+                        .chain(bundle.errors.iter())
+                    {
+                        let snippet = format!("[Typed] {}\n", hit.content);
+                        // Very rough token truncation (avoid blowing up the system prompt)
+                        let snippet_tokens = snippet.len() / 4;
+                        if snippet_tokens < self.budget.episodic_tokens / 8.max(1) {
+                            sys_prompt.push_str(&snippet);
+                        }
+                    }
+
+                    for path in &bundle.graph_paths {
+                        let snippet = format!("[Graph] {}\n", path.summary);
+                        let snippet_tokens = snippet.len() / 4;
+                        if snippet_tokens < self.budget.episodic_tokens / 8.max(1) {
+                            sys_prompt.push_str(&snippet);
+                        }
+                    }
+
+                    for hit in &bundle.memory_graph_hits {
+                        let edges = if hit.path_edge_types.is_empty() {
+                            "linked".to_string()
+                        } else {
+                            hit.path_edge_types.join(" -> ")
+                        };
+                        let snippet = format!(
+                            "[GraphTraversal] depth={} via {} :: {}\n",
+                            hit.depth, edges, hit.content
+                        );
+                        let snippet_tokens = snippet.len() / 4;
+                        if snippet_tokens < self.budget.episodic_tokens / 8.max(1) {
+                            sys_prompt.push_str(&snippet);
+                        }
+                    }
+
+                    for hit in bundle
+                        .insight_hits
+                        .iter()
+                        .chain(bundle.episodic_hits.iter())
+                        .chain(bundle.task_trace_hits.iter())
+                    {
                         let hit_type_label = match hit.hit_type {
                             crate::conductor::memory::HitType::Insight => "Insight",
                             crate::conductor::memory::HitType::Episodic => "Memory",
                             crate::conductor::memory::HitType::KnowledgeGraph => "Graph",
                             crate::conductor::memory::HitType::TaskTrace => "Task",
+                            crate::conductor::memory::HitType::Fact => "Fact",
                         };
                         let snippet = format!("[{}] {}\n", hit_type_label, hit.content);
-                        // Very rough token truncation (avoid blowing up the system prompt)
                         let snippet_tokens = snippet.len() / 4;
-                        if snippet_tokens < self.budget.episodic_tokens / hits_len {
+                        if snippet_tokens < self.budget.episodic_tokens / 8.max(1) {
                             sys_prompt.push_str(&snippet);
                         }
                     }

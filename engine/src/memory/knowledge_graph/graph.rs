@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
 
+use crate::conductor::types::GraphSourceKind;
+
 /// A node in the knowledge graph
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphNode {
@@ -13,6 +15,10 @@ pub struct GraphNode {
     pub label: String,
     pub node_type: EntityType,
     pub properties: serde_json::Value,
+    pub source_kind: GraphSourceKind,
+    pub source_scope: String,
+    pub source_ref: Option<String>,
+    pub confidence: f32,
     pub created_at: i64,
     pub last_updated: i64,
     pub access_count: i64,
@@ -27,7 +33,12 @@ pub struct GraphEdge {
     pub relation: RelationType,
     pub weight: f32,
     pub properties: Option<serde_json::Value>,
+    pub source_kind: GraphSourceKind,
+    pub source_scope: String,
+    pub source_ref: Option<String>,
+    pub confidence: f32,
     pub created_at: i64,
+    pub updated_at: i64,
 }
 
 /// Knowledge graph manager
@@ -57,19 +68,30 @@ impl KnowledgeGraph {
 
         sqlx::query(
             r#"
-            INSERT INTO graph_nodes (id, label, type, properties, created_at, last_updated, access_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO graph_nodes (
+                id, label, type, properties, source_kind, source_scope, source_ref, confidence,
+                created_at, last_updated, access_count
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 label = excluded.label,
                 type = excluded.type,
                 properties = excluded.properties,
+                source_kind = excluded.source_kind,
+                source_scope = excluded.source_scope,
+                source_ref = excluded.source_ref,
+                confidence = excluded.confidence,
                 last_updated = excluded.last_updated
-            "#
+            "#,
         )
         .bind(&node.id)
         .bind(&node.label)
         .bind(node_type)
         .bind(&properties_json)
+        .bind(node.source_kind.as_str())
+        .bind(&node.source_scope)
+        .bind(&node.source_ref)
+        .bind(node.confidence)
         .bind(node.created_at)
         .bind(node.last_updated)
         .bind(node.access_count)
@@ -116,11 +138,19 @@ impl KnowledgeGraph {
 
         sqlx::query(
             r#"
-            INSERT INTO graph_edges (id, from_id, to_id, relation, weight, properties, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO graph_edges (
+                id, from_id, to_id, relation, weight, properties, source_kind, source_scope,
+                source_ref, confidence, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 weight = excluded.weight,
-                properties = excluded.properties
+                properties = excluded.properties,
+                source_kind = excluded.source_kind,
+                source_scope = excluded.source_scope,
+                source_ref = excluded.source_ref,
+                confidence = excluded.confidence,
+                updated_at = excluded.updated_at
             "#,
         )
         .bind(&edge.id)
@@ -129,7 +159,12 @@ impl KnowledgeGraph {
         .bind(relation)
         .bind(edge.weight)
         .bind(properties_json)
+        .bind(edge.source_kind.as_str())
+        .bind(&edge.source_scope)
+        .bind(&edge.source_ref)
+        .bind(edge.confidence)
         .bind(edge.created_at)
+        .bind(edge.updated_at)
         .execute(&self.pool)
         .await?;
 
@@ -140,7 +175,8 @@ impl KnowledgeGraph {
     pub async fn get_node(&self, id: &str) -> Result<Option<GraphNode>> {
         let row = sqlx::query(
             r#"
-            SELECT id, label, type, properties, created_at, last_updated, access_count
+            SELECT id, label, type, properties, source_kind, source_scope, source_ref, confidence,
+                   created_at, last_updated, access_count
             FROM graph_nodes
             WHERE id = ?
             "#,
@@ -159,6 +195,10 @@ impl KnowledgeGraph {
                 label: row.get("label"),
                 node_type,
                 properties,
+                source_kind: parse_source_kind(row.get("source_kind")),
+                source_scope: row.get("source_scope"),
+                source_ref: row.get("source_ref"),
+                confidence: row.get("confidence"),
                 created_at: row.get("created_at"),
                 last_updated: row.get("last_updated"),
                 access_count: row.get("access_count"),
@@ -189,7 +229,8 @@ impl KnowledgeGraph {
     pub async fn get_outgoing_edges(&self, node_id: &str) -> Result<Vec<GraphEdge>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, from_id, to_id, relation, weight, properties, created_at
+            SELECT id, from_id, to_id, relation, weight, properties, source_kind, source_scope,
+                   source_ref, confidence, created_at, updated_at
             FROM graph_edges
             WHERE from_id = ?
             "#,
@@ -212,7 +253,12 @@ impl KnowledgeGraph {
                 relation,
                 weight: row.get("weight"),
                 properties,
+                source_kind: parse_source_kind(row.get("source_kind")),
+                source_scope: row.get("source_scope"),
+                source_ref: row.get("source_ref"),
+                confidence: row.get("confidence"),
                 created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
             });
         }
 
@@ -223,7 +269,8 @@ impl KnowledgeGraph {
     pub async fn get_incoming_edges(&self, node_id: &str) -> Result<Vec<GraphEdge>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, from_id, to_id, relation, weight, properties, created_at
+            SELECT id, from_id, to_id, relation, weight, properties, source_kind, source_scope,
+                   source_ref, confidence, created_at, updated_at
             FROM graph_edges
             WHERE to_id = ?
             "#,
@@ -246,7 +293,12 @@ impl KnowledgeGraph {
                 relation,
                 weight: row.get("weight"),
                 properties,
+                source_kind: parse_source_kind(row.get("source_kind")),
+                source_scope: row.get("source_scope"),
+                source_ref: row.get("source_ref"),
+                confidence: row.get("confidence"),
                 created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
             });
         }
 
@@ -258,7 +310,8 @@ impl KnowledgeGraph {
         let pattern = format!("%{}%", query);
         let rows = sqlx::query(
             r#"
-            SELECT id, label, type, properties, created_at, last_updated, access_count
+            SELECT id, label, type, properties, source_kind, source_scope, source_ref, confidence,
+                   created_at, last_updated, access_count
             FROM graph_nodes
             WHERE label LIKE ?
             LIMIT 20
@@ -279,6 +332,10 @@ impl KnowledgeGraph {
                 label: row.get("label"),
                 node_type,
                 properties,
+                source_kind: parse_source_kind(row.get("source_kind")),
+                source_scope: row.get("source_scope"),
+                source_ref: row.get("source_ref"),
+                confidence: row.get("confidence"),
                 created_at: row.get("created_at"),
                 last_updated: row.get("last_updated"),
                 access_count: row.get("access_count"),
@@ -292,7 +349,8 @@ impl KnowledgeGraph {
     pub async fn find_node_by_label(&self, label: &str) -> Result<Option<GraphNode>> {
         let row = sqlx::query(
             r#"
-            SELECT id, label, type, properties, created_at, last_updated, access_count
+            SELECT id, label, type, properties, source_kind, source_scope, source_ref, confidence,
+                   created_at, last_updated, access_count
             FROM graph_nodes
             WHERE lower(label) = lower(?)
             ORDER BY last_updated DESC
@@ -313,6 +371,10 @@ impl KnowledgeGraph {
                 label: row.get("label"),
                 node_type,
                 properties,
+                source_kind: parse_source_kind(row.get("source_kind")),
+                source_scope: row.get("source_scope"),
+                source_ref: row.get("source_ref"),
+                confidence: row.get("confidence"),
                 created_at: row.get("created_at"),
                 last_updated: row.get("last_updated"),
                 access_count: row.get("access_count"),
@@ -347,6 +409,8 @@ fn parse_relation_type(s: &str) -> RelationType {
         "references" => RelationType::References,
         "depends_on" => RelationType::DependsOn,
         "implements" => RelationType::ImplementsFor,
+        "contains" => RelationType::Contains,
+        "tested_by" => RelationType::TestedBy,
         "works_on" => RelationType::WorksOn,
         "stored_at" => RelationType::StoredAt,
         "uses" => RelationType::Uses,
@@ -357,6 +421,10 @@ fn parse_relation_type(s: &str) -> RelationType {
         "documented_in" => RelationType::DocumentedIn,
         other => RelationType::Other(other.to_string()),
     }
+}
+
+fn parse_source_kind(value: String) -> GraphSourceKind {
+    GraphSourceKind::from_str(&value)
 }
 
 fn normalize_identifier(label: &str) -> String {

@@ -5,8 +5,10 @@ import { type ReactNode, useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
 import {
   AgentSpec,
+  AgentFactoryResult,
   DaemonError,
   ExecuteTaskResponse,
+  FactoryReview,
   RoveDaemonClient,
   AgentRunRecord,
   SpecTemplateSummary,
@@ -42,7 +44,8 @@ export default function AgentsPage() {
   const [form, setForm] = useState<AgentSpec>(EMPTY_AGENT);
   const [factoryRequirement, setFactoryRequirement] = useState('');
   const [factoryTemplate, setFactoryTemplate] = useState('general-assistant');
-  const [factoryPreview, setFactoryPreview] = useState<AgentSpec | null>(null);
+  const [factoryPreview, setFactoryPreview] = useState<AgentFactoryResult | null>(null);
+  const [formReview, setFormReview] = useState<FactoryReview | null>(null);
   const [runInput, setRunInput] = useState<Record<string, string>>({});
   const [runResult, setRunResult] = useState<Record<string, ExecuteTaskResponse>>({});
   const [loading, setLoading] = useState(true);
@@ -52,6 +55,14 @@ export default function AgentsPage() {
   useEffect(() => {
     void refresh();
   }, []);
+
+  useEffect(() => {
+    if (!form.id || !isDraftSpec(form.provenance)) {
+      setFormReview(null);
+      return;
+    }
+    void loadDraftReview(form.id);
+  }, [form.id, form.provenance?.draft_for, form.provenance?.review_status]);
 
   async function refresh() {
     setLoading(true);
@@ -127,7 +138,35 @@ export default function AgentsPage() {
         template_id: factoryTemplate || undefined,
       });
       setFactoryPreview(created);
-      setForm(cloneAgent(created));
+      setForm(cloneAgent(created.spec));
+      setFormReview(created.review);
+      await refresh();
+    } catch (nextError) {
+      setError(formatError(nextError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadDraftReview(id: string) {
+    try {
+      setFormReview(await daemonClient().getAgentReview(id));
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
+  async function approveDraft() {
+    if (!form.id) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const approved = await daemonClient().approveAgentDraft(form.id);
+      setForm(cloneAgent(approved));
+      setFactoryPreview(null);
+      setFormReview(null);
       await refresh();
     } catch (nextError) {
       setError(formatError(nextError));
@@ -236,8 +275,9 @@ export default function AgentsPage() {
           {factoryPreview ? (
             <div className="rounded-xl border border-surface bg-background/40 p-4">
               <p className="text-sm text-gray-400">Factory preview</p>
+              <FactoryReviewPanel review={factoryPreview.review} />
               <pre className="mt-3 overflow-x-auto text-xs text-gray-300">
-                {JSON.stringify(factoryPreview, null, 2)}
+                {JSON.stringify(factoryPreview.spec, null, 2)}
               </pre>
             </div>
           ) : null}
@@ -335,6 +375,8 @@ export default function AgentsPage() {
               </select>
             </Field>
           </div>
+
+          {formReview ? <FactoryReviewPanel review={formReview} /> : null}
 
           <Field label="Instructions">
             <textarea
@@ -518,8 +560,17 @@ export default function AgentsPage() {
               disabled={saving}
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium hover:bg-primary/80 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {saving ? 'Saving…' : 'Save Agent'}
+              {saving ? 'Saving…' : isDraftSpec(form.provenance) ? 'Save Draft' : 'Save Agent'}
             </button>
+            {isDraftSpec(form.provenance) ? (
+              <button
+                onClick={() => void approveDraft()}
+                disabled={saving}
+                className="rounded-lg border border-primary/40 px-4 py-2 text-sm hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Approve Draft
+              </button>
+            ) : null}
             {form.id ? (
               <button
                 onClick={() => void removeAgent(form.id)}
@@ -557,6 +608,11 @@ export default function AgentsPage() {
                         <p className="text-sm text-gray-500">
                           {agent.id} · {agent.enabled ? 'enabled' : 'disabled'} · {agent.runtime_profile ?? 'inherited profile'}
                         </p>
+                        {isDraftSpec(agent.provenance) ? (
+                          <p className="mt-1 text-xs text-warning">
+                            draft for {agent.provenance?.draft_for ?? agent.id}
+                          </p>
+                        ) : null}
                         <p className="mt-2 text-sm text-gray-300">{agent.purpose}</p>
                         <p className="mt-2 text-sm text-gray-500">
                           capabilities {capabilityNames.join(', ') || 'none'}
@@ -702,6 +758,57 @@ function formatError(error: unknown) {
     return error.message;
   }
   return error instanceof Error ? error.message : 'Unknown daemon error';
+}
+
+function isDraftSpec(provenance?: AgentSpec['provenance']) {
+  return provenance?.review_status === 'draft' || Boolean(provenance?.draft_for);
+}
+
+function FactoryReviewPanel({ review }: { review: FactoryReview }) {
+  return (
+    <div className="mt-3 space-y-3 rounded-lg border border-surface bg-surface2/60 p-4">
+      <div>
+        <p className="text-sm font-medium">
+          {review.kind} review · {review.review_status}
+        </p>
+        <p className="text-sm text-gray-400">{review.summary}</p>
+        <p className="text-xs text-gray-500">
+          target {review.target_id}
+          {review.draft_id ? ` · draft ${review.draft_id}` : ''}
+          {review.target_exists ? ' · existing target' : ' · new target'}
+        </p>
+      </div>
+      {review.warnings.length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-wide text-warning">Warnings</p>
+          {review.warnings.map((warning) => (
+            <p key={warning} className="text-sm text-warning">
+              {warning}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      {review.changes.length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-wide text-gray-500">Changes</p>
+          <div className="space-y-2">
+            {review.changes.slice(0, 12).map((change) => (
+              <div key={change.field} className="rounded-lg border border-surface px-3 py-2 text-xs">
+                <p className="font-medium text-gray-300">{change.field}</p>
+                <p className="mt-1 text-gray-500">current: {change.current ?? 'unset'}</p>
+                <p className="text-gray-400">proposed: {change.proposed ?? 'unset'}</p>
+              </div>
+            ))}
+            {review.changes.length > 12 ? (
+              <p className="text-xs text-gray-500">
+                {review.changes.length - 12} more change{review.changes.length - 12 === 1 ? '' : 's'}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

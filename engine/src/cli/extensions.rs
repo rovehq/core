@@ -330,7 +330,7 @@ async fn disable_official_system(config: &Config, name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn remove_official_system(config: &Config, name: &str) -> Result<()> {
+pub(crate) async fn remove_official_system(config: &Config, name: &str) -> Result<()> {
     let database = open_database(config).await?;
     if let Some(plugin) = resolve_installed_official_system(&database, name).await? {
         database
@@ -355,7 +355,11 @@ async fn remove_official_system(config: &Config, name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn install_official_system(config: &Config, name: &str, upgrade: bool) -> Result<()> {
+pub(crate) async fn install_official_system(
+    config: &Config,
+    name: &str,
+    upgrade: bool,
+) -> Result<()> {
     let system = official_system(name).context("Unknown official system")?;
     let registry_dir = ensure_official_system_published(config, system).await?;
     let registry = registry_dir.to_string_lossy().to_string();
@@ -424,10 +428,7 @@ pub(crate) async fn inventory(config: &Config) -> Result<Vec<ExtensionInventoryI
     Ok(items)
 }
 
-pub async fn catalog(
-    config: &Config,
-    force_refresh: bool,
-) -> Result<Vec<CatalogExtensionRecord>> {
+pub async fn catalog(config: &Config, force_refresh: bool) -> Result<Vec<CatalogExtensionRecord>> {
     crate::cli::plugins::list_catalog(config, force_refresh).await
 }
 
@@ -439,10 +440,7 @@ pub async fn catalog_entry(
     crate::cli::plugins::get_catalog_entry(config, id, force_refresh).await
 }
 
-pub async fn updates(
-    config: &Config,
-    force_refresh: bool,
-) -> Result<Vec<ExtensionUpdateRecord>> {
+pub async fn updates(config: &Config, force_refresh: bool) -> Result<Vec<ExtensionUpdateRecord>> {
     crate::cli::plugins::list_updates(config, force_refresh).await
 }
 
@@ -698,7 +696,7 @@ async fn open_database(config: &Config) -> Result<Database> {
         .context("Failed to open database")
 }
 
-async fn resolve_installed_official_system(
+pub(crate) async fn resolve_installed_official_system(
     database: &Database,
     name: &str,
 ) -> Result<Option<InstalledPlugin>> {
@@ -759,7 +757,11 @@ fn inventory_item_from_plugin(
     let manifest = Manifest::from_json(&plugin.manifest).ok();
     let description = catalog_entry
         .map(|entry| entry.description.clone())
-        .or_else(|| manifest.as_ref().map(|manifest| manifest.description.clone()))
+        .or_else(|| {
+            manifest
+                .as_ref()
+                .map(|manifest| manifest.description.clone())
+        })
         .unwrap_or_else(|| format!("Installed {} extension", plugin_public_kind(plugin)));
     let trust_badge = catalog_entry
         .map(|entry| entry.trust_badge.as_str().to_string())
@@ -767,7 +769,9 @@ fn inventory_item_from_plugin(
         .or_else(|| {
             manifest
                 .as_ref()
-                .map(|manifest| crate::cli::plugins::trust_badge_from_manifest_tier(manifest.trust_tier))
+                .map(|manifest| {
+                    crate::cli::plugins::trust_badge_from_manifest_tier(manifest.trust_tier)
+                })
                 .map(|badge| badge.as_str().to_string())
         })
         .unwrap_or_else(|| ExtensionTrustBadge::Unverified.as_str().to_string());
@@ -852,12 +856,24 @@ const OFFICIAL_SYSTEMS: &[OfficialSystem] = &[
         crate_name: "screenshot",
         description: "Local screenshot capture primitives.",
     },
+    OfficialSystem {
+        id: "voice-native",
+        crate_name: "voice-native",
+        description: "Local audio device integration and OS-native speech hooks.",
+    },
 ];
 
 fn system_permissions(id: &str) -> serde_json::Value {
     match id {
         "filesystem" | "terminal" | "vision" => json!({
             "filesystem": ["workspace/**"],
+            "network": [],
+            "memory_read": false,
+            "memory_write": false,
+            "tools": []
+        }),
+        "voice-native" => json!({
+            "filesystem": [],
             "network": [],
             "memory_read": false,
             "memory_write": false,
@@ -888,6 +904,7 @@ fn system_tools(id: &str) -> Vec<serde_json::Value> {
         "vision" => vec![
             json!({"name":"capture_screen","description":"Capture a screenshot.","parameters":{"type":"object","properties":{"output_file":{"type":"string"}}},"domains":["vision","all"]}),
         ],
+        "voice-native" => Vec::new(),
         _ => Vec::new(),
     }
 }

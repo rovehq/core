@@ -126,6 +126,31 @@ pub async fn start_daemon(
             "/v1/browser",
             get(api::browser_status).put(api::update_browser),
         )
+        .route(
+            "/v1/memory",
+            get(api::memory_status).put(api::update_memory),
+        )
+        .route("/v1/memory/status", get(api::memory_status))
+        .route("/v1/memory/query", post(api::query_memory))
+        .route("/v1/memory/graph", get(api::inspect_memory_graph))
+        .route("/v1/memory/reindex", post(api::reindex_memory))
+        .route("/v1/memory/backfill", post(api::backfill_memory_embeddings))
+        .route("/v1/memory/adapters", get(api::memory_adapters))
+        .route(
+            "/v1/memory/adapters/refresh",
+            post(api::refresh_memory_adapters),
+        )
+        .route("/v1/memory/ingest", post(api::ingest_memory_note))
+        .route("/v1/voice", get(api::voice_status).put(api::update_voice))
+        .route("/v1/voice/install", post(api::install_voice_engine))
+        .route("/v1/voice/uninstall", post(api::uninstall_voice_engine))
+        .route("/v1/voice/activate-input", post(api::activate_voice_input))
+        .route(
+            "/v1/voice/activate-output",
+            post(api::activate_voice_output),
+        )
+        .route("/v1/voice/test-input", post(api::test_voice_input))
+        .route("/v1/voice/test-output", post(api::test_voice_output))
         .route("/v1/config/reload", post(api::reload_config))
         .route("/v1/overview", get(api::overview))
         .route("/v1/health/snapshot", get(api::health_snapshot))
@@ -308,6 +333,31 @@ pub async fn start_daemon(
             "/api/v1/browser",
             get(api::browser_status).put(api::update_browser),
         )
+        .route(
+            "/api/v1/memory",
+            get(api::memory_status).put(api::update_memory),
+        )
+        .route("/api/v1/memory/status", get(api::memory_status))
+        .route("/api/v1/memory/query", post(api::query_memory))
+        .route("/api/v1/memory/graph", get(api::inspect_memory_graph))
+        .route("/api/v1/memory/reindex", post(api::reindex_memory))
+        .route("/api/v1/memory/ingest", post(api::ingest_memory_note))
+        .route(
+            "/api/v1/voice",
+            get(api::voice_status).put(api::update_voice),
+        )
+        .route("/api/v1/voice/install", post(api::install_voice_engine))
+        .route("/api/v1/voice/uninstall", post(api::uninstall_voice_engine))
+        .route(
+            "/api/v1/voice/activate-input",
+            post(api::activate_voice_input),
+        )
+        .route(
+            "/api/v1/voice/activate-output",
+            post(api::activate_voice_output),
+        )
+        .route("/api/v1/voice/test-input", post(api::test_voice_input))
+        .route("/api/v1/voice/test-output", post(api::test_voice_output))
         .route("/api/v1/health/snapshot", get(api::health_snapshot))
         .route("/api/v1/logs/recent", get(api::recent_logs))
         .route("/api/v1/logs/stream", get(api::stream_logs))

@@ -81,10 +81,14 @@ impl AgentCore {
                 .await;
         }
 
-        let max_iterations = if self.config.agent.max_iterations == 0 {
-            usize::MAX
-        } else {
-            self.config.agent.max_iterations as usize
+        let max_iterations = match self
+            .current_execution_profile
+            .as_ref()
+            .and_then(|profile| profile.max_iterations)
+        {
+            Some(limit) if limit > 0 => limit as usize,
+            _ if self.config.agent.max_iterations == 0 => usize::MAX,
+            _ => self.config.agent.max_iterations as usize,
         };
         let confirm_after = self.config.agent.confirm_after as usize;
         let mut iteration = 0;

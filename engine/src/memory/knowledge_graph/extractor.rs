@@ -3,6 +3,7 @@
 //! Extracts entities and relationships from memory entries using LLM
 
 use super::{Entity, EntityType, ExtractionResult, RelationType, Relationship};
+use crate::conductor::types::GraphSourceKind;
 use crate::llm::router::LLMRouter;
 use crate::llm::Message;
 use anyhow::{Context, Result};
@@ -279,6 +280,10 @@ pub async fn extract_and_store(
             label: entity.label.clone(),
             node_type: entity.entity_type.clone(),
             properties: entity.properties.clone(),
+            source_kind: GraphSourceKind::LlmInferred,
+            source_scope: "per_node".to_string(),
+            source_ref: Some(task_id.to_string()),
+            confidence: 0.7,
             created_at: now,
             last_updated: now,
             access_count: 0,

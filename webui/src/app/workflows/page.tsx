@@ -7,8 +7,12 @@ import {
   AgentSpec,
   DaemonError,
   ExecuteTaskResponse,
+  FactoryReview,
   RoveDaemonClient,
   SpecTemplateSummary,
+  WorkerPreset,
+  WorkflowFactoryResult,
+  WorkflowRunDetail,
   WorkflowRunRecord,
   WorkflowSpec,
   WorkflowStepSpec,
@@ -26,6 +30,7 @@ const EMPTY_WORKFLOW: WorkflowSpec = {
       id: 'step-1',
       name: 'Step 1',
       prompt: '',
+      worker_preset: null,
       continue_on_error: false,
     },
   ],
@@ -35,14 +40,17 @@ const EMPTY_WORKFLOW: WorkflowSpec = {
 export default function WorkflowsPage() {
   const [workflows, setWorkflows] = useState<WorkflowSpec[]>([]);
   const [agents, setAgents] = useState<AgentSpec[]>([]);
+  const [workerPresets, setWorkerPresets] = useState<WorkerPreset[]>([]);
   const [templates, setTemplates] = useState<SpecTemplateSummary[]>([]);
   const [runs, setRuns] = useState<WorkflowRunRecord[]>([]);
   const [form, setForm] = useState<WorkflowSpec>(EMPTY_WORKFLOW);
   const [factoryRequirement, setFactoryRequirement] = useState('');
   const [factoryTemplate, setFactoryTemplate] = useState('one-shot');
-  const [factoryPreview, setFactoryPreview] = useState<WorkflowSpec | null>(null);
+  const [factoryPreview, setFactoryPreview] = useState<WorkflowFactoryResult | null>(null);
+  const [formReview, setFormReview] = useState<FactoryReview | null>(null);
   const [runInput, setRunInput] = useState<Record<string, string>>({});
   const [runResult, setRunResult] = useState<Record<string, ExecuteTaskResponse>>({});
+  const [runDetails, setRunDetails] = useState<Record<string, WorkflowRunDetail>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,19 +59,29 @@ export default function WorkflowsPage() {
     void refresh();
   }, []);
 
+  useEffect(() => {
+    if (!form.id || !isDraftSpec(form.provenance)) {
+      setFormReview(null);
+      return;
+    }
+    void loadDraftReview(form.id);
+  }, [form.id, form.provenance?.draft_for, form.provenance?.review_status]);
+
   async function refresh() {
     setLoading(true);
     setError(null);
     try {
       const client = daemonClient();
-      const [nextWorkflows, nextAgents, nextRuns, nextTemplates] = await Promise.all([
+      const [nextWorkflows, nextAgents, nextWorkerPresets, nextRuns, nextTemplates] = await Promise.all([
         client.listWorkflows(),
         client.listAgents(),
+        client.listWorkerPresets(),
         client.listWorkflowRuns(),
         client.listWorkflowTemplates(),
       ]);
       setWorkflows(nextWorkflows);
       setAgents(nextAgents);
+      setWorkerPresets(nextWorkerPresets);
       setRuns(nextRuns);
       setTemplates(nextTemplates);
       setForm((current) => {
@@ -125,7 +143,35 @@ export default function WorkflowsPage() {
         template_id: factoryTemplate || undefined,
       });
       setFactoryPreview(created);
-      setForm(cloneWorkflow(created));
+      setForm(cloneWorkflow(created.spec));
+      setFormReview(created.review);
+      await refresh();
+    } catch (nextError) {
+      setError(formatError(nextError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadDraftReview(id: string) {
+    try {
+      setFormReview(await daemonClient().getWorkflowReview(id));
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
+  async function approveDraft() {
+    if (!form.id) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const approved = await daemonClient().approveWorkflowDraft(form.id);
+      setForm(cloneWorkflow(approved));
+      setFactoryPreview(null);
+      setFormReview(null);
       await refresh();
     } catch (nextError) {
       setError(formatError(nextError));
@@ -160,9 +206,37 @@ export default function WorkflowsPage() {
 
     setError(null);
     try {
-      const result = await daemonClient().runWorkflow(id, input);
+      const client = daemonClient();
+      const result = await client.runWorkflow(id, input);
       setRunResult((current) => ({ ...current, [id]: result }));
       await refresh();
+      if (result.message) {
+        const detail = await client.getWorkflowRun(result.message);
+        setRunDetails((current) => ({ ...current, [detail.run.run_id]: detail }));
+      }
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
+  async function loadRunDetail(runId: string) {
+    setError(null);
+    try {
+      const detail = await daemonClient().getWorkflowRun(runId);
+      setRunDetails((current) => ({ ...current, [runId]: detail }));
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
+  async function resumeWorkflowRun(runId: string) {
+    setError(null);
+    try {
+      const client = daemonClient();
+      await client.resumeWorkflowRun(runId);
+      await refresh();
+      const detail = await client.getWorkflowRun(runId);
+      setRunDetails((current) => ({ ...current, [runId]: detail }));
     } catch (nextError) {
       setError(formatError(nextError));
     }
@@ -243,8 +317,9 @@ export default function WorkflowsPage() {
           {factoryPreview ? (
             <div className="rounded-xl border border-surface bg-background/40 p-4">
               <p className="text-sm text-gray-400">Factory preview</p>
+              <FactoryReviewPanel review={factoryPreview.review} />
               <pre className="mt-3 overflow-x-auto text-xs text-gray-300">
-                {JSON.stringify(factoryPreview, null, 2)}
+                {JSON.stringify(factoryPreview.spec, null, 2)}
               </pre>
             </div>
           ) : null}
@@ -255,7 +330,7 @@ export default function WorkflowsPage() {
             <div>
               <h2 className="text-lg font-semibold">Workflow Spec</h2>
               <p className="text-sm text-gray-400">
-                Each step can run directly or inherit an agent profile. <code>{'{{input}}'}</code> and <code>{'{{last_output}}'}</code> are available in step prompts.
+                Each step can run directly or inherit an agent profile or bounded worker preset. <code>{'{{input}}'}</code> and <code>{'{{last_output}}'}</code> are available in step prompts.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -317,6 +392,8 @@ export default function WorkflowsPage() {
             </Field>
           </div>
 
+          {formReview ? <FactoryReviewPanel review={formReview} /> : null}
+
           <Field label="Description">
             <textarea
               value={form.description}
@@ -351,7 +428,7 @@ export default function WorkflowsPage() {
               <div>
                 <h3 className="font-medium">Steps</h3>
                 <p className="text-sm text-gray-400">
-                  Steps execute in order. If an agent is selected, that step runs with the agent’s execution profile and tool allow-list.
+                  Steps execute in order. Each step may use either an agent profile or a bounded worker preset.
                 </p>
               </div>
               <button
@@ -364,6 +441,7 @@ export default function WorkflowsPage() {
                         id: `step-${current.steps.length + 1}`,
                         name: `Step ${current.steps.length + 1}`,
                         prompt: '',
+                        worker_preset: null,
                         continue_on_error: false,
                       },
                     ],
@@ -377,7 +455,7 @@ export default function WorkflowsPage() {
 
             {form.steps.map((step, index) => (
               <div key={step.id || index} className="rounded-lg bg-surface2 p-4 space-y-3">
-                <div className="grid gap-3 md:grid-cols-3">
+                <div className="grid gap-3 md:grid-cols-4">
                   <input
                     value={step.id}
                     onChange={(event) => updateStep(index, { id: event.target.value })}
@@ -392,13 +470,35 @@ export default function WorkflowsPage() {
                   />
                   <select
                     value={step.agent_id ?? ''}
-                    onChange={(event) => updateStep(index, { agent_id: event.target.value || null })}
+                    onChange={(event) =>
+                      updateStep(index, {
+                        agent_id: event.target.value || null,
+                        worker_preset: event.target.value ? null : step.worker_preset ?? null,
+                      })
+                    }
                     className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
                   >
                     <option value="">No agent profile</option>
                     {agents.map((agent) => (
                       <option key={agent.id} value={agent.id}>
                         {agent.name} ({agent.id})
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={step.worker_preset ?? ''}
+                    onChange={(event) =>
+                      updateStep(index, {
+                        worker_preset: event.target.value || null,
+                        agent_id: event.target.value ? null : step.agent_id ?? null,
+                      })
+                    }
+                    className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                  >
+                    <option value="">No worker preset</option>
+                    {workerPresets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.name} ({preset.id})
                       </option>
                     ))}
                   </select>
@@ -438,8 +538,17 @@ export default function WorkflowsPage() {
               disabled={saving}
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium hover:bg-primary/80 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {saving ? 'Saving…' : 'Save Workflow'}
+              {saving ? 'Saving…' : isDraftSpec(form.provenance) ? 'Save Draft' : 'Save Workflow'}
             </button>
+            {isDraftSpec(form.provenance) ? (
+              <button
+                onClick={() => void approveDraft()}
+                disabled={saving}
+                className="rounded-lg border border-primary/40 px-4 py-2 text-sm hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Approve Draft
+              </button>
+            ) : null}
             {form.id ? (
               <button
                 onClick={() => void removeWorkflow(form.id)}
@@ -474,6 +583,11 @@ export default function WorkflowsPage() {
                         <p className="text-sm text-gray-500">
                           {workflow.id} · {workflow.enabled ? 'enabled' : 'disabled'} · {workflow.steps.length} step{workflow.steps.length === 1 ? '' : 's'}
                         </p>
+                        {isDraftSpec(workflow.provenance) ? (
+                          <p className="mt-1 text-xs text-warning">
+                            draft for {workflow.provenance?.draft_for ?? workflow.id}
+                          </p>
+                        ) : null}
                         <p className="mt-2 text-sm text-gray-300">{workflow.description}</p>
                         <p className="mt-2 text-sm text-gray-500">
                           {workflow.steps.map((step) => step.name).join(' → ')}
@@ -531,9 +645,53 @@ export default function WorkflowsPage() {
                   <p className="text-sm text-gray-500">
                     {run.status} · {formatTimestamp(run.created_at)}{run.completed_at ? ` → ${formatTimestamp(run.completed_at)}` : ''}
                   </p>
+                  <p className="mt-1 text-sm text-gray-400">
+                    Progress: {run.steps_completed}/{run.steps_total} steps
+                    {run.current_step_name ? ` · current: ${run.current_step_name}` : ''}
+                    {run.retry_count > 0 ? ` · retries: ${run.retry_count}` : ''}
+                  </p>
                   <p className="mt-2 text-sm text-gray-300 whitespace-pre-wrap">{run.input}</p>
                   {run.output ? <p className="mt-2 text-sm text-gray-400 whitespace-pre-wrap">{run.output}</p> : null}
                   {run.error ? <p className="mt-2 text-sm text-error whitespace-pre-wrap">{run.error}</p> : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {run.resumable ? (
+                      <button
+                        onClick={() => void resumeWorkflowRun(run.run_id)}
+                        className="rounded-lg border border-primary/40 px-3 py-2 text-sm hover:bg-primary/10"
+                      >
+                        {run.status === 'failed' ? 'Retry From Failed Step' : 'Resume Run'}
+                      </button>
+                    ) : null}
+                    <button
+                      onClick={() => void loadRunDetail(run.run_id)}
+                      className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary"
+                    >
+                      View Steps
+                    </button>
+                  </div>
+                  {runDetails[run.run_id] ? (
+                    <div className="mt-3 space-y-2 rounded-lg border border-surface bg-background/40 p-3">
+                      {runDetails[run.run_id].steps.map((step) => (
+                        <div key={`${step.run_id}-${step.step_index}`} className="rounded-lg border border-surface px-3 py-2">
+                          <p className="text-sm font-medium">
+                            {step.step_index + 1}. {step.step_name} · {step.status}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {step.agent_id ? `agent:${step.agent_id}` : step.worker_preset ? `worker:${step.worker_preset}` : 'direct'}
+                            {step.attempt_count > 1 ? ` · attempts:${step.attempt_count}` : ''}
+                            {step.task_id ? ` · task:${step.task_id}` : ''}
+                          </p>
+                          <p className="mt-2 text-xs text-gray-400 whitespace-pre-wrap">{step.prompt}</p>
+                          {step.output ? (
+                            <p className="mt-2 text-xs text-gray-300 whitespace-pre-wrap">{step.output}</p>
+                          ) : null}
+                          {step.error ? (
+                            <p className="mt-2 text-xs text-error whitespace-pre-wrap">{step.error}</p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -551,7 +709,7 @@ function daemonClient() {
 function cloneWorkflow(spec: WorkflowSpec): WorkflowSpec {
   return {
     ...spec,
-    steps: spec.steps.map((step) => ({ ...step })),
+    steps: spec.steps.map((step) => ({ ...step, worker_preset: step.worker_preset ?? null })),
     tags: [...spec.tags],
   };
 }
@@ -572,6 +730,7 @@ function normalizeWorkflow(spec: WorkflowSpec): WorkflowSpec {
         name: step.name.trim() || `Step ${index + 1}`,
         prompt: step.prompt.trim(),
         agent_id: emptyToNull(step.agent_id),
+        worker_preset: emptyToNull(step.worker_preset),
       }))
       .filter((step) => step.prompt),
   };
@@ -602,6 +761,57 @@ function formatError(error: unknown) {
     return error.message;
   }
   return error instanceof Error ? error.message : 'Unknown daemon error';
+}
+
+function isDraftSpec(provenance?: WorkflowSpec['provenance']) {
+  return provenance?.review_status === 'draft' || Boolean(provenance?.draft_for);
+}
+
+function FactoryReviewPanel({ review }: { review: FactoryReview }) {
+  return (
+    <div className="mt-3 space-y-3 rounded-lg border border-surface bg-surface2/60 p-4">
+      <div>
+        <p className="text-sm font-medium">
+          {review.kind} review · {review.review_status}
+        </p>
+        <p className="text-sm text-gray-400">{review.summary}</p>
+        <p className="text-xs text-gray-500">
+          target {review.target_id}
+          {review.draft_id ? ` · draft ${review.draft_id}` : ''}
+          {review.target_exists ? ' · existing target' : ' · new target'}
+        </p>
+      </div>
+      {review.warnings.length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-wide text-warning">Warnings</p>
+          {review.warnings.map((warning) => (
+            <p key={warning} className="text-sm text-warning">
+              {warning}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      {review.changes.length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-wide text-gray-500">Changes</p>
+          <div className="space-y-2">
+            {review.changes.slice(0, 12).map((change) => (
+              <div key={change.field} className="rounded-lg border border-surface px-3 py-2 text-xs">
+                <p className="font-medium text-gray-300">{change.field}</p>
+                <p className="mt-1 text-gray-500">current: {change.current ?? 'unset'}</p>
+                <p className="text-gray-400">proposed: {change.proposed ?? 'unset'}</p>
+              </div>
+            ))}
+            {review.changes.length > 12 ? (
+              <p className="text-xs text-gray-500">
+                {review.changes.length - 12} more change{review.changes.length - 12 === 1 ? '' : 's'}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

@@ -11,10 +11,20 @@ pub fn handle_migrate(action: MigrateAction) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
-        MigrateAction::Import { source, path } => {
+        MigrateAction::Import {
+            source,
+            path,
+            dry_run,
+        } => {
             let repo = SpecRepository::new()?;
-            let result = migrate::import(&repo, map_source(source), path.as_deref())?;
+            let result = migrate::import(&repo, map_source(source), path.as_deref(), dry_run)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+        MigrateAction::Status => {
+            let repo = SpecRepository::new()?;
+            let report = migrate::migrate_status(&repo)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
     }

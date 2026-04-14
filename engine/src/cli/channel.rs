@@ -13,8 +13,16 @@ pub async fn handle_channels(action: ChannelAction, config: &Config) -> Result<(
                 println!(
                     "{}\t{}\t{}",
                     channel.name,
-                    if channel.enabled { "enabled" } else { "disabled" },
-                    if channel.configured { "configured" } else { "needs setup" }
+                    if channel.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    if channel.configured {
+                        "configured"
+                    } else {
+                        "needs setup"
+                    }
                 );
             }
             Ok(())
