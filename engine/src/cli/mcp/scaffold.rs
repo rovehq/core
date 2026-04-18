@@ -123,6 +123,8 @@ fn write_package_files(
         "permissions": {
             "filesystem": profile_filesystem_permissions(&profile),
             "network": profile_network_permissions(&profile),
+            "secrets": [],
+            "host_patterns": [],
             "memory_read": false,
             "memory_write": false,
             "tools": []

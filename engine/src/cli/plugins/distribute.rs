@@ -32,6 +32,10 @@ struct ReleaseManifest {
     permission_review: super::validate::PermissionReview,
 }
 
+fn artifact_sidecar_path(payload_source: &Path) -> PathBuf {
+    payload_source.with_extension("capabilities.json")
+}
+
 pub(super) struct BundleOutput {
     bundle_dir: PathBuf,
     plugin_id: String,
@@ -177,6 +181,17 @@ pub(super) async fn prepare_distribution_bundle(
                 bundle_dir.display()
             )
         })?;
+        let sidecar = artifact_sidecar_path(&payload_source);
+        if sidecar.exists() {
+            let bundle_sidecar = artifact_sidecar_path(&bundle_dir.join(&file_name));
+            fs::copy(&sidecar, &bundle_sidecar).with_context(|| {
+                format!(
+                    "Failed to copy capability sidecar '{}' into bundle '{}'",
+                    sidecar.display(),
+                    bundle_sidecar.display()
+                )
+            })?;
+        }
         if matches!(manifest.plugin_type, PluginType::Mcp) {
             None
         } else {
@@ -291,6 +306,18 @@ fn publish_prepared_bundle(
         .then(|| bundle_rel.join(RUNTIME_FILE).display().to_string());
     let artifact_path =
         release_artifact_name(&destination).map(|name| bundle_rel.join(name).display().to_string());
+    let artifact_sidecar_path = artifact_path.as_ref().and_then(|artifact_path| {
+        let artifact_name = Path::new(artifact_path).file_name()?.to_str()?;
+        let sidecar_name = Path::new(artifact_name)
+            .with_extension("capabilities.json")
+            .file_name()?
+            .to_str()?
+            .to_string();
+        let sidecar_path = destination.join(&sidecar_name);
+        sidecar_path
+            .exists()
+            .then(|| bundle_rel.join(sidecar_name).display().to_string())
+    });
     let readme_path = destination
         .join("README.md")
         .exists()
@@ -307,6 +334,7 @@ fn publish_prepared_bundle(
             package_path: bundle_rel.join(PACKAGE_FILE).display().to_string(),
             runtime_path,
             artifact_path,
+            artifact_sidecar_path,
             readme_path,
             release_path: bundle_rel.join("release.json").display().to_string(),
         },

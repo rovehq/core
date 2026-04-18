@@ -13,6 +13,11 @@ impl ToolRegistry {
             "folder",
             "directory",
             "dir",
+            "glob",
+            "grep",
+            "search",
+            "match",
+            "find",
             "read",
             "save",
             "list",
@@ -148,21 +153,29 @@ impl ToolRegistry {
         let include_browser = self.browser.is_some()
             && (include_all_core_tools || Self::should_offer_browser(&query_lower));
 
-        let mut parts = vec![
-            "You are Rove, an AI agent that can use tools to accomplish tasks.".to_string(),
-            String::new(),
-            "IMPORTANT RULES:".to_string(),
-            "1. To call a tool, your ENTIRE response must be ONLY the JSON object — nothing else. No explanation, no markdown fences, no text before or after.".to_string(),
-            "2. When you have the final answer (after receiving tool results), respond with plain text only — no JSON.".to_string(),
-            "3. Never invent tool output. Use a tool only when you need real external state, file contents, command output, or side effects. If the user asks for something you can answer from reasoning alone, answer directly without any tool call.".to_string(),
-            "4. If the user explicitly asks you to run a single terminal command, execute exactly that command once, then answer with its output. Do not run extra exploratory commands unless the user asked for additional investigation.".to_string(),
-            "5. If the user asks to read, list, write, or delete a file, use the filesystem tools and rely on their real result. Do not pre-emptively refuse or guess whether access will be allowed; the filesystem gate will enforce policy.".to_string(),
-            String::new(),
-            "Tool call format (your entire response must be exactly this):".to_string(),
-            r#"{"function": "tool_name", "arguments": {"arg1": "value1"}}"#.to_string(),
-            String::new(),
-            "Available tools:".to_string(),
-        ];
+        let has_any_tool = include_fs
+            || include_terminal
+            || include_vision
+            || include_browser
+            || !self.wasm_tools.is_empty()
+            || !self.mcp_tools.is_empty();
+
+        let mut parts = vec!["You are Rove, an AI agent.".to_string()];
+
+        if has_any_tool {
+            parts.push(String::new());
+            parts.push("IMPORTANT RULES:".to_string());
+            parts.push("1. To call a tool, your ENTIRE response must be ONLY the JSON object — nothing else. No explanation, no markdown fences, no text before or after.".to_string());
+            parts.push("2. When you have the final answer (after receiving tool results), respond with plain text only — no JSON.".to_string());
+            parts.push("3. Never invent tool output. Use a tool only when you need real external state, file contents, command output, or side effects. If the user asks for something you can answer from reasoning alone, answer directly without any tool call.".to_string());
+            parts.push("4. If the user explicitly asks you to run a single terminal command, execute exactly that command once, then answer with its output. Do not run extra exploratory commands unless the user asked for additional investigation.".to_string());
+            parts.push("5. If the user asks to read, list, write, or delete a file, use the filesystem tools and rely on their real result. Do not pre-emptively refuse or guess whether access will be allowed; the filesystem gate will enforce policy.".to_string());
+            parts.push(String::new());
+            parts.push("Tool call format (your entire response must be exactly this):".to_string());
+            parts.push(r#"{"function": "tool_name", "arguments": {"arg1": "value1"}}"#.to_string());
+            parts.push(String::new());
+            parts.push("Available tools:".to_string());
+        }
 
         if include_fs {
             parts.push(String::new());
@@ -198,6 +211,52 @@ impl ToolRegistry {
                 r#"Check if a file or directory exists. Returns "true" or "false"."#.to_string(),
             );
             parts.push(r#"Arguments: {"path": "file/path"}"#.to_string());
+
+            parts.push(String::new());
+            parts.push("## glob_files".to_string());
+            parts.push(
+                "Find files matching a glob pattern inside the workspace. Useful for replacing shell `find` or broad filename scans."
+                    .to_string(),
+            );
+            parts.push(
+                r#"Arguments: {"pattern": "src/**/*.rs", "path": "optional/search/root", "max_results": 200}"#
+                    .to_string(),
+            );
+
+            parts.push(String::new());
+            parts.push("## grep_files".to_string());
+            parts.push(
+                "Search file contents with a regex and return matching lines. Useful for replacing shell `rg` when you need workspace-safe content search."
+                    .to_string(),
+            );
+            parts.push(
+                r#"Arguments: {"pattern": "workflow_runtime", "path": "optional/search/root", "file_pattern": "**/*.rs", "max_results": 100}"#
+                    .to_string(),
+            );
+
+            parts.push(String::new());
+            parts.push("## append_to_file".to_string());
+            parts.push(
+                "Append text to the end of a file. Creates the file if it does not exist. \
+                 Use this instead of write_file when you only need to add to the end."
+                    .to_string(),
+            );
+            parts.push(
+                r#"Arguments: {"path": "file/path", "content": "text to append"}"#.to_string(),
+            );
+
+            parts.push(String::new());
+            parts.push("## patch_file".to_string());
+            parts.push(
+                "Edit a file by replacing an exact string with a new string. \
+                 old_string must appear exactly once — use read_file first. \
+                 Prefer this over write_file for targeted edits."
+                    .to_string(),
+            );
+            parts.push(
+                r#"Arguments: {"path": "file/path", "old_string": "exact text to find", "new_string": "replacement text"}"#
+                    .to_string(),
+            );
         }
 
         if include_terminal {
@@ -276,9 +335,13 @@ impl ToolRegistry {
             names.extend_from_slice(&[
                 "read_file".to_string(),
                 "write_file".to_string(),
+                "patch_file".to_string(),
+                "append_to_file".to_string(),
                 "delete_file".to_string(),
                 "list_dir".to_string(),
                 "file_exists".to_string(),
+                "glob_files".to_string(),
+                "grep_files".to_string(),
             ]);
         }
         if self.terminal.is_some() {
@@ -302,5 +365,73 @@ impl ToolRegistry {
             names.push(tool.name.clone());
         }
         names
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_registry() -> ToolRegistry {
+        ToolRegistry::empty()
+    }
+
+    #[test]
+    fn no_tools_omits_tool_preamble() {
+        let registry = empty_registry();
+        let prompt = registry.system_prompt_for_query("");
+        assert!(
+            !prompt.contains("IMPORTANT RULES"),
+            "preamble should be absent when no tools registered"
+        );
+        assert!(
+            !prompt.contains("Available tools"),
+            "tool list should be absent when no tools registered"
+        );
+        assert!(
+            !prompt.contains("function"),
+            "JSON format hint should be absent when no tools registered"
+        );
+        assert!(
+            prompt.contains("Rove"),
+            "base identity should still be present"
+        );
+    }
+
+    #[test]
+    fn no_tools_query_still_omits_preamble() {
+        let registry = empty_registry();
+        let prompt = registry.system_prompt_for_query("read the file /tmp/foo.txt");
+        assert!(!prompt.contains("IMPORTANT RULES"));
+        assert!(!prompt.contains("Available tools"));
+    }
+
+    #[tokio::test]
+    async fn filesystem_tool_includes_preamble() {
+        use crate::runtime::builtin::FilesystemTool;
+        let mut registry = empty_registry();
+        registry
+            .register_builtin_filesystem(
+                FilesystemTool::new(std::path::PathBuf::from("/tmp")).unwrap(),
+            )
+            .await;
+        let prompt = registry.system_prompt_for_query("read the file /tmp/foo.txt");
+        assert!(
+            prompt.contains("IMPORTANT RULES"),
+            "preamble should appear when filesystem is registered"
+        );
+        assert!(prompt.contains("read_file"), "read_file should be listed");
+        assert!(prompt.contains("glob_files"), "glob_files should be listed");
+        assert!(prompt.contains("grep_files"), "grep_files should be listed");
+        assert!(prompt.contains("Available tools"));
+    }
+
+    #[test]
+    fn empty_query_with_no_tools_has_no_tool_section() {
+        let registry = empty_registry();
+        let prompt = registry.system_prompt();
+        assert!(!prompt.contains("## read_file"));
+        assert!(!prompt.contains("## run_command"));
+        assert!(!prompt.contains("## browse_url"));
     }
 }

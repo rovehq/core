@@ -305,6 +305,7 @@ pub async fn workflow_from_task(
                 agent_id: None,
                 worker_preset: Some(worker_preset_for_tool(tool_name).to_string()),
                 continue_on_error: false,
+                branches: Vec::new(),
             })
             .collect()
     } else {
@@ -318,6 +319,7 @@ pub async fn workflow_from_task(
             agent_id: None,
             worker_preset: Some("executor".to_string()),
             continue_on_error: false,
+            branches: Vec::new(),
         }]
     };
 
@@ -831,6 +833,7 @@ fn workflow_template(template_id: &str) -> Result<sdk::WorkflowSpec> {
                 agent_id: None,
                 worker_preset: Some("executor".to_string()),
                 continue_on_error: false,
+                branches: Vec::new(),
             }],
             ..sdk::WorkflowSpec::default()
         },
@@ -845,6 +848,7 @@ fn workflow_template(template_id: &str) -> Result<sdk::WorkflowSpec> {
                     agent_id: None,
                     worker_preset: Some("researcher".to_string()),
                     continue_on_error: false,
+                    branches: Vec::new(),
                 },
                 sdk::WorkflowStepSpec {
                     id: "step-2".to_string(),
@@ -853,6 +857,7 @@ fn workflow_template(template_id: &str) -> Result<sdk::WorkflowSpec> {
                     agent_id: None,
                     worker_preset: Some("researcher".to_string()),
                     continue_on_error: false,
+                    branches: Vec::new(),
                 },
                 sdk::WorkflowStepSpec {
                     id: "step-3".to_string(),
@@ -861,6 +866,7 @@ fn workflow_template(template_id: &str) -> Result<sdk::WorkflowSpec> {
                     agent_id: None,
                     worker_preset: Some("summariser".to_string()),
                     continue_on_error: false,
+                    branches: Vec::new(),
                 },
             ],
             tags: vec!["research".to_string()],
@@ -877,6 +883,7 @@ fn workflow_template(template_id: &str) -> Result<sdk::WorkflowSpec> {
                     agent_id: None,
                     worker_preset: Some("researcher".to_string()),
                     continue_on_error: false,
+                    branches: Vec::new(),
                 },
                 sdk::WorkflowStepSpec {
                     id: "step-2".to_string(),
@@ -885,6 +892,7 @@ fn workflow_template(template_id: &str) -> Result<sdk::WorkflowSpec> {
                     agent_id: None,
                     worker_preset: Some("executor".to_string()),
                     continue_on_error: false,
+                    branches: Vec::new(),
                 },
                 sdk::WorkflowStepSpec {
                     id: "step-3".to_string(),
@@ -893,6 +901,7 @@ fn workflow_template(template_id: &str) -> Result<sdk::WorkflowSpec> {
                     agent_id: None,
                     worker_preset: Some("verifier".to_string()),
                     continue_on_error: false,
+                    branches: Vec::new(),
                 },
             ],
             runtime_profile: Some("headless".to_string()),
@@ -979,6 +988,7 @@ fn infer_workflow_steps(requirement: &str) -> Vec<sdk::WorkflowStepSpec> {
             agent_id: None,
             worker_preset: Some(infer_worker_preset(part).to_string()),
             continue_on_error: false,
+            branches: Vec::new(),
         })
         .collect()
 }

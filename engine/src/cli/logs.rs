@@ -3,7 +3,10 @@ use std::fs;
 use anyhow::Result;
 use tokio::time::{sleep, Duration};
 
+use crate::cli::database_path::database_path;
 use crate::cli::commands::LogsAction;
+use crate::config::Config;
+use crate::storage::{AgentActionQuery, Database};
 use crate::system::logs;
 
 pub async fn handle_logs(action: LogsAction) -> Result<()> {
@@ -15,6 +18,53 @@ pub async fn handle_logs(action: LogsAction) -> Result<()> {
             Ok(())
         }
         LogsAction::Follow { lines } => follow_logs(lines).await,
+        LogsAction::Security {
+            action,
+            source,
+            severity,
+            since_hours,
+            limit,
+        } => {
+            let config = Config::load_or_create()?;
+            let database = Database::new(&database_path(&config)).await?;
+            let date_from = since_hours.map(|hours| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                now.saturating_sub(hours.max(0) * 3600)
+            });
+            let entries = database
+                .tasks()
+                .list_agent_actions(&AgentActionQuery {
+                    action_type: action,
+                    source,
+                    severity,
+                    date_from,
+                    date_to: None,
+                    limit,
+                    offset: 0,
+                })
+                .await?;
+            if entries.is_empty() {
+                println!("No security audit log entries matched the query.");
+                return Ok(());
+            }
+            for entry in entries {
+                println!(
+                    "{} [{}] action={} tool={} source={} approved_by={} task={}",
+                    entry.timestamp,
+                    entry.severity,
+                    entry.action_type,
+                    entry.tool_name,
+                    entry.source.as_deref().unwrap_or("unknown"),
+                    entry.approved_by,
+                    entry.task_id
+                );
+                println!("  {}", entry.result_summary);
+            }
+            Ok(())
+        }
     }
 }
 

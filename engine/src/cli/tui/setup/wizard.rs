@@ -5,11 +5,44 @@ use crossterm::{
 };
 use std::io::{self, Write};
 
-use super::menu::{select_menu, select_menu_default};
+use super::menu::select_menu_default;
 use super::preset::{presets, ModelPreset};
-use super::prompt::{print_line, prompt_secret, prompt_text};
+use super::prompt::{print_line, prompt_secret, prompt_text_with_nav, NavigationAction};
 use super::result::SetupResult;
 use super::{BOLD, CYAN, DIM, RESET};
+
+#[derive(Debug, Clone)]
+struct WizardState {
+    workspace: String,
+    preset: Option<ModelPreset>,
+    provider_name: String,
+    protocol: String,
+    base_url: String,
+    model: String,
+    secret_key: String,
+    api_key: String,
+    max_risk_tier: u8,
+    daemon_password: String,
+    password_confirmed: bool,
+}
+
+impl Default for WizardState {
+    fn default() -> Self {
+        Self {
+            workspace: "~/projects".to_string(),
+            preset: None,
+            provider_name: String::new(),
+            protocol: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            secret_key: String::new(),
+            api_key: String::new(),
+            max_risk_tier: 2,
+            daemon_password: String::new(),
+            password_confirmed: false,
+        }
+    }
+}
 
 pub fn run_setup_wizard() -> Result<SetupResult> {
     terminal::enable_raw_mode()?;
@@ -22,91 +55,50 @@ pub fn run_setup_wizard() -> Result<SetupResult> {
 
 fn run_wizard_inner() -> Result<SetupResult> {
     let mut stdout = io::stdout();
+    let mut state = WizardState::default();
+    let mut step = 0;
 
-    execute!(
-        stdout,
-        terminal::Clear(ClearType::All),
-        cursor::MoveTo(0, 0)
-    )?;
+    loop {
+        execute!(
+            stdout,
+            terminal::Clear(ClearType::All),
+            cursor::MoveTo(0, 0)
+        )?;
 
-    print_header(&mut stdout)?;
+        print_header(&mut stdout, step)?;
 
-    let workspace = prompt_text(&mut stdout, "Workspace directory", "~/projects")?;
-    print_line(&mut stdout, "")?;
+        let action = match step {
+            0 => step_workspace(&mut stdout, &mut state)?,
+            1 => step_preset(&mut stdout, &mut state)?,
+            2 => step_provider_details(&mut stdout, &mut state)?,
+            3 => step_api_key(&mut stdout, &mut state)?,
+            4 => step_risk_tier(&mut stdout, &mut state)?,
+            5 => step_password(&mut stdout, &mut state)?,
+            6 => {
+                // Final step - show summary and confirm
+                return Ok(build_result(&state));
+            }
+            _ => NavigationAction::Quit,
+        };
 
-    let preset = select_preset(&mut stdout)?;
-    let skipped = preset.provider_name.is_empty();
-
-    let (provider_name, protocol, base_url, model, secret_key) = if preset.provider_name == "custom"
-    {
-        prompt_custom_provider(&mut stdout)?
-    } else {
-        (
-            preset.provider_name.clone(),
-            preset.protocol.clone(),
-            preset.base_url.clone(),
-            preset.model.clone(),
-            preset.secret_key.clone(),
-        )
-    };
-
-    let api_key = if !skipped && preset.needs_api_key {
-        let key = prompt_text(&mut stdout, "API key", "")?;
-        if !key.is_empty() {
-            print_line(&mut stdout, "  Key captured")?;
+        match action {
+            NavigationAction::Next => step += 1,
+            NavigationAction::Back => {
+                if step > 0 {
+                    step -= 1;
+                }
+            }
+            NavigationAction::Quit => {
+                print_line(&mut stdout, "")?;
+                print_line(&mut stdout, "  Setup cancelled.")?;
+                print_line(&mut stdout, "")?;
+                std::process::exit(0);
+            }
         }
-        print_line(&mut stdout, "")?;
-        key
-    } else {
-        String::new()
-    };
-
-    let risk_labels = vec![
-        format!("Tier 0  {DIM}Read-only operations only{RESET}"),
-        format!("Tier 1  {DIM}Allow local modifications with confirmation{RESET}"),
-        format!("Tier 2  {DIM}Allow all operations with confirmation{RESET}"),
-    ];
-    print_line(&mut stdout, &format!("  {BOLD}Maximum risk tier{RESET}"))?;
-    print_line(&mut stdout, "")?;
-    let risk_idx = select_menu_default(&mut stdout, &risk_labels, 2)?;
-    print_line(&mut stdout, "")?;
-
-    let daemon_password = loop {
-        let password = prompt_secret(&mut stdout, "Daemon password")?;
-        if password.trim().len() < 8 {
-            print_line(
-                &mut stdout,
-                "  Password must be at least 8 characters. Try again.",
-            )?;
-            continue;
-        }
-
-        let confirm = prompt_secret(&mut stdout, "Confirm daemon password")?;
-        if password != confirm {
-            print_line(&mut stdout, "  Passwords did not match. Try again.")?;
-            continue;
-        }
-        print_line(&mut stdout, "")?;
-        break password;
-    };
-
-    Ok(SetupResult {
-        workspace,
-        provider_name,
-        protocol,
-        base_url,
-        model,
-        secret_key,
-        api_key,
-        max_risk_tier: risk_idx as u8,
-        skipped_model: skipped,
-        daemon_password,
-        recovery_code: None,
-        auth_protection: None,
-    })
+    }
 }
 
-fn print_header(stdout: &mut io::Stdout) -> Result<()> {
+fn print_header(stdout: &mut io::Stdout, step: usize) -> Result<()> {
     print_line(stdout, "")?;
     print_line(
         stdout,
@@ -121,10 +113,28 @@ fn print_header(stdout: &mut io::Stdout) -> Result<()> {
         &format!("  {CYAN}{BOLD}╚══════════════════════════════════╝{RESET}"),
     )?;
     print_line(stdout, "")?;
+    print_line(
+        stdout,
+        &format!("  {DIM}Step {}/6 • Use ← → or Tab/Shift+Tab to navigate • Ctrl+C to quit{RESET}", step + 1),
+    )?;
+    print_line(stdout, "")?;
     Ok(())
 }
 
-fn select_preset(stdout: &mut io::Stdout) -> Result<ModelPreset> {
+fn step_workspace(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<NavigationAction> {
+    print_line(stdout, &format!("  {BOLD}Workspace Directory{RESET}"))?;
+    print_line(stdout, "")?;
+    
+    match prompt_text_with_nav(stdout, "Workspace directory", &state.workspace)? {
+        (Some(value), nav) => {
+            state.workspace = value;
+            Ok(nav)
+        }
+        (None, nav) => Ok(nav),
+    }
+}
+
+fn step_preset(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<NavigationAction> {
     let all_presets = presets();
     let labels = all_presets
         .iter()
@@ -133,18 +143,48 @@ fn select_preset(stdout: &mut io::Stdout) -> Result<ModelPreset> {
 
     print_line(stdout, &format!("  {BOLD}Quick Model Setup{RESET}"))?;
     print_line(stdout, "")?;
-    let preset_idx = select_menu(stdout, &labels)?;
+    
+    let default_idx = state.preset.as_ref()
+        .and_then(|p| all_presets.iter().position(|preset| preset.label == p.label))
+        .unwrap_or(0);
+    
+    let preset_idx = select_menu_default(stdout, &labels, default_idx)?;
     print_line(stdout, "")?;
 
-    Ok(all_presets[preset_idx].clone())
+    state.preset = Some(all_presets[preset_idx].clone());
+    
+    // Update state with preset values
+    let preset = &all_presets[preset_idx];
+    state.provider_name = preset.provider_name.clone();
+    state.protocol = preset.protocol.clone();
+    state.base_url = preset.base_url.clone();
+    state.model = preset.model.clone();
+    state.secret_key = preset.secret_key.clone();
+
+    Ok(NavigationAction::Next)
 }
 
-fn prompt_custom_provider(
-    stdout: &mut io::Stdout,
-) -> Result<(String, String, String, String, String)> {
-    let provider_name = prompt_text(stdout, "Provider name", "custom-openai")?;
+fn step_provider_details(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<NavigationAction> {
+    let preset = state.preset.as_ref().unwrap();
+    
+    // Skip this step if not custom provider
+    if preset.provider_name != "custom" {
+        return Ok(NavigationAction::Next);
+    }
+
+    print_line(stdout, &format!("  {BOLD}Custom Provider Configuration{RESET}"))?;
     print_line(stdout, "")?;
 
+    // Provider name
+    match prompt_text_with_nav(stdout, "Provider name", &state.provider_name)? {
+        (Some(value), NavigationAction::Next) => state.provider_name = value,
+        (_, nav @ NavigationAction::Back) => return Ok(nav),
+        (_, nav @ NavigationAction::Quit) => return Ok(nav),
+        _ => {}
+    }
+    print_line(stdout, "")?;
+
+    // Protocol selection
     let protocol_labels = vec![
         format!("OpenAI-compatible  {DIM}(OpenAI, Groq, Together, vLLM){RESET}"),
         format!("Gemini             {DIM}(Google AI Studio / Vertex){RESET}"),
@@ -152,10 +192,16 @@ fn prompt_custom_provider(
     ];
     print_line(stdout, &format!("  {BOLD}Endpoint protocol{RESET}"))?;
     print_line(stdout, "")?;
-    let protocol_idx = select_menu_default(stdout, &protocol_labels, 0)?;
+    
+    let protocol_idx = match state.protocol.as_str() {
+        "gemini" => 1,
+        "anthropic" => 2,
+        _ => 0,
+    };
+    let selected_protocol = select_menu_default(stdout, &protocol_labels, protocol_idx)?;
     print_line(stdout, "")?;
 
-    let (protocol, default_url, default_model) = match protocol_idx {
+    let (protocol, default_url, default_model) = match selected_protocol {
         1 => (
             "gemini".to_string(),
             "https://generativelanguage.googleapis.com/v1beta".to_string(),
@@ -173,10 +219,117 @@ fn prompt_custom_provider(
         ),
     };
 
-    let base_url = prompt_text(stdout, "Base URL", &default_url)?;
-    let model = prompt_text(stdout, "Model", &default_model)?;
-    let secret_key = format!("{}_api_key", provider_name.replace('-', "_"));
+    state.protocol = protocol;
+
+    // Base URL
+    let current_url = if state.base_url.is_empty() { &default_url } else { &state.base_url };
+    match prompt_text_with_nav(stdout, "Base URL", current_url)? {
+        (Some(value), NavigationAction::Next) => state.base_url = value,
+        (_, nav @ NavigationAction::Back) => return Ok(nav),
+        (_, nav @ NavigationAction::Quit) => return Ok(nav),
+        _ => {}
+    }
+
+    // Model
+    let current_model = if state.model.is_empty() { &default_model } else { &state.model };
+    match prompt_text_with_nav(stdout, "Model", current_model)? {
+        (Some(value), NavigationAction::Next) => state.model = value,
+        (_, nav @ NavigationAction::Back) => return Ok(nav),
+        (_, nav @ NavigationAction::Quit) => return Ok(nav),
+        _ => {}
+    }
+
+    state.secret_key = format!("{}_api_key", state.provider_name.replace('-', "_"));
     print_line(stdout, "")?;
 
-    Ok((provider_name, protocol, base_url, model, secret_key))
+    Ok(NavigationAction::Next)
+}
+
+fn step_api_key(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<NavigationAction> {
+    let preset = state.preset.as_ref().unwrap();
+    let skipped = preset.provider_name.is_empty();
+
+    if skipped || !preset.needs_api_key {
+        return Ok(NavigationAction::Next);
+    }
+
+    print_line(stdout, &format!("  {BOLD}API Key{RESET}"))?;
+    print_line(stdout, "")?;
+
+    match prompt_text_with_nav(stdout, "API key", &state.api_key)? {
+        (Some(value), NavigationAction::Next) => {
+            state.api_key = value;
+            if !state.api_key.is_empty() {
+                print_line(stdout, "  Key captured")?;
+            }
+            print_line(stdout, "")?;
+            Ok(NavigationAction::Next)
+        }
+        (_, nav) => Ok(nav),
+    }
+}
+
+fn step_risk_tier(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<NavigationAction> {
+    let risk_labels = vec![
+        format!("Tier 0  {DIM}Read-only operations only{RESET}"),
+        format!("Tier 1  {DIM}Allow local modifications with confirmation{RESET}"),
+        format!("Tier 2  {DIM}Allow all operations with confirmation{RESET}"),
+    ];
+    print_line(stdout, &format!("  {BOLD}Maximum Risk Tier{RESET}"))?;
+    print_line(stdout, "")?;
+    
+    let risk_idx = select_menu_default(stdout, &risk_labels, state.max_risk_tier as usize)?;
+    state.max_risk_tier = risk_idx as u8;
+    print_line(stdout, "")?;
+
+    Ok(NavigationAction::Next)
+}
+
+fn step_password(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<NavigationAction> {
+    print_line(stdout, &format!("  {BOLD}Daemon Password{RESET}"))?;
+    print_line(stdout, &format!("  {DIM}Minimum 8 characters{RESET}"))?;
+    print_line(stdout, "")?;
+
+    loop {
+        let password = prompt_secret(stdout, "Daemon password")?;
+        if password.trim().len() < 8 {
+            print_line(
+                stdout,
+                "  Password must be at least 8 characters. Try again.",
+            )?;
+            continue;
+        }
+
+        let confirm = prompt_secret(stdout, "Confirm daemon password")?;
+        if password != confirm {
+            print_line(stdout, "  Passwords did not match. Try again.")?;
+            continue;
+        }
+        
+        state.daemon_password = password;
+        state.password_confirmed = true;
+        print_line(stdout, "")?;
+        break;
+    }
+
+    Ok(NavigationAction::Next)
+}
+
+fn build_result(state: &WizardState) -> SetupResult {
+    let skipped = state.preset.as_ref().map(|p| p.provider_name.is_empty()).unwrap_or(true);
+    
+    SetupResult {
+        workspace: state.workspace.clone(),
+        provider_name: state.provider_name.clone(),
+        protocol: state.protocol.clone(),
+        base_url: state.base_url.clone(),
+        model: state.model.clone(),
+        secret_key: state.secret_key.clone(),
+        api_key: state.api_key.clone(),
+        max_risk_tier: state.max_risk_tier,
+        skipped_model: skipped,
+        daemon_password: state.daemon_password.clone(),
+        recovery_code: None,
+        auth_protection: None,
+    }
 }

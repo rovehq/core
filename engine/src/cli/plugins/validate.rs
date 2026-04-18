@@ -38,6 +38,31 @@ pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> 
         }
     }
 
+    for secret in &manifest.permissions.secrets {
+        if secret.trim().is_empty() {
+            bail!(
+                "Plugin '{}' declares an empty secret permission",
+                manifest.name
+            );
+        }
+    }
+
+    for pattern in &manifest.permissions.host_patterns {
+        if pattern.0.trim().is_empty() {
+            bail!(
+                "Plugin '{}' declares an empty secret host pattern",
+                manifest.name
+            );
+        }
+    }
+
+    if !manifest.permissions.secrets.is_empty() && manifest.permissions.host_patterns.is_empty() {
+        bail!(
+            "Plugin '{}' declares secret permissions but no host_patterns allowlist",
+            manifest.name
+        );
+    }
+
     if matches!(manifest.plugin_type, PluginType::Mcp) && !manifest.permissions.tools.is_empty() {
         bail!(
             "MCP plugin '{}' cannot request builtin tool access in manifest permissions",
@@ -100,6 +125,37 @@ pub fn review_manifest_permissions(manifest: &Manifest) -> PermissionReview {
     } else {
         manifest.permissions.tools.join(", ")
     };
+    let secret_keys = if manifest.permissions.secrets.is_empty() {
+        "none".to_string()
+    } else {
+        manifest.permissions.secrets.join(", ")
+    };
+    let secret_hosts = if manifest.permissions.host_patterns.is_empty() {
+        "none".to_string()
+    } else {
+        manifest
+            .permissions
+            .host_patterns
+            .iter()
+            .map(|pattern| pattern.0.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let wasm_memory_limit = manifest
+        .permissions
+        .wasm_max_memory_mb
+        .map(|value| format!("{value} MB"))
+        .unwrap_or_else(|| "default".to_string());
+    let wasm_fuel_limit = manifest
+        .permissions
+        .wasm_fuel_limit
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "default".to_string());
+    let execution_timeout = manifest
+        .permissions
+        .max_execution_time
+        .map(|value| format!("{value}s"))
+        .unwrap_or_else(|| "default".to_string());
 
     let mut warnings = Vec::new();
     for path in &manifest.permissions.filesystem {
@@ -117,6 +173,35 @@ pub fn review_manifest_permissions(manifest: &Manifest) -> PermissionReview {
                 domain.0
             ));
         }
+    }
+    for pattern in &manifest.permissions.host_patterns {
+        if is_broad_network_pattern(&pattern.0) {
+            warnings.push(format!(
+                "secret host pattern '{}' is broader than recommended",
+                pattern.0
+            ));
+        }
+    }
+    if manifest
+        .permissions
+        .wasm_max_memory_mb
+        .is_some_and(|value| value > 256)
+    {
+        warnings.push("WASM memory limit is higher than recommended (over 256 MB)".to_string());
+    }
+    if manifest
+        .permissions
+        .wasm_fuel_limit
+        .is_some_and(|value| value > 100_000_000)
+    {
+        warnings.push("WASM fuel limit is higher than recommended (over 100000000)".to_string());
+    }
+    if manifest
+        .permissions
+        .max_execution_time
+        .is_some_and(|value| value > 300)
+    {
+        warnings.push("WASM execution timeout is higher than recommended (over 300s)".to_string());
     }
     if matches!(
         manifest.plugin_type,
@@ -137,9 +222,15 @@ pub fn review_manifest_permissions(manifest: &Manifest) -> PermissionReview {
             format!("trust tier: {:?}", manifest.trust_tier),
             format!("filesystem: {}", filesystem),
             format!("network: {}", network),
+            format!("secrets: {}", secret_keys),
+            format!("secret hosts: {}", secret_hosts),
             format!(
                 "memory: read={} write={}",
                 manifest.permissions.memory_read, manifest.permissions.memory_write
+            ),
+            format!(
+                "wasm limits: timeout={} memory={} fuel={}",
+                execution_timeout, wasm_memory_limit, wasm_fuel_limit
             ),
             format!("builtin tools: {}", builtin_tools),
         ],
@@ -343,5 +434,117 @@ mod tests {
         assert!(error
             .to_string()
             .contains("cannot request builtin tool access"));
+    }
+
+    #[test]
+    fn validate_plugin_shape_requires_host_patterns_for_secret_permissions() {
+        let manifest = Manifest::from_json(
+            r#"{
+                "name": "Bad Secret Plugin",
+                "version": "0.1.0",
+                "sdk_version": "0.1.0",
+                "plugin_type": "Skill",
+                "permissions": {
+                    "filesystem": [],
+                    "network": ["api.openai.com"],
+                    "secrets": ["OPENAI_API_KEY"],
+                    "host_patterns": [],
+                    "memory_read": false,
+                    "memory_write": false,
+                    "tools": []
+                },
+                "trust_tier": "Reviewed",
+                "min_model": null,
+                "description": "Bad secret plugin",
+                "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
+            }"#,
+        )
+        .expect("manifest");
+
+        let error = validate_plugin_shape(
+            &manifest,
+            Some(
+                r#"{
+                    "tools": [{
+                        "name": "call_model",
+                        "description": "Call model",
+                        "parameters": {},
+                        "domains": ["all"]
+                    }]
+                }"#,
+            ),
+        )
+        .expect_err("secret permissions should require host patterns");
+
+        assert!(error.to_string().contains("host_patterns allowlist"));
+    }
+
+    #[test]
+    fn review_manifest_permissions_includes_secret_permissions() {
+        let manifest = Manifest::from_json(
+            r#"{
+                "name": "Secret Plugin",
+                "version": "0.1.0",
+                "sdk_version": "0.1.0",
+                "plugin_type": "Skill",
+                "permissions": {
+                    "filesystem": [],
+                    "network": ["api.openai.com"],
+                    "secrets": ["OPENAI_API_KEY"],
+                    "host_patterns": ["api.openai.com"],
+                    "memory_read": false,
+                    "memory_write": false,
+                    "tools": []
+                },
+                "trust_tier": "Reviewed",
+                "min_model": null,
+                "description": "Secret plugin",
+                "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
+            }"#,
+        )
+        .expect("manifest");
+
+        let review = review_manifest_permissions(&manifest);
+        assert!(review
+            .summary_lines
+            .iter()
+            .any(|line| line == "secrets: OPENAI_API_KEY"));
+        assert!(review
+            .summary_lines
+            .iter()
+            .any(|line| line == "secret hosts: api.openai.com"));
+    }
+
+    #[test]
+    fn review_manifest_permissions_includes_wasm_limits() {
+        let manifest = Manifest::from_json(
+            r#"{
+                "name": "Limited Plugin",
+                "version": "0.1.0",
+                "sdk_version": "0.1.0",
+                "plugin_type": "Skill",
+                "permissions": {
+                    "filesystem": [],
+                    "network": [],
+                    "memory_read": false,
+                    "memory_write": false,
+                    "wasm_max_memory_mb": 32,
+                    "wasm_fuel_limit": 75000000,
+                    "max_execution_time": 45,
+                    "tools": []
+                },
+                "trust_tier": "Reviewed",
+                "min_model": null,
+                "description": "Limited plugin",
+                "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
+            }"#,
+        )
+        .expect("manifest");
+
+        let review = review_manifest_permissions(&manifest);
+        assert!(review
+            .summary_lines
+            .iter()
+            .any(|line| line == "wasm limits: timeout=45s memory=32 MB fuel=75000000"));
     }
 }

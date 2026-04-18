@@ -8,8 +8,8 @@ use tracing::{debug, info};
 
 use super::{
     AgentRunRepository, AuthRepository, ExtensionCatalogRepository, InstalledPluginRepository,
-    KnowledgeRepository, PendingTaskRepository, PluginRepository, RemoteDiscoveryRepository,
-    ScheduleRepository, TaskRepository, TelegramAuditRepository,
+    KnowledgeRepository, MemoryAuditRepository, PendingTaskRepository, PluginRepository,
+    RemoteDiscoveryRepository, ScheduleRepository, TaskRepository, TelegramAuditRepository,
 };
 
 /// Database connection pool.
@@ -52,9 +52,18 @@ impl Database {
     async fn run_schema(&self) -> Result<()> {
         info!("Running database schema");
 
+        // Pre-schema compatibility patches: run BEFORE base.sql so that any
+        // index or constraint in base.sql that references a newly-added column
+        // finds that column already present on existing databases.
         self.ensure_agent_events_parent_task_id_compat()
             .await
             .context("Failed to apply pre-schema agent_events compatibility patch")?;
+        self.ensure_task_history_columns()
+            .await
+            .context("Failed to apply pre-schema task history columns patch")?;
+        self.ensure_pending_task_profile_column()
+            .await
+            .context("Failed to apply pre-schema pending task profile patch")?;
 
         sqlx::raw_sql(include_str!("../../schemas/base.sql"))
             .execute(&self.pool)
@@ -70,6 +79,9 @@ impl Database {
         self.ensure_workflow_run_columns()
             .await
             .context("Failed to apply workflow run schema patch")?;
+        self.ensure_workflow_run_status_supports_canceled()
+            .await
+            .context("Failed to apply workflow run cancel-status schema patch")?;
         self.ensure_graph_provenance_columns()
             .await
             .context("Failed to apply graph provenance schema patch")?;
@@ -82,8 +94,126 @@ impl Database {
         self.ensure_scheduled_task_columns()
             .await
             .context("Failed to apply scheduled task schema patch")?;
+        // Also run post-schema in case new installs need the index created.
+        self.ensure_task_history_columns()
+            .await
+            .context("Failed to apply task history schema patch")?;
+        self.ensure_memory_audit_tables()
+            .await
+            .context("Failed to apply memory audit schema patch")?;
 
         info!("Database schema loaded successfully");
+        Ok(())
+    }
+
+    async fn ensure_task_history_columns(&self) -> Result<()> {
+        if !self.table_exists("tasks").await? {
+            return Ok(());
+        }
+
+        let columns = self.table_columns("tasks").await?;
+        for (column, sql_type, default_clause) in [
+            ("source", "TEXT", " NOT NULL DEFAULT 'cli'"),
+            ("agent_id", "TEXT", ""),
+            ("agent_name", "TEXT", ""),
+            ("worker_preset_id", "TEXT", ""),
+            ("worker_preset_name", "TEXT", ""),
+        ] {
+            if !columns.iter().any(|existing| existing == column) {
+                sqlx::query(&format!(
+                    "ALTER TABLE tasks ADD COLUMN {column} {sql_type}{default_clause}"
+                ))
+                .execute(&self.pool)
+                .await
+                .with_context(|| format!("Failed to add tasks.{column} compatibility column"))?;
+            }
+        }
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_agent_created_at ON tasks(agent_id, created_at DESC)")
+            .execute(&self.pool)
+            .await
+            .context("Failed to create task agent history index")?;
+
+        Ok(())
+    }
+
+    async fn ensure_pending_task_profile_column(&self) -> Result<()> {
+        if !self.table_exists("pending_tasks").await? {
+            return Ok(());
+        }
+
+        let columns = self.table_columns("pending_tasks").await?;
+        if !columns
+            .iter()
+            .any(|existing| existing == "execution_profile_json")
+        {
+            sqlx::query("ALTER TABLE pending_tasks ADD COLUMN execution_profile_json TEXT")
+                .execute(&self.pool)
+                .await
+                .context(
+                    "Failed to add pending_tasks.execution_profile_json compatibility column",
+                )?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_memory_audit_tables(&self) -> Result<()> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS memory_versions (
+                id TEXT PRIMARY KEY,
+                entity_kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                version_num INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                source_task_id TEXT,
+                created_at INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_versions_entity_version
+               ON memory_versions(entity_kind, entity_id, version_num)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_memory_versions_entity_created
+               ON memory_versions(entity_kind, entity_id, created_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS memory_audit_log (
+                id TEXT PRIMARY KEY,
+                entity_kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                source_task_id TEXT,
+                precondition_hash TEXT,
+                content_hash TEXT,
+                metadata_json TEXT,
+                created_at INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_memory_audit_entity_created
+               ON memory_audit_log(entity_kind, entity_id, created_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -165,6 +295,8 @@ impl Database {
             ("current_step_name", "TEXT", ""),
             ("retry_count", "INTEGER", " NOT NULL DEFAULT 0"),
             ("last_task_id", "TEXT", ""),
+            ("cancel_requested", "INTEGER", " NOT NULL DEFAULT 0"),
+            ("cancel_requested_at", "INTEGER", ""),
         ] {
             if !columns.iter().any(|existing| existing == column) {
                 sqlx::query(&format!(
@@ -191,6 +323,90 @@ impl Database {
         .execute(&self.pool)
         .await
         .context("Failed to create workflow_run_steps status index")?;
+
+        Ok(())
+    }
+
+    async fn ensure_workflow_run_status_supports_canceled(&self) -> Result<()> {
+        if !self.table_exists("workflow_runs").await? {
+            return Ok(());
+        }
+
+        let create_sql = self
+            .table_sql("workflow_runs")
+            .await?
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if create_sql.contains("'canceled'") {
+            return Ok(());
+        }
+
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&self.pool)
+            .await
+            .context("Failed to disable foreign keys for workflow_runs rebuild")?;
+
+        sqlx::query("ALTER TABLE workflow_runs RENAME TO workflow_runs_legacy")
+            .execute(&self.pool)
+            .await
+            .context("Failed to rename legacy workflow_runs table")?;
+
+        sqlx::query(
+            r#"CREATE TABLE workflow_runs (
+                run_id         TEXT PRIMARY KEY,
+                workflow_id    TEXT NOT NULL,
+                status         TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed', 'canceled')),
+                input          TEXT NOT NULL,
+                output         TEXT,
+                error          TEXT,
+                steps_total    INTEGER NOT NULL DEFAULT 0,
+                steps_completed INTEGER NOT NULL DEFAULT 0,
+                current_step_index INTEGER,
+                current_step_id TEXT,
+                current_step_name TEXT,
+                retry_count    INTEGER NOT NULL DEFAULT 0,
+                last_task_id   TEXT,
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                cancel_requested_at INTEGER,
+                created_at     INTEGER NOT NULL,
+                completed_at   INTEGER
+            )"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create upgraded workflow_runs table")?;
+
+        sqlx::query(
+            r#"INSERT INTO workflow_runs (
+                   run_id, workflow_id, status, input, output, error,
+                   steps_total, steps_completed, current_step_index, current_step_id, current_step_name,
+                   retry_count, last_task_id, cancel_requested, cancel_requested_at, created_at, completed_at
+               )
+               SELECT run_id, workflow_id, status, input, output, error,
+                      steps_total, steps_completed, current_step_index, current_step_id, current_step_name,
+                      retry_count, last_task_id, COALESCE(cancel_requested, 0), cancel_requested_at, created_at, completed_at
+               FROM workflow_runs_legacy"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to copy legacy workflow_runs rows")?;
+
+        sqlx::query("DROP TABLE workflow_runs_legacy")
+            .execute(&self.pool)
+            .await
+            .context("Failed to drop legacy workflow_runs table")?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id, created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to recreate workflow_runs index")?;
+
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&self.pool)
+            .await
+            .context("Failed to re-enable foreign keys after workflow_runs rebuild")?;
 
         Ok(())
     }
@@ -322,6 +538,16 @@ impl Database {
             .map(|rows| rows.into_iter().map(|row| row.get("name")).collect())
     }
 
+    async fn table_sql(&self, table: &str) -> Result<Option<String>> {
+        sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        )
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .with_context(|| format!("Failed to inspect create SQL for table '{table}'"))
+    }
+
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -364,6 +590,10 @@ impl Database {
 
     pub fn knowledge(&self) -> KnowledgeRepository {
         KnowledgeRepository::new(self.pool.clone())
+    }
+
+    pub fn memory_audit(&self) -> MemoryAuditRepository {
+        MemoryAuditRepository::new(self.pool.clone())
     }
 
     pub fn plugins(&self) -> PluginRepository {

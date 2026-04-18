@@ -5,6 +5,9 @@ import { useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
 import {
   DaemonError,
+  EpisodicBrowseResponse,
+  EpisodicRecord,
+  FactRecord,
   MemoryAdapterMode,
   MemoryBundleStrategy,
   MemoryGraphHit,
@@ -37,6 +40,12 @@ export default function MemoryPage() {
   const [note, setNote] = useState('');
   const [domain, setDomain] = useState('code');
   const [backfillBatch, setBackfillBatch] = useState('100');
+  const [episodic, setEpisodic] = useState<EpisodicBrowseResponse | null>(null);
+  const [facts, setFacts] = useState<FactRecord[] | null>(null);
+  const [browseTab, setBrowseTab] = useState<'episodic' | 'facts'>('episodic');
+  const [episodicOffset, setEpisodicOffset] = useState(0);
+  const EPISODIC_PAGE = 25;
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +53,42 @@ export default function MemoryPage() {
 
   useEffect(() => {
     void refresh();
+    void refreshBrowse(0);
   }, []);
+
+  async function refreshBrowse(offset: number) {
+    try {
+      const [nextEpisodic, nextFacts] = await Promise.all([
+        daemonClient().listEpisodicMemories(offset, EPISODIC_PAGE),
+        daemonClient().listMemoryFacts(),
+      ]);
+      setEpisodic(nextEpisodic);
+      setFacts(nextFacts);
+      setEpisodicOffset(offset);
+    } catch {
+      // non-fatal — browse is supplementary
+    }
+  }
+
+  async function deleteEpisodic(id: string) {
+    try {
+      await daemonClient().deleteEpisodicMemory(id);
+      void refreshBrowse(episodicOffset);
+      setMessage('Memory deleted.');
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
+  async function deleteFact(key: string) {
+    try {
+      await daemonClient().deleteMemoryFact(key);
+      void refreshBrowse(episodicOffset);
+      setMessage('Fact deleted.');
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
 
   async function refresh() {
     setLoading(true);
@@ -217,6 +261,7 @@ export default function MemoryPage() {
       const hit = await daemonClient().ingestMemoryNote({ note, domain });
       setMessage(`Stored note: ${hit.content}`);
       setNote('');
+      void refreshBrowse(0);
     } catch (nextError) {
       setError(formatError(nextError));
     } finally {
@@ -535,6 +580,75 @@ export default function MemoryPage() {
             </div>
           </Panel>
         </section>
+
+        <section className="rounded-2xl border border-surface2 bg-surface/80 p-5 shadow-[0_16px_40px_rgba(0,0,0,0.22)]">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold text-gray-100">Stored Memories</h2>
+            <div className="flex gap-1 rounded-lg border border-surface2 p-1">
+              {(['episodic', 'facts'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setBrowseTab(tab)}
+                  className={`rounded-md px-3 py-1 text-sm transition-colors ${
+                    browseTab === tab
+                      ? 'bg-primary/80 text-white'
+                      : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  {tab === 'episodic'
+                    ? `Episodes${episodic ? ` (${episodic.total})` : ''}`
+                    : `Facts${facts ? ` (${facts.length})` : ''}`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-4">
+            {browseTab === 'episodic' && (
+              <div className="space-y-3">
+                {episodic?.items.map((item) => (
+                  <EpisodicRow key={item.id} item={item} onDelete={deleteEpisodic} />
+                ))}
+                {episodic?.items.length === 0 && (
+                  <p className="text-sm text-gray-500">No episodic memories stored yet.</p>
+                )}
+                {episodic && episodic.total > EPISODIC_PAGE && (
+                  <div className="flex items-center gap-3 pt-1">
+                    <button
+                      onClick={() => void refreshBrowse(Math.max(0, episodicOffset - EPISODIC_PAGE))}
+                      disabled={episodicOffset === 0}
+                      className="rounded-lg border border-surface2 px-3 py-1.5 text-sm text-gray-300 disabled:opacity-40"
+                    >
+                      ← Prev
+                    </button>
+                    <span className="text-sm text-gray-500">
+                      {episodicOffset + 1}–{Math.min(episodicOffset + EPISODIC_PAGE, episodic.total)}{' '}
+                      of {episodic.total}
+                    </span>
+                    <button
+                      onClick={() => void refreshBrowse(episodicOffset + EPISODIC_PAGE)}
+                      disabled={episodicOffset + EPISODIC_PAGE >= episodic.total}
+                      className="rounded-lg border border-surface2 px-3 py-1.5 text-sm text-gray-300 disabled:opacity-40"
+                    >
+                      Next →
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {browseTab === 'facts' && (
+              <div className="space-y-2">
+                {facts?.map((fact) => (
+                  <FactRow key={fact.key} fact={fact} onDelete={deleteFact} />
+                ))}
+                {facts?.length === 0 && (
+                  <p className="text-sm text-gray-500">No pinned facts stored yet.</p>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
       </main>
     </div>
   );
@@ -617,6 +731,77 @@ function MemoryGraphHitGroup({ hits }: { hits: MemoryGraphHit[] }) {
       </div>
     </div>
   );
+}
+
+function EpisodicRow({
+  item,
+  onDelete,
+}: {
+  item: EpisodicRecord;
+  onDelete: (id: string) => void;
+}) {
+  const age = formatAge(item.created_at);
+  return (
+    <div className="group flex items-start gap-3 rounded-xl border border-surface2/80 bg-background/40 px-3 py-3 text-sm">
+      <div className="min-w-0 flex-1">
+        <div className="text-gray-100">{item.summary}</div>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
+          <span className="capitalize">{item.domain}</span>
+          {item.memory_kind ? (
+            <span className="rounded bg-surface2 px-1.5 py-0.5 text-gray-300">
+              {item.memory_kind}
+            </span>
+          ) : null}
+          <span>imp {item.importance.toFixed(2)}</span>
+          <span>{age}</span>
+          {item.access_count > 0 ? <span>accessed {item.access_count}×</span> : null}
+        </div>
+      </div>
+      <button
+        onClick={() => onDelete(item.id)}
+        className="mt-0.5 shrink-0 rounded px-2 py-1 text-xs text-gray-600 opacity-0 transition-opacity hover:bg-red-900/40 hover:text-red-300 group-hover:opacity-100"
+        title="Delete"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
+function FactRow({
+  fact,
+  onDelete,
+}: {
+  fact: FactRecord;
+  onDelete: (key: string) => void;
+}) {
+  const age = formatAge(fact.updated_at);
+  return (
+    <div className="group flex items-start gap-3 rounded-xl border border-surface2/80 bg-background/40 px-3 py-2.5 text-sm">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-mono text-xs text-indigo-300">{fact.key}</span>
+          <span className="text-gray-100">{fact.value}</span>
+        </div>
+        <div className="mt-1 text-xs text-gray-500">{age}</div>
+      </div>
+      <button
+        onClick={() => onDelete(fact.key)}
+        className="mt-0.5 shrink-0 rounded px-2 py-1 text-xs text-gray-600 opacity-0 transition-opacity hover:bg-red-900/40 hover:text-red-300 group-hover:opacity-100"
+        title="Delete"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
+function formatAge(unixSecs: number): string {
+  const diff = Math.floor(Date.now() / 1000) - unixSecs;
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
 }
 
 function ToggleRow({

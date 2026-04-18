@@ -209,6 +209,15 @@ export default function AgentsPage() {
     }
   }
 
+  function updateChannel(index: number, patch: Partial<AgentSpec['channels'][number]>) {
+    setForm((current) => ({
+      ...current,
+      channels: current.channels.map((binding, bindingIndex) =>
+        bindingIndex === index ? { ...binding, ...patch } : binding,
+      ),
+    }));
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className="sticky top-0 z-10 bg-background/80 backdrop-blur border-b border-surface2">
@@ -354,6 +363,7 @@ export default function AgentsPage() {
                 <option value="">Inherited</option>
                 <option value="desktop">desktop</option>
                 <option value="headless">headless</option>
+                <option value="edge">edge</option>
               </select>
             </Field>
             <Field label="Approval Mode">
@@ -373,6 +383,27 @@ export default function AgentsPage() {
                 <option value="open">open</option>
                 <option value="assisted">assisted</option>
               </select>
+            </Field>
+            <Field label="Model Policy">
+              <input
+                value={form.model_policy ?? ''}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    model_policy: event.target.value || null,
+                  }))
+                }
+                className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                placeholder="Optional provider/model routing policy"
+              />
+            </Field>
+            <Field label="Schedules">
+              <input
+                value={formatCsv(form.schedules)}
+                onChange={(event) => setForm((current) => ({ ...current, schedules: parseCsv(event.target.value) }))}
+                className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                placeholder="0 * * * *, weekdays-09:00"
+              />
             </Field>
           </div>
 
@@ -470,6 +501,107 @@ export default function AgentsPage() {
               />
             </div>
           </div>
+
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-medium">Channel Bindings</h3>
+                <p className="text-sm text-gray-400">
+                  Bind the agent directly to inbound channel targets. These bindings are stored on the spec and reused by channel surfaces.
+                </p>
+              </div>
+              <button
+                onClick={() =>
+                  setForm((current) => ({
+                    ...current,
+                    channels: [
+                      ...current.channels,
+                      {
+                        kind: '',
+                        target: null,
+                        enabled: true,
+                      },
+                    ],
+                  }))
+                }
+                className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary"
+              >
+                Add Channel
+              </button>
+            </div>
+            {form.channels.length === 0 ? (
+              <EmptyState text="No channel bindings configured." />
+            ) : (
+              <div className="space-y-3">
+                {form.channels.map((binding, index) => (
+                  <div key={`${binding.kind}-${binding.target ?? index}`} className="grid gap-3 rounded-lg bg-surface2 p-4 md:grid-cols-[1fr_1fr_auto_auto]">
+                    <input
+                      value={binding.kind}
+                      onChange={(event) => updateChannel(index, { kind: event.target.value })}
+                      className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                      placeholder="telegram"
+                    />
+                    <input
+                      value={binding.target ?? ''}
+                      onChange={(event) => updateChannel(index, { target: event.target.value || null })}
+                      className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                      placeholder="default or chat:123"
+                    />
+                    <Checkbox
+                      label="Enabled"
+                      checked={binding.enabled}
+                      onChange={(checked) => updateChannel(index, { enabled: checked })}
+                    />
+                    <button
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          channels: current.channels.filter((_, bindingIndex) => bindingIndex !== index),
+                        }))
+                      }
+                      className="rounded-lg border border-error/30 px-3 py-2 text-sm text-error hover:bg-error/10"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="grid gap-4 md:grid-cols-2">
+            <Field label="UI Icon">
+              <input
+                value={form.ui.icon ?? ''}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    ui: { ...current.ui, icon: event.target.value || null },
+                  }))
+                }
+                className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                placeholder="◎"
+              />
+            </Field>
+            <Field label="UI Accent">
+              <input
+                value={form.ui.accent ?? ''}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    ui: { ...current.ui, accent: event.target.value || null },
+                  }))
+                }
+                className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                placeholder="primary"
+              />
+            </Field>
+          </section>
+
+          <SpecMetadataPanel
+            provenance={form.provenance}
+            snapshot={normalizeAgent(form)}
+          />
 
           <section className="space-y-3">
             <div className="flex items-center justify-between">
@@ -617,6 +749,11 @@ export default function AgentsPage() {
                         <p className="mt-2 text-sm text-gray-500">
                           capabilities {capabilityNames.join(', ') || 'none'}
                         </p>
+                        {agent.channels.length > 0 ? (
+                          <p className="mt-1 text-sm text-gray-500">
+                            channels {agent.channels.map(formatChannelBinding).join(', ')}
+                          </p>
+                        ) : null}
                       </div>
                       <button
                         onClick={() => setForm(cloneAgent(agent))}
@@ -717,6 +854,14 @@ function normalizeAgent(spec: AgentSpec): AgentSpec {
     approval_mode: emptyToNull(spec.approval_mode),
     runtime_profile: emptyToNull(spec.runtime_profile),
     output_contract: emptyToNull(spec.output_contract),
+    channels: spec.channels
+      .map((binding) => ({
+        ...binding,
+        kind: binding.kind.trim(),
+        target: emptyToNull(binding.target),
+      }))
+      .filter((binding) => binding.kind),
+    schedules: spec.schedules.map((value) => value.trim()).filter(Boolean),
     tags: spec.tags.map((tag) => tag.trim()).filter(Boolean),
     capabilities: spec.capabilities
       .map((capability) => ({
@@ -731,6 +876,11 @@ function normalizeAgent(spec: AgentSpec): AgentSpec {
       required_tags: spec.node_placement.required_tags.map((value) => value.trim()).filter(Boolean),
     },
   };
+}
+
+function formatChannelBinding(binding: AgentSpec['channels'][number]) {
+  const target = binding.target?.trim() ? binding.target.trim() : '*';
+  return `${binding.kind}:${target}${binding.enabled ? '' : ' (disabled)'}`;
 }
 
 function formatCsv(values: string[]) {
@@ -762,6 +912,43 @@ function formatError(error: unknown) {
 
 function isDraftSpec(provenance?: AgentSpec['provenance']) {
   return provenance?.review_status === 'draft' || Boolean(provenance?.draft_for);
+}
+
+function SpecMetadataPanel({
+  provenance,
+  snapshot,
+}: {
+  provenance?: AgentSpec['provenance'];
+  snapshot: AgentSpec;
+}) {
+  return (
+    <section className="space-y-3 rounded-xl border border-surface bg-background/30 p-4">
+      <div>
+        <h3 className="font-medium">Spec Metadata</h3>
+        <p className="text-sm text-gray-400">
+          This form writes the daemon-backed TOML spec. Draft provenance stays visible here so review state is not hidden behind file edits.
+        </p>
+      </div>
+      {provenance ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          <MetaValue label="Source" value={provenance.source} />
+          <MetaValue label="Import Source" value={provenance.import_source} />
+          <MetaValue label="Draft For" value={provenance.draft_for} />
+          <MetaValue label="Review Status" value={provenance.review_status} />
+          <MetaValue label="Notes" value={provenance.notes} />
+          <MetaValue label="Reviewed At" value={formatOptionalTimestamp(provenance.reviewed_at)} />
+        </div>
+      ) : (
+        <EmptyState text="No provenance metadata recorded for this spec." />
+      )}
+      <div>
+        <p className="text-xs uppercase tracking-wide text-gray-500">Current Snapshot</p>
+        <pre className="mt-2 max-h-72 overflow-auto rounded-lg border border-surface bg-surface2 p-3 text-xs text-gray-300">
+          {JSON.stringify(snapshot, null, 2)}
+        </pre>
+      </div>
+    </section>
+  );
 }
 
 function FactoryReviewPanel({ review }: { review: FactoryReview }) {
@@ -851,4 +1038,17 @@ function ErrorBanner({ error, onDismiss }: { error: string | null; onDismiss: ()
       </div>
     </div>
   );
+}
+
+function MetaValue({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="rounded-lg border border-surface px-3 py-2">
+      <p className="text-xs uppercase tracking-wide text-gray-500">{label}</p>
+      <p className="mt-1 text-sm text-gray-300 whitespace-pre-wrap">{value?.trim() ? value : 'unset'}</p>
+    </div>
+  );
+}
+
+function formatOptionalTimestamp(value?: number | null) {
+  return value ? formatTimestamp(value) : null;
 }

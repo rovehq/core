@@ -23,6 +23,7 @@ use sqlx::{Row, SqlitePool};
 use tracing::debug;
 
 use crate::conductor::types::{HitType, MemoryHit};
+use crate::storage::{record_fact_version_by_key, MemoryMutationAction};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FactRow — a single row from memory_facts
@@ -80,6 +81,19 @@ pub async fn upsert_fact(
     .bind(now)
     .execute(pool)
     .await?;
+
+    let action = if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM memory_versions WHERE entity_kind = 'fact' AND entity_id = ?")
+        .bind(&canonical_key)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
+        == 0
+    {
+        MemoryMutationAction::Create
+    } else {
+        MemoryMutationAction::Update
+    };
+    let _ = record_fact_version_by_key(pool, &canonical_key, action, "memory_ingest").await;
 
     debug!(key = %canonical_key, "upserted memory fact");
     Ok(())

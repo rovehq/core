@@ -16,7 +16,11 @@ use crate::config::{
     MemoryRetrievalAssist,
 };
 use crate::llm::router::LLMRouter;
-use crate::storage::Database;
+use crate::storage::{
+    current_episodic_hash, current_fact_hash, metadata_map, redact_value, Database,
+    MemoryAuditRecord, MemoryAuditRepository, MemoryEntityKind, MemoryMutationAction,
+    MemoryVersionRecord,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MemorySurfaceStats {
@@ -119,6 +123,65 @@ pub struct MemoryGraphInspectResponse {
 pub struct MemoryIngestRequest {
     pub note: String,
     pub domain: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodicRecord {
+    pub id: String,
+    pub task_id: String,
+    pub summary: String,
+    pub content_hash: String,
+    pub importance: f32,
+    pub memory_kind: Option<String>,
+    pub domain: String,
+    pub created_at: i64,
+    pub access_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodicBrowseResponse {
+    pub items: Vec<EpisodicRecord>,
+    pub total: i64,
+    pub offset: i64,
+    pub limit: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FactRecord {
+    pub key: String,
+    pub value: String,
+    pub content_hash: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryVersionHistoryResponse {
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub versions: Vec<MemoryVersionRecord>,
+    pub audit: Vec<MemoryAuditRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryDeleteRequest {
+    pub expected_content_hash: Option<String>,
+    pub actor: Option<String>,
+    pub source_task_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryRedactRequest {
+    pub expected_content_hash: Option<String>,
+    pub actor: Option<String>,
+    pub source_task_id: Option<String>,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryDeleteResponse {
+    pub deleted: bool,
+    pub content_hash: Option<String>,
 }
 
 pub struct MemoryManager {
@@ -319,6 +382,470 @@ impl MemoryManager {
         let database = self.database().await?;
         let memory = self.memory_system(database.pool().clone());
         memory.backfill_embeddings(batch_size).await
+    }
+
+    pub async fn list_episodic(&self, offset: i64, limit: i64) -> Result<EpisodicBrowseResponse> {
+        let database = self.database().await?;
+        let pool = database.pool().clone();
+
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM episodic_memory")
+            .fetch_one(&pool)
+            .await?;
+
+        let rows = sqlx::query(
+            r#"SELECT id, task_id, summary, entities, topics, importance, memory_kind, domain, created_at, access_count, sensitive, consolidated, consolidation_id
+               FROM episodic_memory
+               ORDER BY created_at DESC
+               LIMIT ? OFFSET ?"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&pool)
+        .await?;
+
+        let items = rows
+            .iter()
+            .map(|row| EpisodicRecord {
+                id: sqlx::Row::get(row, "id"),
+                task_id: sqlx::Row::get(row, "task_id"),
+                summary: sqlx::Row::get(row, "summary"),
+                content_hash: MemoryAuditRepository::episodic_snapshot_hash(
+                    sqlx::Row::get::<String, _>(row, "summary").as_str(),
+                    sqlx::Row::get::<String, _>(row, "entities").as_str(),
+                    sqlx::Row::get::<String, _>(row, "topics").as_str(),
+                    sqlx::Row::get(row, "importance"),
+                    sqlx::Row::get::<String, _>(row, "domain").as_str(),
+                    sqlx::Row::get::<String, _>(row, "memory_kind").as_str(),
+                    sqlx::Row::get::<i64, _>(row, "sensitive") != 0,
+                    sqlx::Row::get::<i64, _>(row, "consolidated") != 0,
+                    sqlx::Row::get::<Option<String>, _>(row, "consolidation_id").as_deref(),
+                )
+                .map(|(hash, _)| hash)
+                .unwrap_or_default(),
+                importance: sqlx::Row::get(row, "importance"),
+                memory_kind: sqlx::Row::get(row, "memory_kind"),
+                domain: sqlx::Row::get(row, "domain"),
+                created_at: sqlx::Row::get(row, "created_at"),
+                access_count: sqlx::Row::get(row, "access_count"),
+            })
+            .collect();
+
+        Ok(EpisodicBrowseResponse {
+            items,
+            total,
+            offset,
+            limit,
+        })
+    }
+
+    pub async fn list_facts(&self) -> Result<Vec<FactRecord>> {
+        let database = self.database().await?;
+        let pool = database.pool().clone();
+
+        let rows = sqlx::query(
+            r#"SELECT key, value, task_id, memory_id, created_at, updated_at
+               FROM memory_facts
+               ORDER BY updated_at DESC"#,
+        )
+        .fetch_all(&pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| FactRecord {
+                key: sqlx::Row::get(row, "key"),
+                value: sqlx::Row::get(row, "value"),
+                content_hash: MemoryAuditRepository::fact_snapshot_hash(
+                    sqlx::Row::get::<String, _>(row, "value").as_str(),
+                    sqlx::Row::get::<Option<String>, _>(row, "task_id").as_deref(),
+                    sqlx::Row::get::<Option<String>, _>(row, "memory_id").as_deref(),
+                )
+                .map(|(hash, _)| hash)
+                .unwrap_or_default(),
+                created_at: sqlx::Row::get(row, "created_at"),
+                updated_at: sqlx::Row::get(row, "updated_at"),
+            })
+            .collect())
+    }
+
+    pub async fn episodic_history(&self, id: &str) -> Result<MemoryVersionHistoryResponse> {
+        let database = self.database().await?;
+        let audit = database.memory_audit();
+        Ok(MemoryVersionHistoryResponse {
+            entity_kind: MemoryEntityKind::Episodic.as_str().to_string(),
+            entity_id: id.to_string(),
+            versions: audit.list_versions(MemoryEntityKind::Episodic, id).await?,
+            audit: audit.list_audit(MemoryEntityKind::Episodic, id).await?,
+        })
+    }
+
+    pub async fn fact_history(&self, key: &str) -> Result<MemoryVersionHistoryResponse> {
+        let database = self.database().await?;
+        let audit = database.memory_audit();
+        Ok(MemoryVersionHistoryResponse {
+            entity_kind: MemoryEntityKind::Fact.as_str().to_string(),
+            entity_id: key.to_string(),
+            versions: audit.list_versions(MemoryEntityKind::Fact, key).await?,
+            audit: audit.list_audit(MemoryEntityKind::Fact, key).await?,
+        })
+    }
+
+    pub async fn delete_episodic(
+        &self,
+        id: &str,
+        request: MemoryDeleteRequest,
+    ) -> Result<MemoryDeleteResponse> {
+        let database = self.database().await?;
+        let pool = database.pool().clone();
+        let current_hash = current_episodic_hash(&pool, id).await?;
+        if let Some(expected) = request.expected_content_hash.as_deref() {
+            match current_hash.as_deref() {
+                Some(actual) if actual == expected => {}
+                Some(actual) => {
+                    return Err(anyhow!(
+                        "content hash mismatch for episodic memory '{}': expected {}, found {}",
+                        id,
+                        expected,
+                        actual
+                    ));
+                }
+                None => {
+                    return Err(anyhow!("episodic memory '{}' was not found", id));
+                }
+            }
+        } else if current_hash.is_none() {
+            return Ok(MemoryDeleteResponse {
+                deleted: false,
+                content_hash: None,
+            });
+        }
+
+        let row = sqlx::query(
+            r#"SELECT summary, entities, topics, importance, domain, memory_kind, sensitive, consolidated, consolidation_id
+               FROM episodic_memory
+               WHERE id = ?"#,
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await?;
+        let (content_hash, snapshot_json) = MemoryAuditRepository::episodic_snapshot_hash(
+            sqlx::Row::get::<String, _>(&row, "summary").as_str(),
+            sqlx::Row::get::<String, _>(&row, "entities").as_str(),
+            sqlx::Row::get::<String, _>(&row, "topics").as_str(),
+            sqlx::Row::get(&row, "importance"),
+            sqlx::Row::get::<String, _>(&row, "domain").as_str(),
+            sqlx::Row::get::<String, _>(&row, "memory_kind").as_str(),
+            sqlx::Row::get::<i64, _>(&row, "sensitive") != 0,
+            sqlx::Row::get::<i64, _>(&row, "consolidated") != 0,
+            sqlx::Row::get::<Option<String>, _>(&row, "consolidation_id").as_deref(),
+        )?;
+        let actor = request.actor.unwrap_or_else(|| "operator".to_string());
+        let audit = database.memory_audit();
+        audit
+            .record_version(
+                MemoryEntityKind::Episodic,
+                id,
+                MemoryMutationAction::Delete,
+                &content_hash,
+                &snapshot_json,
+                &actor,
+                request.source_task_id.as_deref(),
+            )
+            .await?;
+
+        // Cascade delete graph edges first
+        sqlx::query("DELETE FROM memory_graph_edges WHERE from_id = ? OR to_id = ?")
+            .bind(id)
+            .bind(id)
+            .execute(&pool)
+            .await?;
+
+        let result = sqlx::query("DELETE FROM episodic_memory WHERE id = ?")
+            .bind(id)
+            .execute(&pool)
+            .await?;
+
+        audit
+            .record_audit(
+                MemoryEntityKind::Episodic,
+                id,
+                MemoryMutationAction::Delete,
+                &actor,
+                request.source_task_id.as_deref(),
+                request.expected_content_hash.as_deref(),
+                Some(&content_hash),
+                metadata_map(&[("deleted", (result.rows_affected() > 0).to_string())]).as_deref(),
+            )
+            .await?;
+
+        Ok(MemoryDeleteResponse {
+            deleted: result.rows_affected() > 0,
+            content_hash: Some(content_hash),
+        })
+    }
+
+    pub async fn delete_fact(
+        &self,
+        key: &str,
+        request: MemoryDeleteRequest,
+    ) -> Result<MemoryDeleteResponse> {
+        let database = self.database().await?;
+        let pool = database.pool().clone();
+        let current_hash = current_fact_hash(&pool, key).await?;
+        if let Some(expected) = request.expected_content_hash.as_deref() {
+            match current_hash.as_deref() {
+                Some(actual) if actual == expected => {}
+                Some(actual) => {
+                    return Err(anyhow!(
+                        "content hash mismatch for fact '{}': expected {}, found {}",
+                        key,
+                        expected,
+                        actual
+                    ));
+                }
+                None => return Err(anyhow!("memory fact '{}' was not found", key)),
+            }
+        } else if current_hash.is_none() {
+            return Ok(MemoryDeleteResponse {
+                deleted: false,
+                content_hash: None,
+            });
+        }
+
+        let row = sqlx::query(
+            r#"SELECT value, task_id, memory_id
+               FROM memory_facts
+               WHERE key = ?"#,
+        )
+        .bind(key)
+        .fetch_one(&pool)
+        .await?;
+        let task_id: Option<String> = sqlx::Row::get(&row, "task_id");
+        let (content_hash, snapshot_json) = MemoryAuditRepository::fact_snapshot_hash(
+            sqlx::Row::get::<String, _>(&row, "value").as_str(),
+            task_id.as_deref(),
+            sqlx::Row::get::<Option<String>, _>(&row, "memory_id").as_deref(),
+        )?;
+        let actor = request.actor.unwrap_or_else(|| "operator".to_string());
+        let audit = database.memory_audit();
+        audit
+            .record_version(
+                MemoryEntityKind::Fact,
+                key,
+                MemoryMutationAction::Delete,
+                &content_hash,
+                &snapshot_json,
+                &actor,
+                request.source_task_id.as_deref().or(task_id.as_deref()),
+            )
+            .await?;
+
+        let result = sqlx::query("DELETE FROM memory_facts WHERE key = ?")
+            .bind(key)
+            .execute(&pool)
+            .await?;
+
+        audit
+            .record_audit(
+                MemoryEntityKind::Fact,
+                key,
+                MemoryMutationAction::Delete,
+                &actor,
+                request.source_task_id.as_deref().or(task_id.as_deref()),
+                request.expected_content_hash.as_deref(),
+                Some(&content_hash),
+                metadata_map(&[("deleted", (result.rows_affected() > 0).to_string())]).as_deref(),
+            )
+            .await?;
+
+        Ok(MemoryDeleteResponse {
+            deleted: result.rows_affected() > 0,
+            content_hash: Some(content_hash),
+        })
+    }
+
+    pub async fn redact_episodic(
+        &self,
+        id: &str,
+        request: MemoryRedactRequest,
+    ) -> Result<EpisodicRecord> {
+        let database = self.database().await?;
+        let pool = database.pool().clone();
+        let current_hash = current_episodic_hash(&pool, id).await?;
+        if let Some(expected) = request.expected_content_hash.as_deref() {
+            match current_hash.as_deref() {
+                Some(actual) if actual == expected => {}
+                Some(actual) => {
+                    return Err(anyhow!(
+                        "content hash mismatch for episodic memory '{}': expected {}, found {}",
+                        id,
+                        expected,
+                        actual
+                    ));
+                }
+                None => return Err(anyhow!("episodic memory '{}' was not found", id)),
+            }
+        }
+
+        let redaction_label = request.label.unwrap_or_else(|| "memory".to_string());
+        let redacted_summary = redact_value(&redaction_label);
+        sqlx::query(
+            r#"UPDATE episodic_memory
+               SET summary = ?, entities = '[]', topics = '[]', tags = '[]'
+               WHERE id = ?"#,
+        )
+        .bind(&redacted_summary)
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+        let actor = request.actor.unwrap_or_else(|| "operator".to_string());
+        let row = sqlx::query(
+            r#"SELECT task_id, summary, importance, memory_kind, domain, created_at, access_count
+               FROM episodic_memory
+               WHERE id = ?"#,
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await?;
+        let content_hash = current_episodic_hash(&pool, id).await?.unwrap_or_default();
+        let audit = database.memory_audit();
+        let snapshot_row = sqlx::query(
+            r#"SELECT summary, entities, topics, importance, domain, memory_kind, sensitive, consolidated, consolidation_id
+               FROM episodic_memory
+               WHERE id = ?"#,
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await?;
+        let (_, snapshot_json) = MemoryAuditRepository::episodic_snapshot_hash(
+            sqlx::Row::get::<String, _>(&snapshot_row, "summary").as_str(),
+            sqlx::Row::get::<String, _>(&snapshot_row, "entities").as_str(),
+            sqlx::Row::get::<String, _>(&snapshot_row, "topics").as_str(),
+            sqlx::Row::get(&snapshot_row, "importance"),
+            sqlx::Row::get::<String, _>(&snapshot_row, "domain").as_str(),
+            sqlx::Row::get::<String, _>(&snapshot_row, "memory_kind").as_str(),
+            sqlx::Row::get::<i64, _>(&snapshot_row, "sensitive") != 0,
+            sqlx::Row::get::<i64, _>(&snapshot_row, "consolidated") != 0,
+            sqlx::Row::get::<Option<String>, _>(&snapshot_row, "consolidation_id").as_deref(),
+        )?;
+        audit
+            .record_version(
+                MemoryEntityKind::Episodic,
+                id,
+                MemoryMutationAction::Redact,
+                &content_hash,
+                &snapshot_json,
+                &actor,
+                request.source_task_id.as_deref(),
+            )
+            .await?;
+        audit
+            .record_audit(
+                MemoryEntityKind::Episodic,
+                id,
+                MemoryMutationAction::Redact,
+                &actor,
+                request.source_task_id.as_deref(),
+                request.expected_content_hash.as_deref(),
+                Some(&content_hash),
+                metadata_map(&[("label", redaction_label)]).as_deref(),
+            )
+            .await?;
+
+        Ok(EpisodicRecord {
+            id: id.to_string(),
+            task_id: sqlx::Row::get(&row, "task_id"),
+            summary: sqlx::Row::get(&row, "summary"),
+            content_hash,
+            importance: sqlx::Row::get(&row, "importance"),
+            memory_kind: sqlx::Row::get(&row, "memory_kind"),
+            domain: sqlx::Row::get(&row, "domain"),
+            created_at: sqlx::Row::get(&row, "created_at"),
+            access_count: sqlx::Row::get(&row, "access_count"),
+        })
+    }
+
+    pub async fn redact_fact(&self, key: &str, request: MemoryRedactRequest) -> Result<FactRecord> {
+        let database = self.database().await?;
+        let pool = database.pool().clone();
+        let current_hash = current_fact_hash(&pool, key).await?;
+        if let Some(expected) = request.expected_content_hash.as_deref() {
+            match current_hash.as_deref() {
+                Some(actual) if actual == expected => {}
+                Some(actual) => {
+                    return Err(anyhow!(
+                        "content hash mismatch for fact '{}': expected {}, found {}",
+                        key,
+                        expected,
+                        actual
+                    ));
+                }
+                None => return Err(anyhow!("memory fact '{}' was not found", key)),
+            }
+        }
+
+        let redaction_label = request.label.unwrap_or_else(|| "fact".to_string());
+        let updated_at = chrono::Utc::now().timestamp();
+        sqlx::query(
+            r#"UPDATE memory_facts
+               SET value = ?, updated_at = ?
+               WHERE key = ?"#,
+        )
+        .bind(redact_value(&redaction_label))
+        .bind(updated_at)
+        .bind(key)
+        .execute(&pool)
+        .await?;
+
+        let row = sqlx::query(
+            r#"SELECT value, task_id, memory_id, created_at, updated_at
+               FROM memory_facts
+               WHERE key = ?"#,
+        )
+        .bind(key)
+        .fetch_one(&pool)
+        .await?;
+        let content_hash = current_fact_hash(&pool, key).await?.unwrap_or_default();
+        let task_id: Option<String> = sqlx::Row::get(&row, "task_id");
+        let actor = request.actor.unwrap_or_else(|| "operator".to_string());
+        let audit = database.memory_audit();
+        let (_, snapshot_json) = MemoryAuditRepository::fact_snapshot_hash(
+            sqlx::Row::get::<String, _>(&row, "value").as_str(),
+            task_id.as_deref(),
+            sqlx::Row::get::<Option<String>, _>(&row, "memory_id").as_deref(),
+        )?;
+        audit
+            .record_version(
+                MemoryEntityKind::Fact,
+                key,
+                MemoryMutationAction::Redact,
+                &content_hash,
+                &snapshot_json,
+                &actor,
+                request.source_task_id.as_deref().or(task_id.as_deref()),
+            )
+            .await?;
+        audit
+            .record_audit(
+                MemoryEntityKind::Fact,
+                key,
+                MemoryMutationAction::Redact,
+                &actor,
+                request.source_task_id.as_deref().or(task_id.as_deref()),
+                request.expected_content_hash.as_deref(),
+                Some(&content_hash),
+                metadata_map(&[("label", redaction_label)]).as_deref(),
+            )
+            .await?;
+
+        Ok(FactRecord {
+            key: key.to_string(),
+            value: sqlx::Row::get(&row, "value"),
+            content_hash,
+            created_at: sqlx::Row::get(&row, "created_at"),
+            updated_at: sqlx::Row::get(&row, "updated_at"),
+        })
     }
 
     pub async fn ingest_note(&self, request: MemoryIngestRequest) -> Result<MemoryHit> {
@@ -541,4 +1068,159 @@ fn read_local_brain_metadata() -> Option<LocalBrainMetadata> {
     let path = LocalBrain::default_brain_dir()?.join("llama-server.json");
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn test_manager() -> (TempDir, Database, MemoryManager) {
+        let temp = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.core.workspace = temp.path().join("workspace");
+        config.core.data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&config.core.workspace).unwrap();
+        std::fs::create_dir_all(&config.core.data_dir).unwrap();
+
+        let database = Database::new(&database_path(&config)).await.unwrap();
+        let manager = MemoryManager::new(config);
+        (temp, database, manager)
+    }
+
+    async fn insert_episodic(pool: &sqlx::SqlitePool, id: &str, summary: &str) {
+        sqlx::query(
+            r#"INSERT INTO episodic_memory
+               (id, task_id, summary, entities, topics, importance, consolidated, tags, created_at, domain, sensitive, memory_kind, access_count)
+               VALUES (?, ?, ?, '[]', '[]', 0.8, 0, '[]', ?, 'general', 0, 'task_trace', 0)"#,
+        )
+        .bind(id)
+        .bind("task-1")
+        .bind(summary)
+        .bind(chrono::Utc::now().timestamp())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn insert_fact(pool: &sqlx::SqlitePool, key: &str, value: &str) {
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query(
+            r#"INSERT INTO memory_facts (key, value, task_id, memory_id, created_at, updated_at)
+               VALUES (?, ?, 'task-1', NULL, ?, ?)"#,
+        )
+        .bind(key)
+        .bind(value)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_episodic_rejects_stale_content_hash() {
+        let (_temp, database, manager) = test_manager().await;
+        insert_episodic(database.pool(), "mem-1", "remember tenant alpha").await;
+
+        let error = manager
+            .delete_episodic(
+                "mem-1",
+                MemoryDeleteRequest {
+                    expected_content_hash: Some("stale".to_string()),
+                    actor: Some("tester".to_string()),
+                    source_task_id: None,
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("content hash mismatch"));
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM episodic_memory WHERE id = ?")
+                .bind("mem-1")
+                .fetch_one(database.pool())
+                .await
+                .unwrap();
+        assert_eq!(remaining, 1);
+    }
+
+    #[tokio::test]
+    async fn redact_fact_records_version_and_audit() {
+        let (_temp, database, manager) = test_manager().await;
+        insert_fact(database.pool(), "tenant.alpha", "staging api uses alpha").await;
+        let expected_hash = current_fact_hash(database.pool(), "tenant.alpha")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let updated = manager
+            .redact_fact(
+                "tenant.alpha",
+                MemoryRedactRequest {
+                    expected_content_hash: Some(expected_hash.clone()),
+                    actor: Some("compliance".to_string()),
+                    source_task_id: Some("case-42".to_string()),
+                    label: Some("tenant".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.value, "[REDACTED:tenant]");
+        let history = manager.fact_history("tenant.alpha").await.unwrap();
+        assert_eq!(history.versions.len(), 1);
+        assert_eq!(history.versions[0].action, "redact");
+        assert_eq!(history.audit.len(), 1);
+        assert_eq!(
+            history.audit[0].precondition_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+        assert_eq!(history.audit[0].actor, "compliance");
+    }
+
+    #[tokio::test]
+    async fn delete_fact_records_delete_version_and_audit() {
+        let (_temp, database, manager) = test_manager().await;
+        insert_fact(database.pool(), "tenant.beta", "prod api uses beta").await;
+        let expected_hash = current_fact_hash(database.pool(), "tenant.beta")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let deleted = manager
+            .delete_fact(
+                "tenant.beta",
+                MemoryDeleteRequest {
+                    expected_content_hash: Some(expected_hash.clone()),
+                    actor: Some("operator".to_string()),
+                    source_task_id: Some("cleanup-7".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(deleted.deleted);
+        assert_eq!(
+            deleted.content_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+
+        let history = manager.fact_history("tenant.beta").await.unwrap();
+        assert_eq!(history.versions.len(), 1);
+        assert_eq!(history.versions[0].action, "delete");
+        assert_eq!(history.audit.len(), 1);
+        assert_eq!(history.audit[0].action, "delete");
+        assert_eq!(
+            history.audit[0].precondition_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_facts WHERE key = ?")
+            .bind("tenant.beta")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
 }

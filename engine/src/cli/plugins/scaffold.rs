@@ -25,7 +25,7 @@ pub async fn handle_new(name: &str, plugin_type: PluginScaffoldType) -> Result<(
     println!("- {}", dir.join("README.md").display());
     match plugin_type {
         PluginScaffoldType::System => println!(
-            "Next: cargo test, cargo build --release, rove system test {} --input \"hello\", then replace placeholder hash/signatures before install.",
+            "Next: cargo test, cargo build --release, rove driver test {} --input \"hello\", then replace placeholder hash/signatures before install.",
             dir.display()
         ),
         _ => println!(
@@ -220,6 +220,8 @@ fn manifest_json(package_name: &str, plugin_type: &str) -> serde_json::Value {
         "permissions": {
             "filesystem": [],
             "network": [],
+            "secrets": [],
+            "host_patterns": [],
             "memory_read": false,
             "memory_write": false,
             "tools": []
@@ -300,7 +302,7 @@ impl CoreTool for GeneratedSystemTool {{
 
     fn handle(&self, input: ToolInput) -> Result<ToolOutput, EngineError> {{
         Ok(ToolOutput::json(serde_json::json!({{
-            "summary": format!("Replace this scaffold with real system logic for method '{{}}'.", input.method),
+            "summary": format!("Replace this scaffold with real driver logic for method '{{}}'.", input.method),
             "plugin_type": "{plugin_type}",
             "params": input.params,
         }})))
@@ -431,18 +433,18 @@ This is a generated native {plugin_type} extension scaffold for Rove.\n\n\
 1. Place this package under `core/tools/<name>` or adjust the `sdk` path in `Cargo.toml`\n\
 2. `cargo test`\n\
 3. `cargo build --release`\n\
-4. `rove system test {dir_display} --input \"hello\"`\n\n\
+4. `rove driver test {dir_display} --input \"hello\"`\n\n\
 ## Packaging and registry flow\n\n\
-1. `rove system pack {dir_display}`\n\
-2. `rove system publish {dir_display} --registry-dir ./registry`\n\
-3. `rove system install {{install_id}} --registry ./registry --version 0.1.0`\n\n\
+1. `rove driver pack {dir_display}`\n\
+2. `rove driver publish {dir_display} --registry-dir ./registry`\n\
+3. `rove driver install {{install_id}} --registry ./registry --version 0.1.0`\n\n\
 ## Before install or publish\n\n\
 1. Build the native artifact with `cargo build --release`\n\
 2. Replace the placeholder permissions in `manifest.json`\n\
 3. Compute the SHA256 of the built artifact and place it in `plugin-package.json`\n\
 4. Sign the built artifact and place the signature in `plugin-package.json`\n\
 5. Sign `manifest.json` and replace `signature`\n\
-6. Install with `rove system install {dir_display}`\n"
+6. Install with `rove driver install {dir_display}`\n"
         )
         .replace("{install_id}", &default_plugin_id(package_name)),
         _ => format!(

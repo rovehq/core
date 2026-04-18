@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::{io, io::IsTerminal};
 
 use anyhow::Result;
 
@@ -18,6 +19,22 @@ pub async fn handle_init(
     developer_mode: bool,
 ) -> Result<()> {
     let existed = Config::config_path()?.exists();
+    let can_launch_wizard = should_launch_setup_wizard(
+        existed,
+        node_name.is_none(),
+        workspace.is_none(),
+        data_dir.is_none(),
+        profile.is_none(),
+        developer_mode,
+        io::stdin().is_terminal(),
+        io::stdout().is_terminal(),
+    );
+
+    if can_launch_wizard {
+        println!("No existing Rove config found. Launching the first-run setup wizard.");
+        return crate::cli::setup::handle_setup().await;
+    }
+
     let mut config = Config::load_or_create()?;
 
     let requested_node_name = node_name
@@ -33,6 +50,7 @@ pub async fn handle_init(
         config.daemon.profile = match profile {
             DaemonProfileArg::Desktop => DaemonProfile::Desktop,
             DaemonProfileArg::Headless => DaemonProfile::Headless,
+            DaemonProfileArg::Edge => DaemonProfile::Edge,
         };
         config.apply_profile_preset();
     }
@@ -84,4 +102,48 @@ pub async fn handle_init(
     onboarding::print_text(&onboarding);
 
     Ok(())
+}
+
+fn should_launch_setup_wizard(
+    config_exists: bool,
+    no_node_name: bool,
+    no_workspace: bool,
+    no_data_dir: bool,
+    no_profile: bool,
+    developer_mode: bool,
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+) -> bool {
+    !config_exists
+        && no_node_name
+        && no_workspace
+        && no_data_dir
+        && no_profile
+        && !developer_mode
+        && stdin_is_terminal
+        && stdout_is_terminal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_launch_setup_wizard;
+
+    #[test]
+    fn setup_wizard_launches_only_for_plain_first_run_in_terminal() {
+        assert!(should_launch_setup_wizard(
+            false, true, true, true, true, false, true, true
+        ));
+        assert!(!should_launch_setup_wizard(
+            true, true, true, true, true, false, true, true
+        ));
+        assert!(!should_launch_setup_wizard(
+            false, false, true, true, true, false, true, true
+        ));
+        assert!(!should_launch_setup_wizard(
+            false, true, true, true, true, true, true, true
+        ));
+        assert!(!should_launch_setup_wizard(
+            false, true, true, true, true, false, false, true
+        ));
+    }
 }

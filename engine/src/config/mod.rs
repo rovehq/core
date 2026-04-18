@@ -56,9 +56,11 @@ pub mod daemon;
 pub mod defaults;
 pub mod gateway;
 pub mod llm;
+pub mod loadout;
 pub mod memory;
 pub mod metadata;
 pub mod policy;
+pub mod profile;
 pub mod remote;
 pub mod secrets;
 pub mod security;
@@ -78,9 +80,11 @@ pub use daemon::*;
 pub use defaults::*;
 pub use gateway::*;
 pub use llm::*;
+pub use loadout::*;
 pub use memory::*;
 pub use metadata::*;
 pub use policy::*;
+pub use profile::*;
 pub use remote::*;
 pub use secrets::*;
 pub use security::*;
@@ -138,6 +142,7 @@ impl Config {
         let mut raw: Value = toml::from_str(&contents)
             .map_err(|e| EngineError::Config(format!("Failed to parse config: {}", e)))?;
         normalize_public_aliases(&mut raw)?;
+        migrate_custom_providers(&mut raw);
 
         let mut config: Config = raw
             .try_into()
@@ -268,13 +273,23 @@ impl Config {
             )));
         }
 
-        // Validate default provider
-        let valid_providers = ["ollama", "openai", "anthropic", "gemini", "nvidia_nim"];
-        if !valid_providers.contains(&self.llm.default_provider.as_str()) {
+        // Validate default provider — built-ins or any configured custom provider are valid.
+        let builtin_providers = ["ollama", "openai", "anthropic", "gemini", "nvidia_nim"];
+        let custom_provider_names: Vec<&str> = self
+            .llm
+            .custom_providers
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        let is_valid_provider = builtin_providers.contains(&self.llm.default_provider.as_str())
+            || custom_provider_names.contains(&self.llm.default_provider.as_str());
+        if !is_valid_provider {
+            let mut all_valid = builtin_providers.to_vec();
+            all_valid.extend(custom_provider_names);
             return Err(EngineError::Config(format!(
                 "Invalid default provider '{}'. Must be one of: {}",
                 self.llm.default_provider,
-                valid_providers.join(", ")
+                all_valid.join(", ")
             )));
         }
 
@@ -320,6 +335,7 @@ impl Config {
 
         ensure_directory_writable(&self.core.data_dir)?;
         ensure_database_path_writable(&self.core.data_dir.join("rove.db"))?;
+        self.validate_profiles_and_loadouts()?;
         normalize_and_validate_browser(&mut self.browser)?;
         normalize_and_validate_voice(&mut self.voice)?;
 
@@ -338,6 +354,7 @@ impl Config {
         match self.daemon.profile {
             DaemonProfile::Desktop => {
                 self.webui.enabled = true;
+                self.ws_client.enabled = false;
                 self.secrets.backend = SecretBackend::Auto;
                 self.approvals.mode = ApprovalMode::Default;
             }
@@ -346,6 +363,14 @@ impl Config {
                 self.ws_client.enabled = true;
                 self.secrets.backend = SecretBackend::Vault;
                 self.approvals.mode = ApprovalMode::Allowlist;
+            }
+            DaemonProfile::Edge => {
+                self.webui.enabled = false;
+                self.ws_client.enabled = true;
+                self.secrets.backend = SecretBackend::Vault;
+                self.approvals.mode = ApprovalMode::Allowlist;
+                self.memory.mode = MemoryMode::GraphOnly;
+                self.memory.retrieval_assist = MemoryRetrievalAssist::Off;
             }
         }
     }
@@ -397,7 +422,19 @@ fn config_to_toml(config: &Config) -> Result<String, toml::ser::Error> {
         Value::String(config.config_written_by.clone()),
     );
     table.insert("daemon".to_string(), Value::try_from(&config.daemon)?);
+    if let Some(active_profile) = config.active_profile.as_ref() {
+        table.insert(
+            "active_profile".to_string(),
+            Value::String(active_profile.clone()),
+        );
+    }
     table.insert("core".to_string(), Value::try_from(&config.core)?);
+    if !config.profiles.is_empty() {
+        table.insert("profiles".to_string(), Value::try_from(&config.profiles)?);
+    }
+    if !config.loadouts.is_empty() {
+        table.insert("loadouts".to_string(), Value::try_from(&config.loadouts)?);
+    }
     table.insert("approvals".to_string(), Value::try_from(&config.approvals)?);
     table.insert("browser".to_string(), Value::try_from(&config.browser)?);
     table.insert("llm".to_string(), Value::try_from(&config.llm)?);
@@ -426,6 +463,101 @@ fn config_to_toml(config: &Config) -> Result<String, toml::ser::Error> {
     insert_public_brain_aliases(&mut table, config)?;
 
     toml::to_string_pretty(&Value::Table(table))
+}
+
+/// Migrate `[llm] custom_providers = ["name"]` (legacy string array) to the
+/// current struct format `[[llm.custom_providers]] name = "..." ...`.
+///
+/// Old configs stored provider names as strings and kept their settings in a
+/// separate `[llm.<name>]` table. We reconstruct a full `CustomProvider` map
+/// from those sibling tables so the daemon can start without a hard error.
+/// Missing fields (`protocol`, `secret_key`) are filled in with safe defaults.
+fn migrate_custom_providers(value: &mut Value) {
+    let table = match value.as_table_mut() {
+        Some(t) => t,
+        None => return,
+    };
+
+    let llm = match table.get_mut("llm").and_then(Value::as_table_mut) {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Check whether custom_providers contains any plain strings.
+    let has_string_entries = llm
+        .get("custom_providers")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().any(|v| v.is_str()))
+        .unwrap_or(false);
+
+    if !has_string_entries {
+        return;
+    }
+
+    // Collect the string names and their sibling table data.
+    let names: Vec<String> = llm
+        .get("custom_providers")
+        .and_then(Value::as_array)
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+
+    let mut migrated: Vec<Value> = Vec::new();
+
+    for name in &names {
+        // Look for a sibling `[llm.<name>]` table (TOML parses it as a key on llm).
+        let sibling = llm.get(name).and_then(Value::as_table).cloned();
+
+        let base_url = sibling
+            .as_ref()
+            .and_then(|t| t.get("base_url"))
+            .and_then(Value::as_str)
+            .unwrap_or("http://localhost:5580/v1")
+            .to_string();
+
+        let model = sibling
+            .as_ref()
+            .and_then(|t| t.get("model"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+
+        let protocol = sibling
+            .as_ref()
+            .and_then(|t| t.get("protocol"))
+            .and_then(Value::as_str)
+            .unwrap_or("openai")
+            .to_string();
+
+        let secret_key = sibling
+            .as_ref()
+            .and_then(|t| t.get("secret_key"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{}_api_key", name.replace('-', "_")));
+
+        let mut entry = toml::map::Map::new();
+        entry.insert("name".to_string(), Value::String(name.clone()));
+        entry.insert("protocol".to_string(), Value::String(protocol));
+        entry.insert("base_url".to_string(), Value::String(base_url));
+        entry.insert("model".to_string(), Value::String(model));
+        entry.insert("secret_key".to_string(), Value::String(secret_key));
+        migrated.push(Value::Table(entry));
+    }
+
+    // Also keep any existing struct entries that weren't strings.
+    let existing_structs: Vec<Value> = llm
+        .get("custom_providers")
+        .and_then(Value::as_array)
+        .unwrap_or(&vec![])
+        .iter()
+        .filter(|v| v.is_table())
+        .cloned()
+        .collect();
+
+    migrated.extend(existing_structs);
+    llm.insert("custom_providers".to_string(), Value::Array(migrated));
 }
 
 fn normalize_public_aliases(value: &mut Value) -> Result<(), EngineError> {
@@ -925,6 +1057,31 @@ max_risk_tier = 2
     }
 
     #[test]
+    fn edge_profile_preset_disables_webui_and_keeps_graph_only_memory() {
+        let mut config = Config::default();
+        config.webui.enabled = true;
+        config.ws_client.enabled = false;
+        config.memory.mode = crate::config::MemoryMode::AlwaysOn;
+        config.memory.retrieval_assist = crate::config::MemoryRetrievalAssist::Rerank;
+        config.daemon.profile = crate::config::DaemonProfile::Edge;
+
+        config.apply_profile_preset();
+
+        assert!(!config.webui.enabled);
+        assert!(config.ws_client.enabled);
+        assert_eq!(config.secrets.backend, crate::config::SecretBackend::Vault);
+        assert_eq!(
+            config.approvals.mode,
+            crate::config::ApprovalMode::Allowlist
+        );
+        assert_eq!(config.memory.mode, crate::config::MemoryMode::GraphOnly);
+        assert_eq!(
+            config.memory.retrieval_assist,
+            crate::config::MemoryRetrievalAssist::Off
+        );
+    }
+
+    #[test]
     fn browser_profiles_require_unique_ids_and_valid_default() {
         let mut config = Config::default();
         config.core.workspace = std::env::current_dir().expect("cwd");
@@ -1013,6 +1170,90 @@ max_risk_tier = 2
             .clamp_and_validate()
             .expect_err("active input engine should need input support");
         assert!(error.to_string().contains("does not support input"));
+    }
+
+    #[test]
+    fn loadout_resolution_uses_active_profile_and_normalizes_entries() {
+        let mut config = Config::default();
+        config.core.workspace = std::env::current_dir().expect("cwd");
+        config.core.data_dir = config
+            .core
+            .workspace
+            .join("target/config-tests/loadout-resolution");
+        config.active_profile = Some("isolated".to_string());
+        config.profiles.insert(
+            "isolated".to_string(),
+            crate::config::ProfileConfig {
+                loadout: "offline".to_string(),
+                browser_profile: Some("none".to_string()),
+                ..Default::default()
+            },
+        );
+        config.loadouts.insert(
+            "offline".to_string(),
+            crate::config::LoadoutConfig {
+                builtins: vec![
+                    " terminal ".to_string(),
+                    "filesystem".to_string(),
+                    "terminal".to_string(),
+                ],
+                drivers: vec![" vision ".to_string()],
+                plugins: vec!["fs-editor".to_string(), "fs-editor".to_string()],
+            },
+        );
+
+        config.clamp_and_validate().expect("valid");
+        let resolved = config.resolved_loadout().expect("resolved loadout");
+
+        assert_eq!(resolved.profile_name, "isolated");
+        assert_eq!(resolved.loadout_name, "offline");
+        assert!(resolved.builtins.contains("filesystem"));
+        assert!(resolved.builtins.contains("terminal"));
+        assert!(!resolved.builtins.contains("vision"));
+        assert_eq!(resolved.browser_profile.as_deref(), Some("none"));
+        assert_eq!(
+            resolved.plugins.as_ref().expect("plugin set").len(),
+            1,
+            "plugin entries should be deduplicated"
+        );
+    }
+
+    #[test]
+    fn profiles_require_an_active_or_default_selection() {
+        let mut config = Config::default();
+        config.core.workspace = std::env::current_dir().expect("cwd");
+        config.core.data_dir = config
+            .core
+            .workspace
+            .join("target/config-tests/profile-selection");
+        config.profiles.insert(
+            "ops".to_string(),
+            crate::config::ProfileConfig {
+                loadout: "ops".to_string(),
+                ..Default::default()
+            },
+        );
+        config.profiles.insert(
+            "isolated".to_string(),
+            crate::config::ProfileConfig {
+                loadout: "isolated".to_string(),
+                ..Default::default()
+            },
+        );
+        config
+            .loadouts
+            .insert("ops".to_string(), crate::config::LoadoutConfig::default());
+        config.loadouts.insert(
+            "isolated".to_string(),
+            crate::config::LoadoutConfig::default(),
+        );
+
+        let error = config
+            .clamp_and_validate()
+            .expect_err("profile selection should be required");
+        assert!(error
+            .to_string()
+            .contains("No active extension profile could be resolved"));
     }
 }
 

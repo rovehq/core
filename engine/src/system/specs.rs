@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -329,6 +330,10 @@ fn validate_workflow(spec: &WorkflowSpec) -> Result<()> {
     if spec.steps.is_empty() {
         bail!("Workflow must contain at least one step");
     }
+    let step_ids: BTreeSet<&str> = spec.steps.iter().map(|step| step.id.trim()).collect();
+    if step_ids.len() != spec.steps.len() {
+        bail!("Workflow step ids must be unique");
+    }
     for step in &spec.steps {
         if step.id.trim().is_empty() || step.name.trim().is_empty() || step.prompt.trim().is_empty()
         {
@@ -357,6 +362,54 @@ fn validate_workflow(spec: &WorkflowSpec) -> Result<()> {
         if let Some(worker_preset) = step.worker_preset.as_deref() {
             worker_presets::worker_preset(worker_preset)?;
         }
+        for branch in &step.branches {
+            if branch.contains.trim().is_empty() {
+                bail!(
+                    "Workflow step '{}' contains a branch rule with an empty match string",
+                    step.id
+                );
+            }
+            if branch.next_step_id.trim().is_empty() {
+                bail!(
+                    "Workflow step '{}' contains a branch rule with an empty target step id",
+                    step.id
+                );
+            }
+            if !step_ids.contains(branch.next_step_id.trim()) {
+                bail!(
+                    "Workflow step '{}' branches to unknown step '{}'",
+                    step.id,
+                    branch.next_step_id
+                );
+            }
+        }
+    }
+    for binding in &spec.channels {
+        if binding.kind.trim().is_empty() {
+            bail!("Workflow channel bindings require a non-empty kind");
+        }
+    }
+    for binding in &spec.webhooks {
+        if binding.id.trim().is_empty() {
+            bail!("Workflow webhook bindings require a non-empty id");
+        }
+    }
+    for binding in &spec.file_watches {
+        if binding.path.trim().is_empty() {
+            bail!("Workflow file-watch bindings require a non-empty path");
+        }
+        for event in &binding.events {
+            match event.trim().to_ascii_lowercase().as_str() {
+                "any" | "create" | "modify" | "remove" => {}
+                other => {
+                    bail!(
+                        "Workflow file-watch binding '{}' has unsupported event '{}'",
+                        binding.path,
+                        other
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -364,7 +417,7 @@ fn validate_workflow(spec: &WorkflowSpec) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{slugify, SpecRepository};
-    use sdk::{WorkflowSpec, WorkflowStepSpec};
+    use sdk::{WorkflowBranchSpec, WorkflowSpec, WorkflowStepSpec};
     use tempfile::TempDir;
 
     #[test]
@@ -398,6 +451,7 @@ mod tests {
                 agent_id: Some("default-assistant".to_string()),
                 worker_preset: Some("executor".to_string()),
                 continue_on_error: false,
+                branches: Vec::new(),
             }],
             ..WorkflowSpec::default()
         };
@@ -408,5 +462,35 @@ mod tests {
         assert!(error
             .to_string()
             .contains("cannot define both `agent_id` and `worker_preset`"));
+    }
+
+    #[test]
+    fn repository_rejects_branch_to_unknown_step() {
+        let temp_dir = TempDir::new().unwrap();
+        std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
+        let repo = SpecRepository::new().unwrap();
+
+        let workflow = WorkflowSpec {
+            id: "branchy".to_string(),
+            name: "Branchy".to_string(),
+            steps: vec![WorkflowStepSpec {
+                id: "step-1".to_string(),
+                name: "Branch".to_string(),
+                prompt: "Do the thing".to_string(),
+                agent_id: None,
+                worker_preset: None,
+                continue_on_error: false,
+                branches: vec![WorkflowBranchSpec {
+                    contains: "retry".to_string(),
+                    next_step_id: "step-9".to_string(),
+                }],
+            }],
+            ..WorkflowSpec::default()
+        };
+
+        let error = repo
+            .save_workflow(&workflow)
+            .expect_err("workflow should be rejected");
+        assert!(error.to_string().contains("branches to unknown step"));
     }
 }

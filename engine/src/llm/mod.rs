@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 
 pub mod anthropic;
+pub mod custom;
 pub mod gemini;
 pub mod nvidia_nim;
 pub mod ollama;

@@ -1,4 +1,4 @@
-use sdk::TaskSource;
+use sdk::{TaskExecutionProfile, TaskSource};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -6,7 +6,12 @@ use super::Gateway;
 use crate::security::PromptOverrideDetector;
 
 impl Gateway {
-    pub async fn submit_cli(&self, input: &str, password: Option<&str>) -> anyhow::Result<String> {
+    pub async fn submit_cli(
+        &self,
+        input: &str,
+        password: Option<&str>,
+        execution_profile: Option<&TaskExecutionProfile>,
+    ) -> anyhow::Result<String> {
         if let Some(required_password) = self.config.cli_password.as_deref() {
             match password {
                 Some(provided) if provided == required_password => {}
@@ -18,8 +23,15 @@ impl Gateway {
         let workspace = std::env::current_dir().ok();
         let workspace = workspace.as_ref().and_then(|path| path.to_str());
 
-        self.submit_task(input, TaskSource::Cli, None, workspace, None)
-            .await
+        self.submit_task(
+            input,
+            TaskSource::Cli,
+            execution_profile,
+            None,
+            workspace,
+            None,
+        )
+        .await
     }
 
     pub async fn submit_telegram(
@@ -30,6 +42,7 @@ impl Gateway {
         self.submit_task(
             input,
             TaskSource::Telegram(String::new()),
+            None,
             session_id,
             None,
             None,
@@ -48,6 +61,7 @@ impl Gateway {
         self.submit_task(
             input,
             TaskSource::Channel(channel.to_string()),
+            None,
             session_id,
             workspace,
             team_id,
@@ -59,9 +73,17 @@ impl Gateway {
         &self,
         input: &str,
         session_id: Option<&str>,
+        execution_profile: Option<&TaskExecutionProfile>,
     ) -> anyhow::Result<String> {
-        self.submit_task(input, TaskSource::WebUI, session_id, None, None)
-            .await
+        self.submit_task(
+            input,
+            TaskSource::WebUI,
+            execution_profile,
+            session_id,
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn submit_remote(
@@ -75,6 +97,7 @@ impl Gateway {
         self.submit_task(
             input,
             TaskSource::Remote(origin_node.unwrap_or_default().to_string()),
+            None,
             session_id,
             workspace,
             team_id,
@@ -86,6 +109,7 @@ impl Gateway {
         &self,
         input: &str,
         source: TaskSource,
+        execution_profile: Option<&TaskExecutionProfile>,
         session_id: Option<&str>,
         workspace: Option<&str>,
         team_id: Option<&str>,
@@ -124,6 +148,7 @@ impl Gateway {
             &task_id.to_string(),
             &safe_input,
             source.clone(),
+            execution_profile,
             &dispatch.domain.to_string().to_lowercase(),
             &format!("{:?}", dispatch.complexity).to_lowercase(),
             dispatch.sensitive,

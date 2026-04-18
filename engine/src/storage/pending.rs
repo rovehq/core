@@ -12,7 +12,7 @@
 ///
 /// Requirements: Phase 3 — Gateway + Durable Inbox
 use anyhow::{Context, Result};
-use sdk::TaskSource;
+use sdk::{TaskExecutionProfile, TaskSource};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,6 +54,7 @@ pub struct PendingTask {
     pub id: String,
     pub input: String,
     pub source: TaskSource,
+    pub execution_profile: Option<TaskExecutionProfile>,
     pub status: PendingTaskStatus,
     pub domain: String,
     pub complexity: String,
@@ -97,12 +98,22 @@ impl PendingTaskRepository {
         id: &str,
         input: &str,
         source: TaskSource,
+        execution_profile: Option<&TaskExecutionProfile>,
         session_id: Option<&str>,
         workspace: Option<&str>,
         team_id: Option<&str>,
     ) -> Result<PendingTask> {
         self.create_task_with_dispatch(
-            id, input, source, "general", "simple", false, session_id, workspace, team_id,
+            id,
+            input,
+            source,
+            execution_profile,
+            "general",
+            "simple",
+            false,
+            session_id,
+            workspace,
+            team_id,
         )
         .await
     }
@@ -117,6 +128,7 @@ impl PendingTaskRepository {
         id: &str,
         input: &str,
         source: TaskSource,
+        execution_profile: Option<&TaskExecutionProfile>,
         domain: &str,
         complexity: &str,
         sensitive: bool,
@@ -129,16 +141,21 @@ impl PendingTaskRepository {
         let status = PendingTaskStatus::Pending.as_str();
         let source_str = source.as_str();
         let sensitive_int = if sensitive { 1 } else { 0 };
+        let execution_profile_json = execution_profile
+            .map(serde_json::to_string)
+            .transpose()
+            .context("Failed to serialize task execution profile")?;
 
         sqlx::query(
             r#"INSERT INTO pending_tasks 
-               (id, input, source, status, domain, complexity, sensitive, created_at, session_id, workspace, team_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+               (id, input, source, status, execution_profile_json, domain, complexity, sensitive, created_at, session_id, workspace, team_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(id)
         .bind(input)
         .bind(source_str)
         .bind(status)
+        .bind(execution_profile_json)
         .bind(domain)
         .bind(complexity)
         .bind(sensitive_int)
@@ -154,6 +171,7 @@ impl PendingTaskRepository {
             id: id.to_string(),
             input: input.to_string(),
             source,
+            execution_profile: execution_profile.cloned(),
             status: PendingTaskStatus::Pending,
             domain: domain.to_string(),
             complexity: complexity.to_string(),
@@ -173,7 +191,7 @@ impl PendingTaskRepository {
     /// Returns tasks ordered by created_at (oldest first) with optional limit.
     pub async fn get_pending_tasks(&self, limit: i64) -> Result<Vec<PendingTask>> {
         let rows = sqlx::query(
-            r#"SELECT id, input, source, status, domain, complexity, sensitive, created_at, started_at, done_at, error, session_id, workspace, team_id
+            r#"SELECT id, input, source, status, execution_profile_json, domain, complexity, sensitive, created_at, started_at, done_at, error, session_id, workspace, team_id
                FROM pending_tasks
                WHERE status = 'pending'
                ORDER BY created_at ASC
@@ -190,6 +208,9 @@ impl PendingTaskRepository {
                 id: r.get("id"),
                 input: r.get("input"),
                 source: TaskSource::parse_str(&r.get::<String, _>("source")),
+                execution_profile: r
+                    .get::<Option<String>, _>("execution_profile_json")
+                    .and_then(|raw| serde_json::from_str(&raw).ok()),
                 status: PendingTaskStatus::parse_str(&r.get::<String, _>("status")),
                 domain: r.get("domain"),
                 complexity: r.get("complexity"),
@@ -265,7 +286,7 @@ impl PendingTaskRepository {
     /// Get a pending task by ID
     pub async fn get_task(&self, task_id: &str) -> Result<Option<PendingTask>> {
         let row = sqlx::query(
-            r#"SELECT id, input, source, status, domain, complexity, sensitive, created_at, started_at, done_at, error, session_id, workspace, team_id
+            r#"SELECT id, input, source, status, execution_profile_json, domain, complexity, sensitive, created_at, started_at, done_at, error, session_id, workspace, team_id
                FROM pending_tasks
                WHERE id = ?"#,
         )
@@ -278,6 +299,9 @@ impl PendingTaskRepository {
             id: r.get("id"),
             input: r.get("input"),
             source: TaskSource::parse_str(&r.get::<String, _>("source")),
+            execution_profile: r
+                .get::<Option<String>, _>("execution_profile_json")
+                .and_then(|raw| serde_json::from_str(&raw).ok()),
             status: PendingTaskStatus::parse_str(&r.get::<String, _>("status")),
             domain: r.get("domain"),
             complexity: r.get("complexity"),
@@ -365,7 +389,15 @@ mod tests {
         let (_db, repo, _temp) = test_db().await;
 
         let task = repo
-            .create_task("task-1", "list files", TaskSource::Cli, None, None, None)
+            .create_task(
+                "task-1",
+                "list files",
+                TaskSource::Cli,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
 
@@ -382,7 +414,7 @@ mod tests {
         let (_db, repo, _temp) = test_db().await;
 
         // Create multiple pending tasks
-        repo.create_task("task-1", "first", TaskSource::Cli, None, None, None)
+        repo.create_task("task-1", "first", TaskSource::Cli, None, None, None, None)
             .await
             .unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -393,11 +425,12 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        repo.create_task("task-3", "third", TaskSource::WebUI, None, None, None)
+        repo.create_task("task-3", "third", TaskSource::WebUI, None, None, None, None)
             .await
             .unwrap();
 
@@ -413,7 +446,7 @@ mod tests {
     async fn test_mark_running() {
         let (_db, repo, _temp) = test_db().await;
 
-        repo.create_task("task-1", "test", TaskSource::Cli, None, None, None)
+        repo.create_task("task-1", "test", TaskSource::Cli, None, None, None, None)
             .await
             .unwrap();
 
@@ -428,7 +461,7 @@ mod tests {
     async fn test_mark_done() {
         let (_db, repo, _temp) = test_db().await;
 
-        repo.create_task("task-1", "test", TaskSource::Cli, None, None, None)
+        repo.create_task("task-1", "test", TaskSource::Cli, None, None, None, None)
             .await
             .unwrap();
         repo.mark_running("task-1").await.unwrap();
@@ -444,7 +477,7 @@ mod tests {
     async fn test_mark_failed() {
         let (_db, repo, _temp) = test_db().await;
 
-        repo.create_task("task-1", "test", TaskSource::Cli, None, None, None)
+        repo.create_task("task-1", "test", TaskSource::Cli, None, None, None, None)
             .await
             .unwrap();
         repo.mark_running("task-1").await.unwrap();
@@ -463,13 +496,13 @@ mod tests {
         let (_db, repo, _temp) = test_db().await;
 
         // Create tasks and mark some as running
-        repo.create_task("task-1", "first", TaskSource::Cli, None, None, None)
+        repo.create_task("task-1", "first", TaskSource::Cli, None, None, None, None)
             .await
             .unwrap();
-        repo.create_task("task-2", "second", TaskSource::Cli, None, None, None)
+        repo.create_task("task-2", "second", TaskSource::Cli, None, None, None, None)
             .await
             .unwrap();
-        repo.create_task("task-3", "third", TaskSource::Cli, None, None, None)
+        repo.create_task("task-3", "third", TaskSource::Cli, None, None, None, None)
             .await
             .unwrap();
 
@@ -528,6 +561,7 @@ mod tests {
                 "task-1",
                 "test",
                 TaskSource::Remote(String::new()),
+                None,
                 Some("session-123"),
                 Some("/workspace"),
                 Some("team-456"),

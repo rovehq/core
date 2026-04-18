@@ -1,5 +1,6 @@
 use anyhow::Result;
 use sha2::Digest;
+use tracing::Instrument;
 use tracing::{debug, warn};
 
 use crate::llm::{Message, ToolCall};
@@ -109,9 +110,18 @@ impl AgentCore {
             _ => "registry".to_string(),
         };
 
-        let tool_result = self
-            .dispatch_tool(task_id, &tool_call.name, tool_args.clone())
-            .await?;
+        let tool_result = match self.current_trace.as_ref() {
+            Some(trace) => {
+                let span = crate::telemetry::tool_span(trace, task_id, &tool_call.name);
+                self.dispatch_tool(task_id, &tool_call.name, tool_args.clone())
+                    .instrument(span)
+                    .await?
+            }
+            None => {
+                self.dispatch_tool(task_id, &tool_call.name, tool_args.clone())
+                    .await?
+            }
+        };
         if tool_result.len() > MAX_RESULT_SIZE {
             warn!(
                 task_id = %task_id,

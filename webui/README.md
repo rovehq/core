@@ -22,7 +22,19 @@ npm run dev
 For a production validation build:
 
 ```bash
-npm run build
+pnpm build:prod
+```
+
+To serve the exported production build locally:
+
+```bash
+pnpm preview
+```
+
+Or build and serve in one step:
+
+```bash
+pnpm prod
 ```
 
 Run the daemon separately:
@@ -39,7 +51,7 @@ cargo run -p engine --bin rove -- daemon --profile desktop --port 47630
 | `/config` | Daemon profile, auth timing, secret backend, and node identity |
 | `/approvals` | Pending approvals and approval-rule CRUD |
 | `/brains` | Brain-family status |
-| `/plugins` | Extension and system-surface management |
+| `/plugins` | Extension and driver-surface management |
 | `/policy` | Active policy status and policy surfaces |
 | `/remote` | Remote peers, node identity, and ZeroTier transport status |
 | `/settings` | Service install state, auth/session state, and daemon controls |
@@ -72,7 +84,8 @@ are enforced by the daemon.
 
 ## Notes
 
-- `npm run build` validates the hosted-shell client, but the daemon is not the
-  canonical UI host.
+- `pnpm build:prod` exports the static client into `dist/`.
+- `pnpm preview` serves that exported `dist/` directory; `next start` is not
+  valid here because this app uses `output: 'export'`.
 - Local development can use either `http://127.0.0.1:47630` or
   `https://127.0.0.1:47630`; production expects the HTTPS local daemon path.

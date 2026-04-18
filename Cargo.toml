@@ -40,6 +40,10 @@ thiserror = "1.0"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.29"
+opentelemetry = "0.28"
+opentelemetry_sdk = "0.28"
+opentelemetry-otlp = { version = "0.28", features = ["http-proto", "reqwest-client"] }
 
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
@@ -52,6 +56,7 @@ sha2 = "0.10"
 
 # WASM runtime
 extism = "1.0"
+extism-manifest = "1.13"
 wasmparser = "0.216"
 
 # CLI

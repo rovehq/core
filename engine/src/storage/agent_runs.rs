@@ -3,6 +3,7 @@ use sdk::{
     AgentRunRecord, SpecRunStatus, WorkflowRunDetail, WorkflowRunRecord, WorkflowRunStepRecord,
 };
 use sqlx::{Row, SqlitePool};
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct AgentRunRepository {
@@ -122,8 +123,8 @@ impl AgentRunRepository {
         let now = unix_now()?;
         sqlx::query(
             r#"INSERT INTO workflow_runs
-               (run_id, workflow_id, status, input, output, error, steps_total, steps_completed, retry_count, created_at)
-               VALUES (?, ?, 'running', ?, NULL, NULL, ?, 0, 0, ?)"#,
+               (run_id, workflow_id, status, input, output, error, steps_total, steps_completed, retry_count, cancel_requested, created_at)
+               VALUES (?, ?, 'running', ?, NULL, NULL, ?, 0, 0, 0, ?)"#,
         )
         .bind(run_id)
         .bind(workflow_id)
@@ -148,6 +149,7 @@ impl AgentRunRepository {
             current_step_name: None,
             retry_count: 0,
             last_task_id: None,
+            cancel_requested: false,
             resumable: steps_total > 0,
             created_at: now,
             completed_at: None,
@@ -158,6 +160,7 @@ impl AgentRunRepository {
         let row = sqlx::query(
             r#"SELECT run_id, workflow_id, status, input, output, error, steps_total, steps_completed,
                       current_step_index, current_step_id, current_step_name, retry_count, last_task_id,
+                      cancel_requested,
                       created_at, completed_at
                FROM workflow_runs
                WHERE run_id = ?"#,
@@ -175,7 +178,12 @@ impl AgentRunRepository {
             return Ok(None);
         };
         let steps = self.list_workflow_run_steps(run_id).await?;
-        Ok(Some(WorkflowRunDetail { run, steps }))
+        let variables = workflow_variables_from_steps(&steps);
+        Ok(Some(WorkflowRunDetail {
+            run,
+            steps,
+            variables,
+        }))
     }
 
     pub async fn prepare_workflow_resume(&self, run_id: &str) -> Result<()> {
@@ -184,6 +192,7 @@ impl AgentRunRepository {
                SET status = 'running',
                    error = NULL,
                    completed_at = NULL,
+                   cancel_requested = 0,
                    retry_count = retry_count + 1
                WHERE run_id = ?"#,
         )
@@ -192,6 +201,37 @@ impl AgentRunRepository {
         .await
         .context("Failed to prepare workflow resume")?;
         Ok(())
+    }
+
+    pub async fn request_workflow_run_cancel(&self, run_id: &str) -> Result<bool> {
+        let now = unix_now()?;
+        let result = sqlx::query(
+            r#"UPDATE workflow_runs
+               SET cancel_requested = 1,
+                   cancel_requested_at = COALESCE(cancel_requested_at, ?)
+               WHERE run_id = ?
+                 AND status NOT IN ('completed', 'canceled')"#,
+        )
+        .bind(now)
+        .bind(run_id)
+        .execute(&self.pool)
+        .await
+        .context("Failed to request workflow cancel")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn workflow_run_cancel_requested(&self, run_id: &str) -> Result<bool> {
+        let row = sqlx::query("SELECT cancel_requested FROM workflow_runs WHERE run_id = ?")
+            .bind(run_id)
+            .fetch_optional(&self.pool)
+            .await
+            .context("Failed to inspect workflow cancel state")?;
+
+        Ok(row
+            .and_then(|row| row.try_get::<i64, _>("cancel_requested").ok())
+            .unwrap_or(0)
+            != 0)
     }
 
     pub async fn record_workflow_step_start(&self, step: WorkflowStepStart<'_>) -> Result<()> {
@@ -268,15 +308,15 @@ impl AgentRunRepository {
         if matches!(step.status, SpecRunStatus::Completed) {
             sqlx::query(
                 r#"UPDATE workflow_runs
-                   SET steps_completed = CASE
-                           WHEN steps_completed < ? THEN ?
-                           ELSE steps_completed
-                       END,
+                   SET steps_completed = (
+                           SELECT COUNT(*)
+                           FROM workflow_run_steps
+                           WHERE run_id = ? AND status = 'completed'
+                       ),
                        last_task_id = COALESCE(?, last_task_id)
                    WHERE run_id = ?"#,
             )
-            .bind(step.step_index + 1)
-            .bind(step.step_index + 1)
+            .bind(step.run_id)
             .bind(step.task_id)
             .bind(step.run_id)
             .execute(&self.pool)
@@ -301,9 +341,10 @@ impl AgentRunRepository {
                    output = ?,
                    error = ?,
                    completed_at = ?,
-                   current_step_index = CASE WHEN ? = 'completed' THEN NULL ELSE current_step_index END,
-                   current_step_id = CASE WHEN ? = 'completed' THEN NULL ELSE current_step_id END,
-                   current_step_name = CASE WHEN ? = 'completed' THEN NULL ELSE current_step_name END
+                   cancel_requested = 0,
+                   current_step_index = CASE WHEN ? IN ('completed', 'canceled') THEN NULL ELSE current_step_index END,
+                   current_step_id = CASE WHEN ? IN ('completed', 'canceled') THEN NULL ELSE current_step_id END,
+                   current_step_name = CASE WHEN ? IN ('completed', 'canceled') THEN NULL ELSE current_step_name END
                WHERE run_id = ?"#,
         )
         .bind(status.as_str())
@@ -324,6 +365,7 @@ impl AgentRunRepository {
         let rows = sqlx::query(
             r#"SELECT run_id, workflow_id, status, input, output, error, steps_total, steps_completed,
                       current_step_index, current_step_id, current_step_name, retry_count, last_task_id,
+                      cancel_requested,
                       created_at, completed_at
                FROM workflow_runs
                ORDER BY created_at DESC
@@ -376,7 +418,10 @@ fn row_to_workflow_run(row: sqlx::sqlite::SqliteRow) -> WorkflowRunRecord {
     let steps_total: i64 = row.get("steps_total");
     let steps_completed: i64 = row.get("steps_completed");
     let status = SpecRunStatus::parse(row.get::<String, _>("status").as_str());
-    let resumable = !matches!(status, SpecRunStatus::Completed) && steps_completed < steps_total;
+    let cancel_requested = row.get::<i64, _>("cancel_requested") != 0;
+    let resumable = !matches!(status, SpecRunStatus::Completed | SpecRunStatus::Canceled)
+        && !cancel_requested
+        && steps_completed < steps_total;
 
     WorkflowRunRecord {
         run_id: row.get("run_id"),
@@ -392,6 +437,7 @@ fn row_to_workflow_run(row: sqlx::sqlite::SqliteRow) -> WorkflowRunRecord {
         current_step_name: row.get("current_step_name"),
         retry_count: row.get("retry_count"),
         last_task_id: row.get("last_task_id"),
+        cancel_requested,
         resumable,
         created_at: row.get("created_at"),
         completed_at: row.get("completed_at"),
@@ -417,6 +463,18 @@ fn row_to_workflow_run_step(row: sqlx::sqlite::SqliteRow) -> WorkflowRunStepReco
     }
 }
 
+fn workflow_variables_from_steps(steps: &[WorkflowRunStepRecord]) -> BTreeMap<String, String> {
+    let mut variables = BTreeMap::new();
+    for step in steps {
+        if matches!(step.status, SpecRunStatus::Completed) {
+            if let Some(output) = step.output.as_ref() {
+                variables.insert(format!("{}.result", step.step_id), output.clone());
+            }
+        }
+    }
+    variables
+}
+
 fn unix_now() -> Result<i64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -427,8 +485,10 @@ fn unix_now() -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use crate::storage::{Database, WorkflowStepFinish, WorkflowStepStart};
-    use sdk::SpecRunStatus;
+    use sdk::{SpecRunStatus, WorkflowRunStepRecord};
     use tempfile::TempDir;
+
+    use super::workflow_variables_from_steps;
 
     #[tokio::test]
     async fn records_agent_and_workflow_runs() {
@@ -513,5 +573,50 @@ mod tests {
         assert_eq!(run.retry_count, 1);
         assert_eq!(run.status, SpecRunStatus::Running);
         assert!(run.error.is_none());
+    }
+
+    #[test]
+    fn workflow_run_detail_derives_named_variables_from_completed_steps() {
+        let steps = vec![
+            WorkflowRunStepRecord {
+                run_id: "run-1".to_string(),
+                step_index: 0,
+                step_id: "inspect".to_string(),
+                step_name: "Inspect".to_string(),
+                agent_id: None,
+                worker_preset: None,
+                status: SpecRunStatus::Completed,
+                prompt: "Inspect".to_string(),
+                task_id: Some("task-1".to_string()),
+                output: Some("inspection output".to_string()),
+                error: None,
+                attempt_count: 1,
+                started_at: 1,
+                completed_at: Some(2),
+            },
+            WorkflowRunStepRecord {
+                run_id: "run-1".to_string(),
+                step_index: 1,
+                step_id: "fix".to_string(),
+                step_name: "Fix".to_string(),
+                agent_id: None,
+                worker_preset: None,
+                status: SpecRunStatus::Failed,
+                prompt: "Fix".to_string(),
+                task_id: None,
+                output: Some("failed output".to_string()),
+                error: Some("boom".to_string()),
+                attempt_count: 1,
+                started_at: 3,
+                completed_at: Some(4),
+            },
+        ];
+
+        let variables = workflow_variables_from_steps(&steps);
+        assert_eq!(
+            variables.get("inspect.result").map(String::as_str),
+            Some("inspection output")
+        );
+        assert!(!variables.contains_key("fix.result"));
     }
 }

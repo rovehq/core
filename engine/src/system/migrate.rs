@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use sdk::{AgentSpec, ChannelBinding, SpecProvenance, WorkflowSpec, WorkflowStepSpec};
+use sdk::{
+    AgentSpec, ChannelBinding, SpecProvenance, WorkflowBranchSpec, WorkflowSpec, WorkflowStepSpec,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -610,6 +612,7 @@ fn extract_workflow_content(
                 agent_id: None,
                 worker_preset: None,
                 continue_on_error: false,
+                branches: Vec::new(),
             }]
         });
 
@@ -643,6 +646,7 @@ fn value_steps(value: &Value) -> Option<Vec<WorkflowStepSpec>> {
                 agent_id: None,
                 worker_preset: None,
                 continue_on_error: false,
+                branches: Vec::new(),
             });
             continue;
         }
@@ -659,10 +663,28 @@ fn value_steps(value: &Value) -> Option<Vec<WorkflowStepSpec>> {
                     .get("continue_on_error")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                branches: value_branches(step),
             });
         }
     }
     Some(extracted)
+}
+
+fn value_branches(step: &Value) -> Vec<WorkflowBranchSpec> {
+    step.get("branches")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|branch| {
+            let contains = string_field(branch, &["contains", "match", "if_contains"])?;
+            let next_step_id =
+                string_field(branch, &["next_step_id", "target", "goto", "step_id"])?;
+            Some(WorkflowBranchSpec {
+                contains,
+                next_step_id,
+            })
+        })
+        .collect()
 }
 
 fn detect_channel_bindings(raw: &str, structured: Option<&Value>) -> Vec<ChannelBinding> {

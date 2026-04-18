@@ -24,6 +24,7 @@
 //! - `default_transport_path()` - Brain communication transport path
 //! - `llama_search_paths()` - Known llama-server installation locations
 //! - `available_ram()` - Available system RAM in bytes
+//! - `cpu_load_percent()` - Approximate CPU load percentage
 //! - `keychain_get()` - Get secret from OS keychain
 //! - `keychain_set()` - Set secret in OS keychain
 //!

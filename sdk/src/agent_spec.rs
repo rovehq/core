@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const AGENT_SPEC_SCHEMA_VERSION: u32 = 1;
@@ -11,6 +13,7 @@ pub enum SpecRunStatus {
     #[default]
     Completed,
     Failed,
+    Canceled,
 }
 
 impl SpecRunStatus {
@@ -20,6 +23,7 @@ impl SpecRunStatus {
             SpecRunStatus::Running => "running",
             SpecRunStatus::Completed => "completed",
             SpecRunStatus::Failed => "failed",
+            SpecRunStatus::Canceled => "canceled",
         }
     }
 
@@ -29,6 +33,7 @@ impl SpecRunStatus {
             "running" => SpecRunStatus::Running,
             "completed" => SpecRunStatus::Completed,
             "failed" => SpecRunStatus::Failed,
+            "canceled" => SpecRunStatus::Canceled,
             _ => SpecRunStatus::Failed,
         }
     }
@@ -69,6 +74,42 @@ pub struct ChannelBinding {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<SpecProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebhookBinding {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<SpecProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileWatchBinding {
+    pub path: String,
+    #[serde(default = "default_true")]
+    pub recursive: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<SpecProvenance>,
+}
+
+impl Default for FileWatchBinding {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            recursive: true,
+            events: Vec::new(),
+            enabled: true,
+            provenance: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +268,12 @@ pub struct WorkerPreset {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowBranchSpec {
+    pub contains: String,
+    pub next_step_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowStepSpec {
     pub id: String,
     pub name: String,
@@ -237,6 +284,8 @@ pub struct WorkflowStepSpec {
     pub worker_preset: Option<String>,
     #[serde(default)]
     pub continue_on_error: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<WorkflowBranchSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +301,10 @@ pub struct WorkflowSpec {
     pub steps: Vec<WorkflowStepSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<ChannelBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub webhooks: Vec<WebhookBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_watches: Vec<FileWatchBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schedules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -274,6 +327,8 @@ impl Default for WorkflowSpec {
             enabled: true,
             steps: Vec::new(),
             channels: Vec::new(),
+            webhooks: Vec::new(),
+            file_watches: Vec::new(),
             schedules: Vec::new(),
             runtime_profile: None,
             output_contract: None,
@@ -347,6 +402,8 @@ pub struct WorkflowRunRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_task_id: Option<String>,
     #[serde(default)]
+    pub cancel_requested: bool,
+    #[serde(default)]
     pub resumable: bool,
     pub created_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -382,6 +439,8 @@ pub struct WorkflowRunDetail {
     pub run: WorkflowRunRecord,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<WorkflowRunStepRecord>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub variables: BTreeMap<String, String>,
 }
 
 fn default_true() -> bool {

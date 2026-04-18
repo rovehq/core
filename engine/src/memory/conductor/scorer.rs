@@ -21,9 +21,13 @@ pub fn recency_decay(created_at: i64, now: i64) -> f32 {
     }
 }
 
-/// Calculates final relevance score: bm25 × importance × recency_decay
+/// Calculates final relevance score from a raw FTS5 BM25 rank.
+///
+/// FTS5 BM25 is **negative** (more negative = better match). This function
+/// negates it so the final score is positive and higher = more relevant,
+/// consistent with the descending sort used at all call sites.
 pub fn score(bm25: f32, importance: f32, created_at: i64, now: i64) -> f32 {
-    bm25 * importance * recency_decay(created_at, now)
+    (-bm25) * importance * recency_decay(created_at, now)
 }
 
 /// Returns true if importance meets minimum threshold
@@ -65,8 +69,9 @@ mod tests {
     #[test]
     fn test_score_calculation() {
         let now = unix_now();
-        let score_val = score(10.0, 0.8, now, now);
-        assert_eq!(score_val, 8.0); // 10.0 * 0.8 * 1.0
+        // FTS5 BM25 is negative; score() negates it so the result is positive.
+        let score_val = score(-10.0, 0.8, now, now);
+        assert_eq!(score_val, 8.0); // (-(-10.0)) * 0.8 * 1.0
     }
 
     #[test]

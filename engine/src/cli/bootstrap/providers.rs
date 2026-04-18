@@ -5,8 +5,9 @@ use brain::reasoning::LocalBrain;
 use sdk::NodeExecutionRole;
 use serde::Deserialize;
 
-use crate::config::{metadata::SERVICE_NAME, AnthropicConfig, Config, GeminiConfig, OpenAIConfig};
+use crate::config::{metadata::SERVICE_NAME, Config};
 use crate::llm::anthropic::AnthropicProvider;
+use crate::llm::custom::CustomLLMProvider;
 use crate::llm::gemini::GeminiProvider;
 use crate::llm::nvidia_nim::NvidiaNimProvider;
 use crate::llm::ollama::OllamaProvider;
@@ -40,12 +41,23 @@ pub async fn build_for_execution_role(
     let secret_manager = Arc::new(SecretManager::new(SERVICE_NAME));
     let secret_cache = Arc::new(SecretCache::new(secret_manager.clone()));
 
-    let api_keys = vec![
+    let mut api_keys = vec![
         "openai_api_key",
         "anthropic_api_key",
         "gemini_api_key",
         "nvidia_nim_api_key",
     ];
+    // Also pre-warm keys for custom providers that have one configured.
+    let custom_key_strings: Vec<String> = config
+        .llm
+        .custom_providers
+        .iter()
+        .filter(|p| !p.secret_key.is_empty())
+        .map(|p| p.secret_key.clone())
+        .collect();
+    for k in &custom_key_strings {
+        api_keys.push(k.as_str());
+    }
     if let Err(error) = secret_cache.unlock(&api_keys).await {
         tracing::warn!("Failed to unlock some secrets: {}", error);
         tracing::warn!("LLM providers may prompt for credentials on first use");
@@ -96,42 +108,42 @@ pub async fn build_for_execution_role(
     }
 
     for provider in &config.llm.custom_providers {
-        if !secret_manager.has_secret(&provider.secret_key).await {
-            tracing::debug!(
-                "Skipping custom provider '{}': no API key in keychain",
-                provider.name
+        // Keyless providers (e.g. local proxies) have an empty secret_key — always load them.
+        // Key-gated providers are only skipped if the key is explicitly configured AND missing.
+        if !provider.secret_key.is_empty()
+            && !secret_manager.has_secret(&provider.secret_key).await
+        {
+            tracing::warn!(
+                "Skipping custom provider '{}': secret '{}' not found in keychain. \
+                 Run `rove secrets set {}` to add it.",
+                provider.name,
+                provider.secret_key,
+                provider.name,
             );
             continue;
         }
 
-        match provider.protocol.as_str() {
-            "openai" => providers.push(Box::new(OpenAIProvider::new(
-                OpenAIConfig {
-                    base_url: provider.base_url.clone(),
-                    model: provider.model.clone(),
-                },
-                secret_cache.clone(),
-            ))),
-            "gemini" => providers.push(Box::new(GeminiProvider::new(
-                GeminiConfig {
-                    base_url: provider.base_url.clone(),
-                    model: provider.model.clone(),
-                },
-                secret_cache.clone(),
-            ))),
-            "anthropic" => providers.push(Box::new(AnthropicProvider::new(
-                AnthropicConfig {
-                    base_url: provider.base_url.clone(),
-                    model: provider.model.clone(),
-                },
-                secret_cache.clone(),
-            ))),
-            other => tracing::warn!(
-                "Unknown protocol '{}' for custom provider '{}'",
-                other,
-                provider.name
-            ),
-        }
+        let api_key_name = if provider.secret_key.is_empty() {
+            None
+        } else {
+            Some(provider.secret_key.clone())
+        };
+
+        providers.push(Box::new(CustomLLMProvider::new(
+            provider.name.clone(),
+            provider.protocol.clone(),
+            provider.base_url.clone(),
+            provider.model.clone(),
+            api_key_name,
+            secret_cache.clone(),
+        )));
+
+        tracing::info!(
+            "Registered custom provider '{}' ({} @ {})",
+            provider.name,
+            provider.protocol,
+            provider.base_url
+        );
     }
 
     if providers.is_empty() && local_brain.is_none() {

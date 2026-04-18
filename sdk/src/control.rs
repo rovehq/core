@@ -26,6 +26,45 @@ pub struct AuthStatus {
     pub absolute_expires_in_secs: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PasskeyStatus {
+    #[serde(default)]
+    pub supported: bool,
+    #[serde(default)]
+    pub registered: bool,
+    #[serde(default)]
+    pub credential_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PasskeyDescriptor {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub rp_id: String,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PasskeyRegistrationStartRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PasskeyChallengeResponse {
+    pub challenge_id: String,
+    pub options: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PasskeyFinishRequest {
+    pub challenge_id: String,
+    pub credential: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonHello {
     pub version: String,
@@ -179,6 +218,10 @@ pub struct NodeLoadSnapshot {
     pub running_tasks: u64,
     pub recent_failures: u64,
     pub recent_successes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_load_percent: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_ram_mb: Option<u64>,
     pub recent_avg_duration_ms: Option<i64>,
 }
 
@@ -650,6 +693,12 @@ pub struct VoiceEngineInstallRequest {
 pub struct VoiceEngineSelectionRequest {
     #[serde(default)]
     pub engine: VoiceEngineKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceInputTestRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

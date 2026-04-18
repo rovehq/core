@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::timeout;
+use tracing::Instrument;
 use tracing::{debug, error, warn};
 
 use crate::gateway::Task;
@@ -243,12 +244,31 @@ impl AgentCore {
         task_id: &uuid::Uuid,
         iteration: usize,
     ) -> Result<(LLMResponse, String)> {
-        let llm_result = timeout(
-            Duration::from_secs(LLM_TIMEOUT_SECS),
-            self.router
-                .call_with_sensitivity(self.memory.messages(), Some(self.current_task_sensitive)),
-        )
-        .await;
+        let llm_result = match self.current_trace.as_ref() {
+            Some(trace) => {
+                let span = crate::telemetry::llm_span(trace, task_id, iteration);
+                timeout(
+                    Duration::from_secs(LLM_TIMEOUT_SECS),
+                    self.router
+                        .call_with_sensitivity(
+                            self.memory.messages(),
+                            Some(self.current_task_sensitive),
+                        )
+                        .instrument(span),
+                )
+                .await
+            }
+            None => {
+                timeout(
+                    Duration::from_secs(LLM_TIMEOUT_SECS),
+                    self.router.call_with_sensitivity(
+                        self.memory.messages(),
+                        Some(self.current_task_sensitive),
+                    ),
+                )
+                .await
+            }
+        };
 
         match llm_result {
             Ok(Ok((response, provider))) => Ok((response, provider)),

@@ -1,17 +1,21 @@
 use std::collections::HashMap;
+use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 use sdk::{
     VoiceAssetStatus, VoiceDeviceKind, VoiceDeviceRecord, VoiceEngineInput,
     VoiceEngineInstallRequest, VoiceEngineKind, VoiceEngineReadiness, VoiceEngineRecord,
-    VoiceOutputTestRequest, VoicePolicyControls, VoiceRuntimeStatus, VoiceSurfaceStatus,
-    VoiceSurfaceUpdate, VoiceTestResult,
+    VoiceInputTestRequest, VoiceOutputTestRequest, VoicePolicyControls, VoiceRuntimeStatus,
+    VoiceSurfaceStatus, VoiceSurfaceUpdate, VoiceTestResult,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tempfile::TempDir;
 
 use crate::cli::database_path::{database_path, expand_data_dir};
 use crate::cli::extensions::{install_official_system, remove_official_system};
@@ -307,7 +311,7 @@ impl VoiceManager {
         self.replace(update).await
     }
 
-    pub async fn test_input(&self) -> Result<VoiceTestResult> {
+    pub async fn test_input(&self, request: VoiceInputTestRequest) -> Result<VoiceTestResult> {
         let status = self.status().await?;
         let engine = status
             .active_input_engine
@@ -319,7 +323,9 @@ impl VoiceManager {
                     anyhow!("Voice Pack is not installed; install native-os first")
                 })?;
                 let artifact = voice_runtime_artifact(&plugin)?;
-                let payload = json!({});
+                let payload = json!({
+                    "audio_path": request.audio_path,
+                });
                 let response =
                     call_native::<NativeMessageResponse>("test_input", &artifact, &payload)?;
                 Ok(VoiceTestResult {
@@ -330,9 +336,22 @@ impl VoiceManager {
                         .unwrap_or_else(|| "Native input check completed.".to_string()),
                 })
             }
-            VoiceEngineKind::LocalWhisper => Err(anyhow!(
-                "Managed local Whisper install is recorded, but actual STT execution is not wired in this build yet"
-            )),
+            VoiceEngineKind::LocalWhisper => {
+                let engine_config = configured_engine(&self.config.voice, engine).ok_or_else(|| {
+                    anyhow!("Voice engine '{}' is not installed", engine.as_str())
+                })?;
+                let audio_path = request.audio_path.ok_or_else(|| {
+                    anyhow!(
+                        "Self-hosted Whisper requires --audio-path (or audio_path in the API request)"
+                    )
+                })?;
+                let transcript = transcribe_with_local_whisper(engine_config, &audio_path)?;
+                Ok(VoiceTestResult {
+                    ok: true,
+                    engine,
+                    message: transcript,
+                })
+            }
             VoiceEngineKind::LocalPiper => Err(anyhow!(
                 "Voice engine '{}' cannot be used for input",
                 engine.as_str()
@@ -370,9 +389,18 @@ impl VoiceManager {
                 "Voice engine '{}' cannot be used for spoken output",
                 engine.as_str()
             )),
-            VoiceEngineKind::LocalPiper => Err(anyhow!(
-                "Managed local Piper install is recorded, but actual self-hosted TTS execution is not wired in this build yet"
-            )),
+            VoiceEngineKind::LocalPiper => {
+                let engine_config = configured_engine(&self.config.voice, engine).ok_or_else(|| {
+                    anyhow!("Voice engine '{}' is not installed", engine.as_str())
+                })?;
+                let message =
+                    speak_with_local_piper(engine_config, &request.text, request.voice.as_deref())?;
+                Ok(VoiceTestResult {
+                    ok: true,
+                    engine,
+                    message,
+                })
+            }
         }
     }
 
@@ -523,18 +551,32 @@ fn engine_record(
                         .to_string(),
                 );
                 VoiceEngineReadiness::NeedsSetup
-            } else if !runtime_installed {
-                warnings.push(
-                    "Voice Pack is still required to broker local microphone access for self-hosted STT."
-                        .to_string(),
-                );
-                VoiceEngineReadiness::NeedsSetup
+            } else if let Some(config) = configured {
+                if resolve_runtime_binary(config, &["whisper-cli", "whisper", "main"]).is_err() {
+                    warnings.push(
+                        "Set runtime_path or install a Whisper CLI binary (`whisper-cli`, `whisper`, or `main`)."
+                            .to_string(),
+                    );
+                    VoiceEngineReadiness::NeedsSetup
+                } else if resolve_engine_asset_path(config, model.as_deref(), &["bin", "gguf"])
+                    .is_err()
+                {
+                    warnings.push(
+                        "Point model at a local Whisper model file or place it inside the managed asset dir."
+                            .to_string(),
+                    );
+                    VoiceEngineReadiness::NeedsSetup
+                } else {
+                    if !runtime_installed {
+                        warnings.push(
+                            "Voice Pack is optional for file-based Whisper transcription; install it only if you want native device brokering."
+                                .to_string(),
+                        );
+                    }
+                    VoiceEngineReadiness::Ready
+                }
             } else {
-                warnings.push(
-                    "Managed local Whisper state is recorded, but live self-hosted STT execution is not wired in this build yet."
-                        .to_string(),
-                );
-                VoiceEngineReadiness::Warning
+                VoiceEngineReadiness::NeedsSetup
             }
         }
         VoiceEngineKind::LocalPiper => {
@@ -549,18 +591,32 @@ fn engine_record(
                     "Select a Piper voice before activating self-hosted spoken output.".to_string(),
                 );
                 VoiceEngineReadiness::NeedsSetup
-            } else if !runtime_installed {
-                warnings.push(
-                    "Voice Pack is still required to broker local speaker output for self-hosted TTS."
-                        .to_string(),
-                );
-                VoiceEngineReadiness::NeedsSetup
+            } else if let Some(config) = configured {
+                if resolve_runtime_binary(config, &["piper"]).is_err() {
+                    warnings.push(
+                        "Set runtime_path or install the `piper` binary for self-hosted spoken output."
+                            .to_string(),
+                    );
+                    VoiceEngineReadiness::NeedsSetup
+                } else if resolve_engine_asset_path(config, voice_name.as_deref(), &["onnx"])
+                    .is_err()
+                {
+                    warnings.push(
+                        "Point voice at a local Piper model file or place it inside the managed asset dir."
+                            .to_string(),
+                    );
+                    VoiceEngineReadiness::NeedsSetup
+                } else {
+                    if !runtime_installed {
+                        warnings.push(
+                            "Voice Pack is optional for Piper playback; install it only if you want unified native device discovery."
+                                .to_string(),
+                        );
+                    }
+                    VoiceEngineReadiness::Ready
+                }
             } else {
-                warnings.push(
-                    "Managed local Piper state is recorded, but live self-hosted TTS execution is not wired in this build yet."
-                        .to_string(),
-                );
-                VoiceEngineReadiness::Warning
+                VoiceEngineReadiness::NeedsSetup
             }
         }
     };
@@ -819,6 +875,260 @@ fn call_native<T: DeserializeOwned>(
         .with_context(|| format!("Failed to decode '{}' response", method))
 }
 
+fn configured_engine(config: &VoiceConfig, engine: VoiceEngineKind) -> Option<&VoiceEngineConfig> {
+    config
+        .engines
+        .iter()
+        .find(|existing| kind_from_config(existing.kind) == engine)
+}
+
+fn transcribe_with_local_whisper(engine: &VoiceEngineConfig, audio_path: &str) -> Result<String> {
+    let audio_path = PathBuf::from(audio_path);
+    if !audio_path.exists() {
+        return Err(anyhow!(
+            "Audio path '{}' does not exist",
+            audio_path.display()
+        ));
+    }
+
+    let binary = resolve_runtime_binary(engine, &["whisper-cli", "whisper", "main"])?;
+    let model = resolve_engine_asset_path(engine, engine.model.as_deref(), &["bin", "gguf"])?;
+    let temp = TempDir::new().context("Failed to create temp dir for Whisper transcription")?;
+    let prefix = temp.path().join("transcript");
+
+    let output = Command::new(&binary)
+        .args([
+            "-m",
+            model.to_string_lossy().as_ref(),
+            "-f",
+            audio_path.to_string_lossy().as_ref(),
+            "-otxt",
+            "-of",
+            prefix.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .with_context(|| format!("Failed to start Whisper CLI '{}'", binary.display()))?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "Whisper CLI failed: {}",
+            decode_process_output(&output.stderr, &output.stdout)
+        ));
+    }
+
+    let transcript_path = prefix.with_extension("txt");
+    if transcript_path.exists() {
+        let transcript = fs::read_to_string(&transcript_path)
+            .with_context(|| format!("Failed to read '{}'", transcript_path.display()))?;
+        let trimmed = transcript.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        Err(anyhow!("Whisper CLI completed without producing a transcript"))
+    } else {
+        Ok(stdout)
+    }
+}
+
+fn speak_with_local_piper(
+    engine: &VoiceEngineConfig,
+    text: &str,
+    override_voice: Option<&str>,
+) -> Result<String> {
+    let binary = resolve_runtime_binary(engine, &["piper"])?;
+    let model_ref = override_voice
+        .and_then(|value| normalize_optional(Some(value.to_string())))
+        .or_else(|| engine.voice.clone())
+        .ok_or_else(|| anyhow!("No Piper voice/model is configured"))?;
+    let model = resolve_engine_asset_path(engine, Some(model_ref.as_str()), &["onnx"])?;
+    let temp = TempDir::new().context("Failed to create temp dir for Piper output")?;
+    let wav_path = temp.path().join("piper-output.wav");
+
+    let mut child = Command::new(&binary)
+        .args([
+            "--model",
+            model.to_string_lossy().as_ref(),
+            "--output_file",
+            wav_path.to_string_lossy().as_ref(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to start Piper '{}'", binary.display()))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(text.as_bytes())
+            .context("Failed to send text to Piper stdin")?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .context("Failed to wait for Piper output")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "Piper failed: {}",
+            decode_process_output(&output.stderr, &output.stdout)
+        ));
+    }
+
+    play_audio_file(&wav_path)?;
+    Ok(format!(
+        "Spoken through Piper using model '{}'",
+        model.file_name().and_then(|value| value.to_str()).unwrap_or("configured model")
+    ))
+}
+
+fn resolve_runtime_binary(engine: &VoiceEngineConfig, fallbacks: &[&str]) -> Result<PathBuf> {
+    if let Some(path) = engine.runtime_path.as_deref() {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        return Err(anyhow!(
+            "Configured runtime_path '{}' does not exist",
+            candidate.display()
+        ));
+    }
+
+    for binary in fallbacks {
+        if let Some(found) = find_binary_in_path(binary) {
+            return Ok(found);
+        }
+    }
+
+    Err(anyhow!(
+        "No runtime binary found; looked for {}",
+        fallbacks.join(", ")
+    ))
+}
+
+fn resolve_engine_asset_path(
+    engine: &VoiceEngineConfig,
+    configured_value: Option<&str>,
+    extensions: &[&str],
+) -> Result<PathBuf> {
+    if let Some(value) = configured_value {
+        let direct = PathBuf::from(value);
+        if direct.exists() {
+            return Ok(direct);
+        }
+        if let Some(asset_dir) = engine.asset_dir.as_deref() {
+            let asset_dir = PathBuf::from(asset_dir);
+            let candidates = candidate_asset_paths(&asset_dir, value, extensions);
+            for candidate in candidates {
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
+    if let Some(asset_dir) = engine.asset_dir.as_deref() {
+        let asset_dir = PathBuf::from(asset_dir);
+        if asset_dir.exists() {
+            let matches = fs::read_dir(&asset_dir)
+                .with_context(|| format!("Failed to read '{}'", asset_dir.display()))?
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .and_then(|value| value.to_str())
+                        .map(|ext| extensions.iter().any(|expected| ext.eq_ignore_ascii_case(expected)))
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<_>>();
+            if matches.len() == 1 {
+                return Ok(matches[0].clone());
+            }
+        }
+    }
+
+    Err(anyhow!("No engine asset file could be resolved"))
+}
+
+fn candidate_asset_paths(asset_dir: &Path, value: &str, extensions: &[&str]) -> Vec<PathBuf> {
+    let mut candidates = vec![asset_dir.join(value)];
+    let value_path = Path::new(value);
+    if value_path.extension().is_none() {
+        for extension in extensions {
+            candidates.push(asset_dir.join(format!("{value}.{extension}")));
+        }
+    }
+    candidates
+}
+
+fn find_binary_in_path(binary: &str) -> Option<PathBuf> {
+    env::var_os("PATH").and_then(|path_var| {
+        env::split_paths(&path_var)
+            .map(|dir| dir.join(binary))
+            .find(|candidate| candidate.exists())
+    })
+}
+
+fn decode_process_output(stderr: &[u8], stdout: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    "process exited without output".to_string()
+}
+
+fn play_audio_file(path: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("afplay")
+            .arg(path)
+            .status()
+            .with_context(|| format!("Failed to start afplay for '{}'", path.display()))?;
+        if !status.success() {
+            return Err(anyhow!("afplay exited with status {}", status));
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        for candidate in ["aplay", "paplay"] {
+            match Command::new(candidate).arg(path).status() {
+                Ok(status) if status.success() => return Ok(()),
+                Ok(_) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        return Err(anyhow!("No supported audio playback command found (aplay/paplay)"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "(New-Object Media.SoundPlayer '{}').PlaySync();",
+            path.display().to_string().replace('\'', "''")
+        );
+        let status = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .status()
+            .context("Failed to start PowerShell audio playback")?;
+        if !status.success() {
+            return Err(anyhow!("PowerShell playback exited with status {}", status));
+        }
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err(anyhow!("Audio playback is unsupported on this platform"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn local_whisper_warns_when_model_is_present_but_runtime_is_not_wired() {
+    fn local_whisper_needs_runtime_binary_before_it_is_ready() {
         let mut config = Config::default();
         config.voice.engines = vec![VoiceEngineConfig {
             kind: ConfigKind::LocalWhisper,
@@ -851,6 +1161,15 @@ mod tests {
             true,
             true,
         );
-        assert_eq!(record.readiness, VoiceEngineReadiness::Warning);
+        assert_eq!(record.readiness, VoiceEngineReadiness::NeedsSetup);
+    }
+
+    #[test]
+    fn candidate_asset_paths_add_extension_variants() {
+        let asset_dir = Path::new("/tmp/voice-assets");
+        let candidates = candidate_asset_paths(asset_dir, "tiny", &["bin", "gguf"]);
+        assert!(candidates.contains(&asset_dir.join("tiny")));
+        assert!(candidates.contains(&asset_dir.join("tiny.bin")));
+        assert!(candidates.contains(&asset_dir.join("tiny.gguf")));
     }
 }

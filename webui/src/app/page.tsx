@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Nav from '@/components/Nav';
 import {
   DEFAULT_DAEMON_PORT,
   OnboardingStep,
   OverviewResponse,
+  PasskeyStatus,
   readStoredToken,
   RoveDaemonClient,
 } from '@/lib/daemon';
@@ -23,7 +24,10 @@ export default function MessagesPage() {
     initialize,
     lock,
     login,
+    loginWithPasskey,
     reauth,
+    reauthWithPasskey,
+    refreshTaskEvents,
     refreshTasks,
     setupPassword,
     setDaemonPort,
@@ -44,6 +48,9 @@ export default function MessagesPage() {
     connected: false,
     error: null,
   });
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [passkeyStatus, setPasskeyStatus] = useState<PasskeyStatus | null>(null);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
 
   useEffect(() => {
     void initialize();
@@ -58,6 +65,37 @@ export default function MessagesPage() {
       void refreshOverview();
     }
   }, [appState]);
+
+  useEffect(() => {
+    if (appState !== 'locked' && appState !== 'reauth_required') {
+      setPasskeyStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    const client = daemonClient();
+    if (!client.supportsPasskeys()) {
+      setPasskeyStatus({ supported: false, registered: false, credential_count: 0 });
+      return;
+    }
+
+    void client
+      .passkeyStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setPasskeyStatus(status);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPasskeyStatus({ supported: false, registered: false, credential_count: 0 });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appState, daemonUrl]);
 
   useEffect(() => {
     if (appState !== 'unlocked' || typeof window === 'undefined') {
@@ -76,6 +114,59 @@ export default function MessagesPage() {
       setLogLines((current) => (current.length === 0 ? overview.recent_logs : current));
     }
   }, [overview?.recent_logs]);
+
+  const prioritizedTasks = useMemo(
+    () =>
+      [...tasks].sort((left, right) => {
+        const leftPriority = taskPriority(left.status);
+        const rightPriority = taskPriority(right.status);
+        if (leftPriority !== rightPriority) {
+          return leftPriority - rightPriority;
+        }
+        return normalizeEpochMillis(right.createdAt) - normalizeEpochMillis(left.createdAt);
+      }),
+    [tasks],
+  );
+
+  const fallbackRecentTasks = overview?.tasks ?? [];
+  const recentTasks =
+    prioritizedTasks.length > 0
+      ? prioritizedTasks.map((task) => ({
+          id: task.id,
+          input: task.input,
+          status: task.status,
+          provider_used: task.providerUsed,
+          duration_ms: task.durationMs,
+          created_at: task.createdAt,
+          completed_at: task.completedAt,
+          latest_event: task.latestEvent,
+          event_count: task.events.length,
+          events: task.events,
+        }))
+      : fallbackRecentTasks.map((task) => ({
+          ...task,
+          latest_event: null,
+          event_count: 0,
+          events: [],
+        }));
+
+  useEffect(() => {
+    const preferred = prioritizedTasks[0]?.id ?? null;
+    if (!preferred) {
+      if (selectedTaskId !== null) {
+        setSelectedTaskId(null);
+      }
+      return;
+    }
+    if (!selectedTaskId || !prioritizedTasks.some((task) => task.id === selectedTaskId)) {
+      setSelectedTaskId(preferred);
+    }
+  }, [prioritizedTasks, selectedTaskId]);
+
+  const liveTask =
+    prioritizedTasks.find((task) => task.id === selectedTaskId) ??
+    prioritizedTasks[0] ??
+    null;
 
   useEffect(() => {
     if (appState !== 'unlocked' || typeof window === 'undefined') {
@@ -153,6 +244,36 @@ export default function MessagesPage() {
     };
   }, [appState, daemonUrl]);
 
+  useEffect(() => {
+    if (appState !== 'unlocked' || !liveTask || typeof window === 'undefined') {
+      return;
+    }
+
+    let cancelled = false;
+    let interval: number | null = null;
+
+    const load = async () => {
+      if (!cancelled) {
+        await refreshTaskEvents(liveTask.id);
+      }
+    };
+
+    void load();
+
+    if (liveTask.status === 'pending' || liveTask.status === 'running') {
+      interval = window.setInterval(() => {
+        void load();
+      }, 1500);
+    }
+
+    return () => {
+      cancelled = true;
+      if (interval !== null) {
+        window.clearInterval(interval);
+      }
+    };
+  }, [appState, liveTask?.id, liveTask?.status, refreshTaskEvents]);
+
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!input.trim() || isSubmitting) return;
@@ -208,16 +329,6 @@ export default function MessagesPage() {
     if (ms < 1000) return `${ms}ms`;
     return `${(ms / 1000).toFixed(1)}s`;
   };
-
-  const recentTasks = overview?.tasks ?? tasks.map((task) => ({
-    id: task.id,
-    input: task.input,
-    status: task.status,
-    provider_used: task.providerUsed,
-    duration_ms: task.durationMs,
-    created_at: task.createdAt,
-    completed_at: task.completedAt,
-  }));
 
   if (appState === 'checking') {
     return <FullScreenMessage title="Connecting to Rove" body="Probing the local daemon and restoring your session." />;
@@ -337,6 +448,7 @@ export default function MessagesPage() {
   }
 
   if (appState === 'locked' || appState === 'reauth_required') {
+    const canUsePasskey = Boolean(passkeyStatus?.supported && passkeyStatus.registered);
     return (
       <AuthShell
         title={appState === 'reauth_required' ? 'Reauthenticate' : 'Unlock Rove'}
@@ -377,6 +489,28 @@ export default function MessagesPage() {
           >
             {isSubmitting ? 'Unlocking...' : appState === 'reauth_required' ? 'Confirm Password' : 'Unlock'}
           </button>
+          {canUsePasskey ? (
+            <button
+              type="button"
+              disabled={isSubmitting || passkeyBusy}
+              onClick={async () => {
+                setPasskeyBusy(true);
+                if (appState === 'reauth_required') {
+                  await reauthWithPasskey();
+                } else {
+                  await loginWithPasskey();
+                }
+                setPasskeyBusy(false);
+              }}
+              className="w-full rounded-lg border border-surface2 px-4 py-3 font-medium hover:border-primary disabled:text-gray-500"
+            >
+              {passkeyBusy
+                ? 'Waiting For Passkey...'
+                : appState === 'reauth_required'
+                  ? 'Use Passkey'
+                  : 'Unlock With Passkey'}
+            </button>
+          ) : null}
         </form>
       </AuthShell>
     );
@@ -478,6 +612,63 @@ export default function MessagesPage() {
         </section>
 
         <section className="grid gap-4 xl:grid-cols-2">
+          <DashboardPanel
+            title="Live Task Runner"
+            subtitle="Submit work, follow daemon task events, and keep the current run visible without opening logs."
+          >
+            {liveTask ? (
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  {prioritizedTasks.slice(0, 6).map((task) => (
+                    <button
+                      key={task.id}
+                      onClick={() => setSelectedTaskId(task.id)}
+                      className={`rounded-lg border px-3 py-2 text-left text-sm transition ${
+                        task.id === liveTask.id
+                          ? 'border-primary bg-primary/10 text-white'
+                          : 'border-surface bg-background/40 text-gray-300 hover:border-primary'
+                      }`}
+                    >
+                      <div className="font-medium">{task.input || 'Untitled task'}</div>
+                      <div className="mt-1 text-xs text-gray-500">
+                        {task.id.slice(0, 8)} · {task.status}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="rounded-lg border border-surface p-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <code className="text-xs text-gray-500">{liveTask.id}</code>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(liveTask.status)}`}>
+                      {liveTask.status}
+                    </span>
+                    {liveTask.providerUsed ? (
+                      <span className="rounded-full bg-surface2 px-2 py-0.5 text-xs text-gray-300">
+                        {liveTask.providerUsed}
+                      </span>
+                    ) : null}
+                    {liveTask.durationMs ? (
+                      <span className="text-xs text-gray-500">{formatDuration(liveTask.durationMs)}</span>
+                    ) : null}
+                  </div>
+                  <p className="mt-3 text-sm text-gray-300">{liveTask.input || 'Task accepted by daemon.'}</p>
+                  <div className="mt-4 space-y-2">
+                    {liveTask.events.length ? (
+                      liveTask.events.map((event) => (
+                        <TaskEventRow key={event.id} event={event} />
+                      ))
+                    ) : (
+                      <EmptyState text="No live task events captured for this task in the current session." />
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <EmptyState text="Submit a task to start a live runner transcript." />
+            )}
+          </DashboardPanel>
+
           <DashboardPanel
             title="First Run"
             subtitle="Concrete next steps for install truth, auth, first task, first channel, and first remote."
@@ -895,6 +1086,8 @@ export default function MessagesPage() {
                     durationMs: task.duration_ms,
                     createdAt: task.created_at,
                     completedAt: task.completed_at,
+                    latestEvent: task.latest_event,
+                    eventCount: task.event_count,
                   }}
                   getStatusColor={getStatusColor}
                   formatDuration={formatDuration}
@@ -938,6 +1131,7 @@ function TaskCard({ task, getStatusColor, formatDuration, actions }: {
     createdAt: number;
     completedAt?: number | null;
     latestEvent?: string | null;
+    eventCount?: number | null;
   };
   getStatusColor: (s: string) => string;
   formatDuration: (ms?: number) => string;
@@ -960,15 +1154,18 @@ function TaskCard({ task, getStatusColor, formatDuration, actions }: {
       {task.input && (
         <p className="text-gray-300 mb-3">{task.input}</p>
       )}
+
+      {task.latestEvent ? (
+        <div className="mb-3 rounded-md border border-surface bg-background/30 px-3 py-2 text-sm text-gray-400">
+          {task.latestEvent}
+        </div>
+      ) : null}
       
       {task.status === 'running' && (
         <div className="space-y-2">
           <div className="h-1 bg-surface rounded-full overflow-hidden">
             <div className="h-full bg-gradient-to-r from-primary to-purple-500 animate-pulse w-1/2" />
           </div>
-          {task.latestEvent && (
-            <p className="text-sm text-gray-400">{task.latestEvent}</p>
-          )}
         </div>
       )}
       
@@ -980,6 +1177,7 @@ function TaskCard({ task, getStatusColor, formatDuration, actions }: {
           {task.durationMs && (
             <div className="flex gap-4 text-xs text-gray-500 pt-3 border-t border-surface">
               <span>⏱ {formatDuration(task.durationMs)}</span>
+              {task.eventCount ? <span>{task.eventCount} live events</span> : null}
             </div>
           )}
         </div>
@@ -1107,6 +1305,38 @@ function ErrorBanner({ error, onDismiss }: { error: string | null; onDismiss: ()
   );
 }
 
+function TaskEventRow({
+  event,
+}: {
+  event: {
+    label: string;
+    detail?: string | null;
+    tone: 'default' | 'success' | 'warning' | 'error';
+    timestamp: number;
+  };
+}) {
+  const toneClass =
+    event.tone === 'error'
+      ? 'border-error/30 bg-error/5'
+      : event.tone === 'warning'
+        ? 'border-warning/30 bg-warning/5'
+        : event.tone === 'success'
+          ? 'border-success/30 bg-success/5'
+          : 'border-surface bg-background/30';
+
+  return (
+    <div className={`rounded-lg border px-3 py-2 text-sm ${toneClass}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="font-medium text-gray-200">{event.label}</div>
+        <div className="text-xs text-gray-500">
+          {new Date(event.timestamp).toLocaleTimeString()}
+        </div>
+      </div>
+      {event.detail ? <div className="mt-1 text-gray-400">{event.detail}</div> : null}
+    </div>
+  );
+}
+
 function SummaryCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-surface2 bg-surface p-4">
@@ -1123,6 +1353,21 @@ function OpsStatCard({ label, value }: { label: string; value: string }) {
       <p className="mt-2 text-base font-medium">{value}</p>
     </div>
   );
+}
+
+function taskPriority(status: string) {
+  switch (status) {
+    case 'running':
+      return 0;
+    case 'pending':
+      return 1;
+    case 'failed':
+      return 2;
+    case 'completed':
+      return 3;
+    default:
+      return 4;
+  }
 }
 
 function DashboardPanel({

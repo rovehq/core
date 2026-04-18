@@ -14,7 +14,9 @@ use super::package::{
     manifest_from_signed_json, read_required_file, resolve_package_root, MANIFEST_FILE,
 };
 use super::registry::materialize_registry_bundle;
-use super::stage::{install_directory, perform_install, verify_and_store};
+use super::stage::{
+    install_directory, legacy_install_directory, perform_install, verify_and_store,
+};
 use super::validate::{print_permission_review, resolve_payload_source, validate_plugin_shape};
 
 pub async fn handle_install(
@@ -187,7 +189,7 @@ async fn install_with_mode(
 
     let payload_source =
         resolve_payload_source(&package_root, &manifest, &package, runtime_rel.as_deref())?;
-    let install_dir = install_directory(config, &install_id);
+    let install_dir = install_directory(config, &install_id, &manifest.plugin_type);
     if install_dir.exists() {
         bail!(
             "Install directory '{}' already exists. Remove the plugin first.",
@@ -309,7 +311,8 @@ async fn remove_existing_plugin_artifacts(
         .await
         .context("Failed to remove existing plugin before upgrade")?;
 
-    let install_dir = install_directory(config, &existing.id);
+    let plugin_type = PluginType::parse(&existing.plugin_type).unwrap_or(PluginType::Skill);
+    let install_dir = install_directory(config, &existing.id, &plugin_type);
     if install_dir.exists() {
         fs::remove_dir_all(&install_dir).with_context(|| {
             format!(
@@ -317,6 +320,16 @@ async fn remove_existing_plugin_artifacts(
                 install_dir.display()
             )
         })?;
+    } else if matches!(plugin_type, PluginType::Workspace) {
+        let legacy_dir = legacy_install_directory(config, &existing.id);
+        if legacy_dir.exists() {
+            fs::remove_dir_all(&legacy_dir).with_context(|| {
+                format!(
+                    "Failed to remove legacy driver install directory '{}'",
+                    legacy_dir.display()
+                )
+            })?;
+        }
     }
 
     Ok(())
@@ -631,6 +644,61 @@ mod tests {
             .join("plugins")
             .join("echo-skill")
             .join("echo.wasm")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn installs_workspace_package_under_drivers_directory() {
+        let signing_key = SigningKey::from_bytes(&[31u8; 32]);
+        let crypto = CryptoModule::with_key(signing_key.verifying_key());
+        let package_dir = TempDir::new().expect("package dir");
+        let (_db_dir, database) = test_database().await;
+        let data_dir = TempDir::new().expect("data dir");
+        let workspace = TempDir::new().expect("workspace dir");
+
+        let artifact_bytes = b"native driver bytes";
+        fs::write(package_dir.path().join("vision-plus.dylib"), artifact_bytes)
+            .expect("write driver");
+        fs::write(package_dir.path().join(RUNTIME_FILE), r#"{"tools":[]}"#)
+            .expect("write runtime config");
+
+        let payload_hash = CryptoModule::compute_hash(artifact_bytes);
+        let payload_signature = hex::encode(signing_key.sign(payload_hash.as_bytes()).to_bytes());
+        write_signed_manifest(
+            package_dir.path(),
+            &signing_key,
+            "Vision Plus",
+            "Workspace",
+            "Official",
+            "0.1.0",
+        );
+        write_package(
+            package_dir.path(),
+            "vision-plus.dylib",
+            &payload_hash,
+            &payload_signature,
+        );
+
+        let mut config = Config::default();
+        config.core.data_dir = data_dir.path().to_path_buf();
+        config.core.workspace = workspace.path().to_path_buf();
+
+        let installed = install_from_directory(&config, &database, &crypto, package_dir.path())
+            .await
+            .expect("install driver");
+
+        assert_eq!(installed.plugin_type, "Workspace");
+        assert!(data_dir
+            .path()
+            .join("drivers")
+            .join(default_plugin_id("Vision Plus"))
+            .join("vision-plus.dylib")
+            .exists());
+        assert!(data_dir
+            .path()
+            .join("drivers")
+            .join(default_plugin_id("Vision Plus"))
+            .join(PACKAGE_FILE)
             .exists());
     }
 

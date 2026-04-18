@@ -10,6 +10,7 @@ use crate::cli::commands::{ExtensionAction, PluginScaffoldType};
 use crate::cli::database_path::database_path;
 use crate::cli::output::OutputFormat;
 use crate::config::Config;
+use crate::runtime::wasm::installed_plugin_wasm_limit_report;
 use crate::runtime::{Manifest, PluginType};
 use crate::security::crypto::CryptoModule;
 use crate::storage::{Database, InstalledPlugin};
@@ -19,7 +20,7 @@ use sdk::{
 
 pub enum ExtensionSurface {
     Skill,
-    System,
+    Driver,
     Channel,
 }
 
@@ -42,13 +43,22 @@ pub struct ExtensionInventoryItem {
     #[serde(default)]
     pub permission_warnings: Vec<String>,
     pub release_summary: Option<String>,
+    pub wasm_limits: Option<WasmLimitView>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WasmLimitView {
+    pub timeout_secs: u64,
+    pub max_memory_mb: u32,
+    pub fuel_limit: u64,
+    pub sidecar_path: Option<String>,
 }
 
 impl ExtensionSurface {
     fn noun(&self) -> &'static str {
         match self {
             Self::Skill => "skill",
-            Self::System => "system",
+            Self::Driver => "driver",
             Self::Channel => "channel",
         }
     }
@@ -56,7 +66,7 @@ impl ExtensionSurface {
     fn scaffold_type(&self) -> PluginScaffoldType {
         match self {
             Self::Skill => PluginScaffoldType::Skill,
-            Self::System => PluginScaffoldType::System,
+            Self::Driver => PluginScaffoldType::System,
             Self::Channel => PluginScaffoldType::Channel,
         }
     }
@@ -64,7 +74,7 @@ impl ExtensionSurface {
     fn expected_type(&self) -> PluginType {
         match self {
             Self::Skill => PluginType::Skill,
-            Self::System => PluginType::Workspace,
+            Self::Driver => PluginType::Workspace,
             Self::Channel => PluginType::Channel,
         }
     }
@@ -75,7 +85,7 @@ pub async fn handle(
     surface: ExtensionSurface,
     action: ExtensionAction,
 ) -> Result<()> {
-    if matches!(surface, ExtensionSurface::System) {
+    if matches!(surface, ExtensionSurface::Driver) {
         if let Some(result) = try_handle_official_system_action(config, &action).await? {
             return Ok(result);
         }
@@ -233,7 +243,7 @@ async fn print_official_systems(config: &Config) -> Result<()> {
         .await
         .context("Failed to list installed plugins")?;
 
-    println!("Official system extensions:");
+    println!("Official drivers:");
     for system in OFFICIAL_SYSTEMS {
         let state = system_state(&installed, system.id);
         println!("- {} [{}] {}", system.id, state, system.description);
@@ -242,13 +252,13 @@ async fn print_official_systems(config: &Config) -> Result<()> {
     let custom = installed
         .iter()
         .filter(|plugin| {
-            plugin_public_kind(plugin) == "system" && !is_official_system_id(&plugin.id)
+            plugin_public_kind(plugin) == "driver" && !is_official_system_id(&plugin.id)
         })
         .cloned()
         .collect::<Vec<_>>();
     if !custom.is_empty() {
         println!();
-        println!("Installed custom systems:");
+        println!("Installed custom drivers:");
         for plugin in custom {
             println!(
                 "- {} [{}] version={}",
@@ -276,7 +286,7 @@ async fn inspect_official_system(config: &Config, name: &str) -> Result<()> {
     let system = official_system(name).expect("validated official system");
 
     println!("name: {}", system.id);
-    println!("kind: system");
+    println!("kind: driver");
     println!("source: official");
     println!("state: {}", system_state(&installed, system.id));
     println!("description: {}", system.description);
@@ -290,7 +300,7 @@ async fn inspect_official_system(config: &Config, name: &str) -> Result<()> {
             println!("artifact: {}", path);
         }
     } else {
-        println!("install: rove system install {}", system.id);
+        println!("install: rove driver install {}", system.id);
     }
 
     Ok(())
@@ -304,7 +314,7 @@ async fn enable_official_system(config: &Config, name: &str) -> Result<()> {
             .set_enabled(&plugin.id, true)
             .await
             .context("Failed to enable installed system")?;
-        println!("Enabled system '{}'.", name);
+        println!("Enabled driver '{}'.", name);
         return Ok(());
     }
 
@@ -318,13 +328,13 @@ async fn disable_official_system(config: &Config, name: &str) -> Result<()> {
             .installed_plugins()
             .set_enabled(&plugin.id, false)
             .await
-            .context("Failed to disable installed system")?;
-        println!("Disabled system '{}'.", name);
+            .context("Failed to disable installed driver")?;
+        println!("Disabled driver '{}'.", name);
         return Ok(());
     }
 
     println!(
-        "System '{}' is not installed. Install it with `rove system install {}`.",
+        "Driver '{}' is not installed. Install it with `rove driver install {}`.",
         name, name
     );
     Ok(())
@@ -346,12 +356,22 @@ pub(crate) async fn remove_official_system(config: &Config, name: &str) -> Resul
                     install_dir.display()
                 )
             })?;
+        } else {
+            let legacy_dir = legacy_system_dir(config, &plugin.id);
+            if legacy_dir.exists() {
+                fs::remove_dir_all(&legacy_dir).with_context(|| {
+                    format!(
+                        "Failed to remove legacy installed system directory '{}'",
+                        legacy_dir.display()
+                    )
+                })?;
+            }
         }
-        println!("Removed system '{}'.", name);
+        println!("Removed driver '{}'.", name);
         return Ok(());
     }
 
-    println!("System '{}' is not installed.", name);
+    println!("Driver '{}' is not installed.", name);
     Ok(())
 }
 
@@ -400,7 +420,7 @@ pub(crate) async fn install_official_system(
     };
 
     println!(
-        "{} official system '{}' [{}] version={}",
+        "{} official driver '{}' [{}] version={}",
         if upgrade { "Upgraded" } else { "Installed" },
         installed.name,
         installed.id,
@@ -423,7 +443,7 @@ pub(crate) async fn inventory(config: &Config) -> Result<Vec<ExtensionInventoryI
     let mut items = installed
         .iter()
         .map(|plugin| inventory_item_from_plugin(plugin, &catalog))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     items.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(items)
 }
@@ -450,7 +470,7 @@ pub(crate) async fn set_extension_enabled_api(
     selector: &str,
     enabled: bool,
 ) -> Result<ExtensionInventoryItem> {
-    if kind == "system" && official_system(selector).is_some() {
+    if matches!(kind, "driver" | "system") && official_system(selector).is_some() {
         if enabled {
             enable_official_system(config, selector).await?;
         } else {
@@ -459,8 +479,8 @@ pub(crate) async fn set_extension_enabled_api(
         return inventory(config)
             .await?
             .into_iter()
-            .find(|item| item.kind == "system" && item.id.eq_ignore_ascii_case(selector))
-            .context("Updated official system did not appear in inventory");
+            .find(|item| item.kind == "driver" && item.id.eq_ignore_ascii_case(selector))
+            .context("Updated official driver did not appear in inventory");
     }
 
     let database = open_database(config).await?;
@@ -494,6 +514,18 @@ pub async fn install_extension_api(
     registry: Option<&str>,
     version: Option<&str>,
 ) -> Result<ExtensionInventoryItem> {
+    if matches!(kind, Some("driver") | Some("system"))
+        && official_system(source).is_some()
+        && registry.is_none()
+    {
+        install_official_system(config, source, false).await?;
+        return inventory(config)
+            .await?
+            .into_iter()
+            .find(|item| item.id == source && item.kind == "driver")
+            .context("Installed official driver did not appear in inventory");
+    }
+
     let expected_type = kind.and_then(parse_public_kind);
     let installed = crate::cli::plugins::install_with_catalog_defaults(
         config,
@@ -518,6 +550,18 @@ pub async fn upgrade_extension_api(
     registry: Option<&str>,
     version: Option<&str>,
 ) -> Result<ExtensionInventoryItem> {
+    if matches!(kind, Some("driver") | Some("system"))
+        && official_system(source).is_some()
+        && registry.is_none()
+    {
+        install_official_system(config, source, true).await?;
+        return inventory(config)
+            .await?
+            .into_iter()
+            .find(|item| item.id == source && item.kind == "driver")
+            .context("Upgraded official driver did not appear in inventory");
+    }
+
     let expected_type = kind.and_then(parse_public_kind);
     let installed = crate::cli::plugins::upgrade_with_catalog_defaults(
         config,
@@ -540,7 +584,7 @@ pub(crate) async fn remove_extension_api(
     kind: &str,
     selector: &str,
 ) -> Result<()> {
-    if kind == "system" && official_system(selector).is_some() {
+    if matches!(kind, "driver" | "system") && official_system(selector).is_some() {
         remove_official_system(config, selector).await?;
         return Ok(());
     }
@@ -729,6 +773,10 @@ fn system_state(installed: &[InstalledPlugin], id: &str) -> &'static str {
 }
 
 fn installed_system_dir(config: &Config, id: &str) -> PathBuf {
+    config.core.data_dir.join("drivers").join(id)
+}
+
+fn legacy_system_dir(config: &Config, id: &str) -> PathBuf {
     config.core.data_dir.join("plugins").join(id)
 }
 
@@ -743,7 +791,7 @@ fn plugin_public_kind(plugin: &InstalledPlugin) -> &'static str {
 fn parse_public_kind(kind: &str) -> Option<PluginType> {
     match kind {
         "skill" => Some(PluginType::Skill),
-        "system" => Some(PluginType::Workspace),
+        "driver" | "system" => Some(PluginType::Workspace),
         "channel" => Some(PluginType::Channel),
         _ => None,
     }
@@ -752,7 +800,7 @@ fn parse_public_kind(kind: &str) -> Option<PluginType> {
 fn inventory_item_from_plugin(
     plugin: &InstalledPlugin,
     catalog: &[CatalogExtensionRecord],
-) -> ExtensionInventoryItem {
+) -> Result<ExtensionInventoryItem> {
     let catalog_entry = catalog.iter().find(|entry| entry.id == plugin.id);
     let manifest = Manifest::from_json(&plugin.manifest).ok();
     let description = catalog_entry
@@ -795,7 +843,15 @@ fn inventory_item_from_plugin(
         },
     };
 
-    ExtensionInventoryItem {
+    let wasm_limits = installed_plugin_wasm_limit_report(plugin)?
+        .map(|report| WasmLimitView {
+            timeout_secs: report.timeout_secs,
+            max_memory_mb: report.max_memory_mb,
+            fuel_limit: report.fuel_limit,
+            sidecar_path: report.sidecar_path,
+        });
+
+    Ok(ExtensionInventoryItem {
         id: plugin.id.clone(),
         name: plugin.name.clone(),
         kind: plugin_public_kind(plugin).to_string(),
@@ -821,7 +877,8 @@ fn inventory_item_from_plugin(
             .map(|entry| entry.latest.permission_warnings.clone())
             .unwrap_or_default(),
         release_summary: catalog_entry.and_then(|entry| entry.latest.release_summary.clone()),
-    }
+        wasm_limits,
+    })
 }
 
 fn official_system(name: &str) -> Option<&'static OfficialSystem> {

@@ -5,6 +5,9 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
+    "build:prod": "next build",
+    "prod": "next build && python3 -m http.server 3000 -d dist",
+    "preview": "python3 -m http.server 3000 -d dist",
     "start": "next start -p 3000",
     "lint": "next lint"
   },

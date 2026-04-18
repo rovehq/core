@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::runtime::Manifest;
 
@@ -10,7 +10,7 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const PACKAGE_FILE: &str = "plugin-package.json";
 pub const RUNTIME_FILE: &str = "runtime.json";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PluginPackage {
     #[serde(default)]
     pub id: Option<String>,

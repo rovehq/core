@@ -8,6 +8,7 @@ use crate::config::{metadata::SERVICE_NAME, Config, CustomProvider};
 use crate::security::secrets::SecretManager;
 use crate::security::{configure_password_for_config, describe_protection_state};
 use crate::storage::Database;
+use crate::system::{health, onboarding, specs::SpecRepository};
 
 use super::tui::setup;
 
@@ -51,16 +52,19 @@ pub async fn handle_setup() -> Result<()> {
     config.save_to_path(&config_path)?;
 
     let db_path = database_path(&config);
-    let db_exists = db_path.exists();
-    if !db_exists {
-        let database = Database::new(&db_path).await?;
-        drop(database);
-    }
+    let database = Database::new(&db_path).await?;
 
     let workspace_path = expand_workspace(&result.workspace, &home);
     std::fs::create_dir_all(&workspace_path)?;
+    let repo = SpecRepository::new()?;
+    let health = health::collect_snapshot(&config).await?;
+    let onboarding = onboarding::collect(&config, &database, &health).await?;
 
     setup::print_summary(&result, &config_path.display().to_string(), true);
+    println!("Agents dir: {}", repo.agents_dir().display());
+    println!("Workflows dir: {}", repo.workflows_dir().display());
+    println!();
+    onboarding::print_text(&onboarding);
     Ok(())
 }
 

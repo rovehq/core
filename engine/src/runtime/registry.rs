@@ -11,8 +11,11 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::debug;
 
 use crate::config::Config;
+use crate::hooks::{task_source_label, AfterToolCallPayload, BeforeToolCallPayload, HookManager};
+use sdk::browser::BrowserBackend;
+
 use crate::runtime::{
-    BrowserTool, FilesystemTool, McpSpawner, NativeRuntime, TerminalTool, VisionTool, WasmRuntime,
+    FilesystemTool, McpSpawner, NativeRuntime, TerminalTool, VisionTool, WasmRuntime,
 };
 use crate::security::approvals;
 use crate::security::command_executor::CommandExecutor;
@@ -20,6 +23,7 @@ use crate::security::injection_detector::InjectionDetector;
 use crate::security::risk_assessor::{
     classify_terminal_command, Operation, OperationSource, RiskAssessor, RiskTier,
 };
+use crate::security::secrets::scrub_text;
 use crate::tools::catalog::{derive_domains_from_name, McpToolInfo, WasmToolInfo};
 use sdk::errors::EngineError;
 use sdk::TaskSource;
@@ -48,8 +52,9 @@ pub struct ToolRegistry {
     pub fs: Option<FilesystemTool>,
     pub terminal: Option<TerminalTool>,
     pub vision: Option<VisionTool>,
-    /// Browser tool — `None` when `browser.enabled` is false or no profile is configured.
-    pub browser: Option<Arc<Mutex<BrowserTool>>>,
+    /// Browser backend — `None` when `browser.enabled` is false or no profile is configured.
+    /// Accepts any type implementing `BrowserBackend` (e.g. CdpBackend, BrowshBackend).
+    pub browser: Option<Arc<Mutex<dyn BrowserBackend>>>,
     pub wasm_runtime: Option<Arc<Mutex<WasmRuntime>>>,
     pub wasm_tools: Vec<WasmToolInfo>,
     pub mcp_spawner: Option<Arc<McpSpawner>>,
@@ -58,6 +63,7 @@ pub struct ToolRegistry {
     tools: Arc<RwLock<HashMap<String, ToolSchema>>>,
     risk_assessor: RiskAssessor,
     config: Arc<Config>,
+    hooks: Arc<HookManager>,
 }
 
 impl ToolRegistry {
@@ -75,6 +81,7 @@ impl ToolRegistry {
             tools: Arc::new(RwLock::new(HashMap::new())),
             risk_assessor: RiskAssessor::new(),
             config: Arc::new(Config::default()),
+            hooks: Arc::new(HookManager::disabled()),
         }
     }
 
@@ -96,6 +103,7 @@ impl ToolRegistry {
             native_runtime: native,
             tools: Arc::new(RwLock::new(HashMap::new())),
             risk_assessor: RiskAssessor::new(),
+            hooks: Arc::new(HookManager::discover(&config)),
             config,
         }
     }
@@ -150,6 +158,49 @@ impl ToolRegistry {
             domains: vec!["filesystem".to_string(), "read".to_string(), "all".to_string()],
         })
         .await;
+        self.register(ToolSchema {
+            name: "glob_files".to_string(),
+            description: "Find files matching a glob pattern within the workspace.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string","description":"Glob such as src/**/*.rs"},"path":{"type":"string","description":"Optional directory to search under"},"max_results":{"type":"integer","description":"Maximum number of paths to return"}},"required":["pattern"]}),
+            source: ToolSource::Builtin,
+            domains: vec!["filesystem".to_string(), "search".to_string(), "read".to_string(), "all".to_string()],
+        })
+        .await;
+        self.register(ToolSchema {
+            name: "grep_files".to_string(),
+            description: "Search file contents with a regex and return matching lines.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string","description":"Regex to search for"},"path":{"type":"string","description":"Optional directory or file to search under"},"file_pattern":{"type":"string","description":"Optional glob to limit searched files"},"max_results":{"type":"integer","description":"Maximum number of matches to return"}},"required":["pattern"]}),
+            source: ToolSource::Builtin,
+            domains: vec!["filesystem".to_string(), "search".to_string(), "read".to_string(), "all".to_string()],
+        })
+        .await;
+        self.register(ToolSchema {
+            name: "append_to_file".to_string(),
+            description: "Append text to the end of a file. Creates the file if it does not exist.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}),
+            source: ToolSource::Builtin,
+            domains: vec!["filesystem".to_string(), "write".to_string(), "all".to_string()],
+        })
+        .await;
+        self.register(ToolSchema {
+            name: "patch_file".to_string(),
+            description: "Edit a file by replacing an exact string with a new string. old_string must appear exactly once in the file. Use read_file first to see the current content.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string","description":"Exact text to find (must match exactly once)"},"new_string":{"type":"string","description":"Text to replace it with"}},"required":["path","old_string","new_string"]}),
+            source: ToolSource::Builtin,
+            domains: vec!["filesystem".to_string(), "write".to_string(), "edit".to_string(), "all".to_string()],
+        })
+        .await;
+    }
+
+    pub async fn register_builtin_web_fetch(&self) {
+        self.register(ToolSchema {
+            name: "web_fetch".to_string(),
+            description: "Fetch a web page or text resource and return readable text.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"url":{"type":"string","description":"HTTP or HTTPS URL to fetch"},"max_chars":{"type":"integer","description":"Optional maximum number of characters to return"}},"required":["url"]}),
+            source: ToolSource::Builtin,
+            domains: vec!["web".to_string(), "research".to_string(), "read".to_string(), "all".to_string()],
+        })
+        .await;
     }
 
     pub async fn register_builtin_terminal(&mut self, tool: TerminalTool) {
@@ -176,7 +227,7 @@ impl ToolRegistry {
         .await;
     }
 
-    pub async fn register_builtin_browser(&mut self, tool: Arc<Mutex<BrowserTool>>) {
+    pub async fn register_browser_backend(&mut self, tool: Arc<Mutex<dyn BrowserBackend>>) {
         self.browser = Some(tool);
         self.register(ToolSchema {
             name: "browse_url".to_string(),
@@ -377,10 +428,24 @@ impl ToolRegistry {
             .cloned()
             .ok_or_else(|| EngineError::ToolNotFound(name.to_string()))?;
 
+        let hook_outcome = self
+            .hooks
+            .before_tool_call(BeforeToolCallPayload {
+                event: "BeforeToolCall",
+                task_id: task_id.to_string(),
+                tool_name: name.to_string(),
+                args,
+                task_source: task_source_label(source),
+                workspace: self.config.core.workspace.display().to_string(),
+            })
+            .await?;
+        let args = hook_outcome.args;
+
         self.check_paths(&args)?;
         self.check_command_gate(name, &args)?;
         self.assess_risk(task_id, name, &args, source).await?;
 
+        let args_for_after = args.clone();
         let raw_result = match &schema.source {
             ToolSource::Builtin => self.call_builtin(name, args).await?,
             ToolSource::Native { lib_path } => self.call_native(lib_path, name, args).await?,
@@ -391,7 +456,20 @@ impl ToolRegistry {
             }
         };
 
-        self.scrub_output(raw_result)
+        let safe_result = self.scrub_output(raw_result)?;
+        self.hooks
+            .after_tool_call(AfterToolCallPayload {
+                event: "AfterToolCall",
+                task_id: task_id.to_string(),
+                tool_name: name.to_string(),
+                args: args_for_after,
+                result: safe_result.clone(),
+                task_source: task_source_label(source),
+                workspace: self.config.core.workspace.display().to_string(),
+            })
+            .await;
+
+        Ok(safe_result)
     }
 
     fn remote_mcp_tool_name(&self, server_name: &str, registry_name: &str) -> String {
@@ -519,7 +597,7 @@ impl ToolRegistry {
         if should_use_daemon_approval(source)
             || matches!(
                 self.config.daemon.profile,
-                crate::config::DaemonProfile::Headless
+                crate::config::DaemonProfile::Headless | crate::config::DaemonProfile::Edge
             )
         {
             let approved = approvals::request_approval(
@@ -575,7 +653,7 @@ impl ToolRegistry {
         if should_use_daemon_approval(source)
             || matches!(
                 self.config.daemon.profile,
-                crate::config::DaemonProfile::Headless
+                crate::config::DaemonProfile::Headless | crate::config::DaemonProfile::Edge
             )
         {
             let approved = approvals::request_approval(
@@ -626,8 +704,8 @@ impl ToolRegistry {
 
     fn tool_operation_name(&self, tool_name: &str, args: &Value) -> &'static str {
         match tool_name {
-            "read_file" | "list_dir" | "file_exists" => "read_file",
-            "write_file" => "write_file",
+            "read_file" | "list_dir" | "file_exists" | "glob_files" | "grep_files" => "read_file",
+            "write_file" | "append_to_file" | "patch_file" => "write_file",
             "delete_file" => "delete_file",
             "run_command" => args
                 .get("command")
@@ -692,6 +770,40 @@ impl ToolRegistry {
                     .map(Value::String)
                     .map_err(|error| EngineError::ToolError(error.to_string()))
             }
+            "append_to_file" => {
+                let fs = self
+                    .fs
+                    .as_ref()
+                    .ok_or_else(|| EngineError::ToolNotFound(name.to_string()))?;
+                let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
+                let content = args
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                fs.append_to_file(path, content)
+                    .await
+                    .map(Value::String)
+                    .map_err(|error| EngineError::ToolError(error.to_string()))
+            }
+            "patch_file" => {
+                let fs = self
+                    .fs
+                    .as_ref()
+                    .ok_or_else(|| EngineError::ToolNotFound(name.to_string()))?;
+                let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
+                let old = args
+                    .get("old_string")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let new = args
+                    .get("new_string")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                fs.patch_file(path, old, new)
+                    .await
+                    .map(Value::String)
+                    .map_err(|error| EngineError::ToolError(error.to_string()))
+            }
             "list_dir" => {
                 let fs = self
                     .fs
@@ -712,6 +824,45 @@ impl ToolRegistry {
                 fs.file_exists(path)
                     .await
                     .map(Value::Bool)
+                    .map_err(|error| EngineError::ToolError(error.to_string()))
+            }
+            "glob_files" => {
+                let fs = self
+                    .fs
+                    .as_ref()
+                    .ok_or_else(|| EngineError::ToolNotFound(name.to_string()))?;
+                let pattern = args
+                    .get("pattern")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let path = args.get("path").and_then(Value::as_str);
+                let max_results = args
+                    .get("max_results")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(200) as usize;
+                fs.glob_files(pattern, path, max_results)
+                    .await
+                    .map(Value::String)
+                    .map_err(|error| EngineError::ToolError(error.to_string()))
+            }
+            "grep_files" => {
+                let fs = self
+                    .fs
+                    .as_ref()
+                    .ok_or_else(|| EngineError::ToolNotFound(name.to_string()))?;
+                let pattern = args
+                    .get("pattern")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let path = args.get("path").and_then(Value::as_str);
+                let file_pattern = args.get("file_pattern").and_then(Value::as_str);
+                let max_results = args
+                    .get("max_results")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(100) as usize;
+                fs.grep_files(pattern, path, file_pattern, max_results)
+                    .await
+                    .map(Value::String)
                     .map_err(|error| EngineError::ToolError(error.to_string()))
             }
             "run_command" => {
@@ -750,26 +901,14 @@ impl ToolRegistry {
                     .as_ref()
                     .ok_or_else(|| EngineError::ToolNotFound("browse_url".to_string()))?;
                 let url = args.get("url").and_then(Value::as_str).unwrap_or_default();
-                browser
-                    .lock()
-                    .await
-                    .navigate(url)
-                    .await
-                    .map(Value::String)
-                    .map_err(|e| EngineError::ToolError(e.to_string()))
+                browser.lock().await.navigate(url).await.map(Value::String)
             }
             "read_page_text" => {
                 let browser = self
                     .browser
                     .as_ref()
                     .ok_or_else(|| EngineError::ToolNotFound("read_page_text".to_string()))?;
-                browser
-                    .lock()
-                    .await
-                    .page_text()
-                    .await
-                    .map(Value::String)
-                    .map_err(|e| EngineError::ToolError(e.to_string()))
+                browser.lock().await.page_text().await.map(Value::String)
             }
             "click_element" => {
                 let browser = self
@@ -786,7 +925,6 @@ impl ToolRegistry {
                     .click(selector)
                     .await
                     .map(Value::String)
-                    .map_err(|e| EngineError::ToolError(e.to_string()))
             }
             "fill_form_field" => {
                 let browser = self
@@ -807,7 +945,6 @@ impl ToolRegistry {
                     .fill_field(selector, value)
                     .await
                     .map(Value::String)
-                    .map_err(|e| EngineError::ToolError(e.to_string()))
             }
             _ => Err(EngineError::ToolNotFound(name.to_string())),
         }
@@ -865,13 +1002,18 @@ impl ToolRegistry {
         let detector =
             InjectionDetector::new().map_err(|error| EngineError::ToolError(error.to_string()))?;
         match value {
-            Value::String(text) => Ok(Value::String(detector.sanitize(&text))),
+            Value::String(text) => Ok(Value::String(scrub_text(&detector.sanitize(&text)))),
             other => {
                 let serialized = other.to_string();
                 if detector.scan(&serialized).is_some() {
-                    Ok(Value::String(detector.sanitize(&serialized)))
+                    Ok(Value::String(scrub_text(&detector.sanitize(&serialized))))
                 } else {
-                    Ok(other)
+                    let scrubbed = scrub_text(&serialized);
+                    if scrubbed != serialized {
+                        Ok(Value::String(scrubbed))
+                    } else {
+                        Ok(other)
+                    }
                 }
             }
         }

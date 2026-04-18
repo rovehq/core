@@ -40,6 +40,10 @@ pub struct RemotePeer {
     pub profile: NodeProfile,
     pub target: String,
     pub trusted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load: Option<NodeLoadSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_status_error: Option<String>,
     pub auth_secret_key: Option<String>,
     #[serde(default)]
     pub transports: Vec<RemoteTransportRecord>,
@@ -127,6 +131,34 @@ pub struct RemoteTaskEvent {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct RemoteDriverSyncItem {
+    pub id: String,
+    pub source: String,
+    pub registry: Option<String>,
+    pub version: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteDriverSyncResult {
+    pub node_name: String,
+    pub driver_id: String,
+    pub action: String,
+    pub version: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteExtensionInventoryItem {
+    id: String,
+    kind: String,
+    state: String,
+    version: Option<String>,
+}
+
 pub struct RemoteManager {
     config: Config,
 }
@@ -151,6 +183,25 @@ impl RemoteManager {
 
     pub fn nodes(&self) -> Result<Vec<RemotePeer>> {
         self.load_peers()
+    }
+
+    pub async fn nodes_with_status(&self) -> Result<Vec<RemotePeer>> {
+        let mut peers = self.load_peers()?;
+        for peer in &mut peers {
+            match self.fetch_peer_status(peer).await {
+                Ok(status) => {
+                    peer.load = status.load;
+                    if !status.transports.is_empty() {
+                        peer.transports = status.transports;
+                    }
+                    peer.last_status_error = None;
+                }
+                Err(error) => {
+                    peer.last_status_error = Some(error.to_string());
+                }
+            }
+        }
+        Ok(peers)
     }
 
     pub fn rename(&self, name: &str) -> Result<NodeIdentity> {
@@ -208,6 +259,40 @@ impl RemoteManager {
         metadata.profile.capabilities = normalize_capabilities(capabilities);
         self.save_node_profile(&metadata.profile)?;
         Ok(metadata.profile)
+    }
+
+    pub async fn sync_drivers(
+        &self,
+        node: Option<&str>,
+        drivers: &[RemoteDriverSyncItem],
+        dry_run: bool,
+    ) -> Result<Vec<RemoteDriverSyncResult>> {
+        let peers = self.load_peers()?;
+        let targets = if let Some(node) = node {
+            let Some(peer) = peers.iter().find(|peer| {
+                peer.identity.node_name.eq_ignore_ascii_case(node)
+                    || peer.target.eq_ignore_ascii_case(node)
+                    || peer.identity.node_id == node
+            }) else {
+                bail!("Remote node '{}' is not paired", node);
+            };
+            vec![peer.clone()]
+        } else {
+            peers
+                .into_iter()
+                .filter(|peer| peer.trusted)
+                .collect::<Vec<_>>()
+        };
+
+        if targets.is_empty() {
+            bail!("No trusted remote nodes are paired yet");
+        }
+
+        let mut results = Vec::new();
+        for peer in targets {
+            results.extend(self.sync_drivers_to_peer(&peer, drivers, dry_run).await?);
+        }
+        Ok(results)
     }
 
     pub async fn pair(
@@ -314,6 +399,11 @@ impl RemoteManager {
                 }),
             target: endpoint.clone(),
             trusted: false,
+            load: remote_status
+                .as_ref()
+                .ok()
+                .and_then(|status| status.load.clone()),
+            last_status_error: remote_status.as_ref().err().map(|error| error.to_string()),
             auth_secret_key,
             transports: proof
                 .as_ref()
@@ -374,6 +464,8 @@ impl RemoteManager {
             profile,
             target: target.to_string(),
             trusted: auto_trust,
+            load: None,
+            last_status_error: None,
             auth_secret_key: None,
             transports,
         };
@@ -989,6 +1081,211 @@ impl RemoteManager {
             .await
             .context("Failed to fetch remote node status")?;
         parse_remote_status_response(response).await
+    }
+
+    async fn sync_drivers_to_peer(
+        &self,
+        peer: &RemotePeer,
+        drivers: &[RemoteDriverSyncItem],
+        dry_run: bool,
+    ) -> Result<Vec<RemoteDriverSyncResult>> {
+        if !peer.trusted {
+            bail!(
+                "Remote node '{}' is paired but not trusted",
+                peer.identity.node_name
+            );
+        }
+
+        let Some(auth_token) = self.optional_auth_token_for_peer(peer).await else {
+            bail!(
+                "Remote node '{}' does not have a stored auth token. Pair it with --token or configure ws_client.auth_token.",
+                peer.identity.node_name
+            );
+        };
+
+        let remote_extensions = self
+            .fetch_remote_driver_inventory(peer, &auth_token)
+            .await
+            .unwrap_or_default();
+        let client = Client::new();
+        let endpoint = self.peer_endpoint(peer);
+
+        let mut results = Vec::new();
+        for driver in drivers {
+            let installed = remote_extensions
+                .iter()
+                .find(|item| item.id == driver.id && item.kind == "driver");
+
+            let action = if let Some(installed) = installed {
+                if installed.version.as_deref() == Some(driver.version.as_str()) {
+                    if installed.state
+                        == if driver.enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        }
+                    {
+                        "unchanged"
+                    } else if driver.enabled {
+                        "enable"
+                    } else {
+                        "disable"
+                    }
+                } else {
+                    "upgrade"
+                }
+            } else {
+                "install"
+            };
+
+            if dry_run {
+                results.push(RemoteDriverSyncResult {
+                    node_name: peer.identity.node_name.clone(),
+                    driver_id: driver.id.clone(),
+                    action: action.to_string(),
+                    version: driver.version.clone(),
+                    status: "planned".to_string(),
+                    detail: None,
+                });
+                continue;
+            }
+
+            match action {
+                "unchanged" => results.push(RemoteDriverSyncResult {
+                    node_name: peer.identity.node_name.clone(),
+                    driver_id: driver.id.clone(),
+                    action: action.to_string(),
+                    version: driver.version.clone(),
+                    status: "ok".to_string(),
+                    detail: None,
+                }),
+                "enable" | "disable" => {
+                    self.set_remote_extension_enabled(
+                        &client,
+                        &endpoint,
+                        &auth_token,
+                        &driver.id,
+                        action == "enable",
+                    )
+                    .await?;
+                    results.push(RemoteDriverSyncResult {
+                        node_name: peer.identity.node_name.clone(),
+                        driver_id: driver.id.clone(),
+                        action: action.to_string(),
+                        version: driver.version.clone(),
+                        status: "ok".to_string(),
+                        detail: None,
+                    });
+                }
+                "install" | "upgrade" => {
+                    self.install_remote_driver(
+                        &client,
+                        &endpoint,
+                        &auth_token,
+                        driver,
+                        action == "upgrade",
+                    )
+                    .await?;
+                    if !driver.enabled {
+                        self.set_remote_extension_enabled(
+                            &client,
+                            &endpoint,
+                            &auth_token,
+                            &driver.id,
+                            false,
+                        )
+                        .await?;
+                    }
+                    results.push(RemoteDriverSyncResult {
+                        node_name: peer.identity.node_name.clone(),
+                        driver_id: driver.id.clone(),
+                        action: action.to_string(),
+                        version: driver.version.clone(),
+                        status: "ok".to_string(),
+                        detail: None,
+                    });
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn fetch_remote_driver_inventory(
+        &self,
+        peer: &RemotePeer,
+        auth_token: &str,
+    ) -> Result<Vec<RemoteExtensionInventoryItem>> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .context("Failed to build remote extension inventory client")?;
+        let response = client
+            .get(format!(
+                "{}/v1/extensions",
+                self.peer_endpoint(peer).trim_end_matches('/')
+            ))
+            .bearer_auth(auth_token)
+            .send()
+            .await
+            .context("Failed to query remote extension inventory")?;
+        parse_json_response(response, "Failed to parse remote extension inventory").await
+    }
+
+    async fn install_remote_driver(
+        &self,
+        client: &Client,
+        endpoint: &str,
+        auth_token: &str,
+        driver: &RemoteDriverSyncItem,
+        upgrade: bool,
+    ) -> Result<()> {
+        let path = if upgrade {
+            "/v1/extensions/upgrade"
+        } else {
+            "/v1/extensions/install"
+        };
+        let response = client
+            .post(format!("{}{}", endpoint.trim_end_matches('/'), path))
+            .bearer_auth(auth_token)
+            .json(&serde_json::json!({
+                "kind": "driver",
+                "source": driver.source,
+                "registry": driver.registry,
+                "version": driver.version,
+            }))
+            .send()
+            .await
+            .context("Failed to reach remote extension install API")?;
+        let _value: serde_json::Value =
+            parse_json_response(response, "Remote driver install failed").await?;
+        Ok(())
+    }
+
+    async fn set_remote_extension_enabled(
+        &self,
+        client: &Client,
+        endpoint: &str,
+        auth_token: &str,
+        driver_id: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        let action = if enabled { "enable" } else { "disable" };
+        let response = client
+            .post(format!(
+                "{}/v1/extensions/driver/{}/{}",
+                endpoint.trim_end_matches('/'),
+                urlencoding::encode(driver_id),
+                action
+            ))
+            .bearer_auth(auth_token)
+            .send()
+            .await
+            .context("Failed to reach remote extension state API")?;
+        let _value: serde_json::Value =
+            parse_json_response(response, "Remote driver state update failed").await?;
+        Ok(())
     }
 
     pub async fn fetch_remote_handshake(endpoint: &str) -> Result<RemoteHandshakeProof> {
@@ -1884,10 +2181,7 @@ fn default_local_profile(config: &Config) -> NodeProfile {
             "system-execution".to_string(),
         ]),
         tags: vec![std::env::consts::OS.to_string()],
-        execution_role: if matches!(
-            config.daemon.profile,
-            crate::config::DaemonProfile::Headless
-        ) {
+        execution_role: if matches!(config.daemon.profile, crate::config::DaemonProfile::Edge) {
             NodeExecutionRole::ExecutorOnly
         } else {
             NodeExecutionRole::Full
@@ -2125,6 +2419,8 @@ mod tests {
                 profile: remote_status.profile,
                 target: "http://remote-node".to_string(),
                 trusted: true,
+                load: None,
+                last_status_error: None,
                 auth_secret_key: None,
                 transports: Vec::new(),
             }])
@@ -2148,6 +2444,16 @@ mod tests {
     }
 
     #[test]
+    fn edge_profile_resolves_to_executor_only_role() {
+        let (_temp, mut config) = test_config();
+        config.daemon.profile = crate::config::DaemonProfile::Edge;
+
+        let role = local_execution_role_for_config(&config).expect("execution role");
+
+        assert_eq!(role, NodeExecutionRole::ExecutorOnly);
+    }
+
+    #[test]
     fn signed_remote_request_rejects_replay() {
         let (temp, config) = test_config();
         let local = RemoteManager::new(config.clone());
@@ -2161,6 +2467,8 @@ mod tests {
                 profile: remote_status.profile,
                 target: "http://remote-node".to_string(),
                 trusted: true,
+                load: None,
+                last_status_error: None,
                 auth_secret_key: None,
                 transports: Vec::new(),
             }])

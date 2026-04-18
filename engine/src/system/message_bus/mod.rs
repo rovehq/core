@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use serde::{Deserialize, Serialize};
 
 /// Channel buffer size for bounded channels
 const CHANNEL_BUFFER_SIZE: usize = 100;
@@ -28,6 +29,8 @@ pub enum EventType {
     TaskFailed,
     /// A tool was called
     ToolCalled,
+    /// A live normalized task stream event
+    TaskStream,
     /// Daemon has started
     DaemonStarted,
     /// Daemon is stopping
@@ -54,6 +57,11 @@ pub enum Event {
         tool: String,
         args: serde_json::Value,
     },
+    /// Normalized task event emitted directly from the agent loop
+    TaskStream {
+        task_id: String,
+        event: TaskStreamEvent,
+    },
     /// Daemon started
     DaemonStarted,
     /// Daemon stopping
@@ -76,12 +84,28 @@ impl Event {
             Event::TaskCompleted { .. } => EventType::TaskCompleted,
             Event::TaskFailed { .. } => EventType::TaskFailed,
             Event::ToolCalled { .. } => EventType::ToolCalled,
+            Event::TaskStream { .. } => EventType::TaskStream,
             Event::DaemonStarted => EventType::DaemonStarted,
             Event::DaemonStopping => EventType::DaemonStopping,
             Event::ConfigChanged { .. } => EventType::ConfigChanged,
             Event::PluginCrashed { .. } => EventType::PluginCrashed,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStreamEvent {
+    pub id: String,
+    pub task_id: String,
+    pub phase: String,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub raw_event_type: Option<String>,
+    pub tool_name: Option<String>,
+    pub status: Option<String>,
+    pub step_num: i64,
+    pub domain: Option<String>,
+    pub created_at: i64,
 }
 
 /// Message bus for pub/sub communication between components

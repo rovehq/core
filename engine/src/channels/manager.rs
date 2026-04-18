@@ -16,6 +16,7 @@ use crate::runtime::{sdk_plugin_entry_from_installed_plugin, WasmRuntime};
 use crate::secrets::SecretManager;
 use crate::specs::{allowed_tools, SpecRepository};
 use crate::storage::{Database, InstalledPlugin};
+use crate::system::workflow_triggers;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelStatus {
@@ -82,6 +83,10 @@ pub struct PluginChannelDeliverInput {
 pub struct PluginChannelDeliverResult {
     pub ok: bool,
     pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflow_run_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflow_ids: Vec<String>,
     pub preview: Option<String>,
     pub accepted_input: String,
     pub plugin_output: Value,
@@ -337,6 +342,41 @@ impl ChannelManager {
             ));
         }
 
+        let trigger_targets = workflow_triggers::default_channel_targets(
+            plugin_output
+                .get("workflow_target")
+                .and_then(|value| value.as_str()),
+        );
+        let db = Database::new(&database_path(&self.config)).await?;
+        let repo = SpecRepository::new()?;
+        let triggered = workflow_triggers::trigger_matching_workflows(
+            &repo,
+            &db,
+            &self.config,
+            &plugin.name,
+            &trigger_targets,
+            &accepted_input,
+        )
+        .await?;
+
+        if !triggered.is_empty() {
+            return Ok(PluginChannelDeliverResult {
+                ok: true,
+                task_id: None,
+                workflow_run_ids: triggered.iter().map(|run| run.run_id.clone()).collect(),
+                workflow_ids: triggered
+                    .iter()
+                    .map(|run| run.workflow_id.clone())
+                    .collect(),
+                preview: plugin_output
+                    .get("preview")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                accepted_input,
+                plugin_output,
+            });
+        }
+
         let task_id = gateway
             .submit_channel(
                 &plugin.name,
@@ -350,6 +390,8 @@ impl ChannelManager {
         Ok(PluginChannelDeliverResult {
             ok: true,
             task_id: Some(task_id),
+            workflow_run_ids: Vec::new(),
+            workflow_ids: Vec::new(),
             preview: plugin_output
                 .get("preview")
                 .and_then(|value| value.as_str())
@@ -383,6 +425,17 @@ impl ChannelManager {
             };
 
             let mut bot = TelegramBot::new(token, config.telegram.allowed_ids.clone());
+            match Database::new(&database_path(&config)).await {
+                Ok(db) => {
+                    bot = bot.with_database(Arc::new(db));
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "Telegram bot started without database support; workflow triggers and progress updates will be unavailable: {}",
+                        error
+                    );
+                }
+            }
 
             if let Some(agent_spec) = manager.default_telegram_agent().ok().flatten() {
                 let execution_profile = sdk::TaskExecutionProfile {

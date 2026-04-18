@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use super::types::{BotUser, GetMeResponse, GetUpdatesResponse};
+use super::types::{BotUser, GetMeResponse, GetUpdatesResponse, Message, TelegramApiResponse};
 use super::TelegramBot;
 
 impl TelegramBot {
@@ -21,7 +21,12 @@ impl TelegramBot {
             .await?;
 
         if !response.ok {
-            return Err(anyhow::anyhow!("Telegram API returned ok=false"));
+            return Err(anyhow::anyhow!(
+                "Telegram API getUpdates failed: {}",
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".to_string())
+            ));
         }
 
         Ok(response.result.unwrap_or_default())
@@ -37,11 +42,33 @@ impl TelegramBot {
             "callback_query_id": callback_query_id,
             "text": text,
         });
-        self.client.post(&url).json(&body).send().await?;
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await?
+            .json::<TelegramApiResponse<bool>>()
+            .await?;
+
+        if !response.ok {
+            return Err(anyhow::anyhow!(
+                "Telegram API answerCallbackQuery failed: {}",
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".to_string())
+            ));
+        }
+
         Ok(())
     }
 
-    pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<()> {
+    pub(super) async fn send_message(&self, chat_id: i64, text: &str) -> Result<()> {
+        self.send_message_tracked(chat_id, text).await.map(|_| ())
+    }
+
+    pub(super) async fn send_message_tracked(&self, chat_id: i64, text: &str) -> Result<Message> {
         let url = self.api_url("sendMessage");
         let scrubbed = self.secret_manager.scrub(text);
 
@@ -56,7 +83,65 @@ impl TelegramBot {
             text: &scrubbed,
         };
 
-        self.client.post(&url).json(&req).send().await?;
+        let response = self
+            .client
+            .post(&url)
+            .json(&req)
+            .send()
+            .await?
+            .json::<TelegramApiResponse<Message>>()
+            .await?;
+
+        if !response.ok {
+            return Err(anyhow::anyhow!(
+                "Telegram API sendMessage failed: {}",
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".to_string())
+            ));
+        }
+
+        response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("Telegram API sendMessage returned no message"))
+    }
+
+    pub(super) async fn edit_message_text(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+    ) -> Result<()> {
+        let url = self.api_url("editMessageText");
+        let scrubbed = self.secret_manager.scrub(text);
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": scrubbed,
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await?
+            .json::<TelegramApiResponse<serde_json::Value>>()
+            .await?;
+
+        if !response.ok {
+            let description = response
+                .description
+                .unwrap_or_else(|| "unknown error".to_string());
+            if description.contains("message is not modified") {
+                return Ok(());
+            }
+            return Err(anyhow::anyhow!(
+                "Telegram API editMessageText failed: {}",
+                description
+            ));
+        }
+
         Ok(())
     }
 
@@ -70,7 +155,12 @@ impl TelegramBot {
             .await?;
 
         if !response.ok {
-            return Err(anyhow::anyhow!("Telegram API returned ok=false"));
+            return Err(anyhow::anyhow!(
+                "Telegram API getMe failed: {}",
+                response
+                    .description
+                    .unwrap_or_else(|| "unknown error".to_string())
+            ));
         }
 
         response

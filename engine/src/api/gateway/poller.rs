@@ -102,6 +102,7 @@ impl Gateway {
                     &schedule.input,
                     TaskSource::Cli,
                     None,
+                    None,
                     schedule.workspace.as_deref(),
                     None,
                 )
@@ -150,7 +151,7 @@ impl Gateway {
                 id: Uuid::parse_str(&task_row.id).unwrap_or_else(|_| Uuid::new_v4()),
                 input: task_row.input.clone(),
                 source: task_source,
-                execution_profile: None,
+                execution_profile: task_row.execution_profile.clone(),
                 risk_tier_override: None,
                 run_context_id: RunContextId(task_row.id.clone()),
                 run_mode: RunMode::Serial,

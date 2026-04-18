@@ -57,6 +57,18 @@ pub fn scrub_text(text: &str) -> String {
     result
 }
 
+pub fn scrub_text_with_values(text: &str, secret_values: &[String]) -> String {
+    let mut result = text.to_string();
+    for value in secret_values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        result = result.replace(trimmed, "[REDACTED]");
+    }
+    scrub_text(&result)
+}
+
 /// Secret manager with configurable backends and a Rove-managed encrypted vault.
 pub struct SecretManager {
     service_name: String,
@@ -329,8 +341,10 @@ impl SecretManager {
 
     fn storage_root(&self) -> Result<PathBuf, EngineError> {
         let config = Config::load_or_create().unwrap_or_default();
-        if config.daemon.profile == DaemonProfile::Headless
-            && config.core.data_dir == default_data_dir()
+        if matches!(
+            config.daemon.profile,
+            DaemonProfile::Headless | DaemonProfile::Edge
+        ) && config.core.data_dir == default_data_dir()
         {
             return Ok(PathBuf::from("/var/lib/rove"));
         }

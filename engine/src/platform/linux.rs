@@ -42,6 +42,18 @@ pub fn available_ram() -> u64 {
     8 * 1024 * 1024 * 1024
 }
 
+/// Approximate CPU load percentage from the 1-minute load average.
+pub fn cpu_load_percent() -> Option<u32> {
+    let mut samples = [0f64; 3];
+    let count = unsafe { libc::getloadavg(samples.as_mut_ptr(), 3) };
+    if count < 1 {
+        return None;
+    }
+    let cores = std::thread::available_parallelism().ok()?.get() as f64;
+    let normalized = (samples[0] / cores) * 100.0;
+    Some(normalized.clamp(0.0, 999.0).round() as u32)
+}
+
 /// Get a secret from Linux Secret Service (libsecret)
 pub fn keychain_get(_key: &str) -> Result<String, EngineError> {
     // TODO: Implement using secret-service crate

@@ -5,6 +5,7 @@ use std::io::{self, Write};
 
 use super::{GREEN, RESET};
 
+#[allow(dead_code)]
 pub fn select_menu(stdout: &mut io::Stdout, items: &[String]) -> Result<usize> {
     select_menu_default(stdout, items, 0)
 }

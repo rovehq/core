@@ -7,6 +7,7 @@ import {
   ApprovalRequest,
   AuthState,
   AuthStatus,
+  AgentEventRecord,
   CatalogExtensionRecord,
   DaemonConfig,
   DaemonError,
@@ -25,6 +26,7 @@ import {
   RoveDaemonClient,
   ServiceInstallStatus,
   ServiceStatus,
+  TaskStreamEvent,
   TaskSummary,
   ZeroTierStatus,
   readStoredToken,
@@ -46,6 +48,14 @@ interface WebSocketState {
   error: string | null;
 }
 
+export interface TaskEventRecord {
+  id: string;
+  label: string;
+  detail?: string | null;
+  tone: 'default' | 'success' | 'warning' | 'error';
+  timestamp: number;
+}
+
 interface TaskRecord {
   id: string;
   input: string;
@@ -55,6 +65,7 @@ interface TaskRecord {
   createdAt: number;
   completedAt?: number | null;
   latestEvent?: string | null;
+  events: TaskEventRecord[];
 }
 
 interface RoveStore {
@@ -86,13 +97,16 @@ interface RoveStore {
   initialize: () => Promise<void>;
   setupPassword: (password: string, nodeName: string, mode: string) => Promise<boolean>;
   login: (password: string) => Promise<boolean>;
+  loginWithPasskey: () => Promise<boolean>;
   reauth: (password: string) => Promise<boolean>;
+  reauthWithPasskey: () => Promise<boolean>;
   lock: () => Promise<void>;
   submitTask: (
     input: string,
     options?: { parallel?: boolean; isolate?: 'none' | 'worktree' | 'snapshot'; node?: string },
   ) => Promise<boolean>;
   refreshTasks: () => Promise<void>;
+  refreshTaskEvents: (taskId: string) => Promise<void>;
   refreshServices: () => Promise<void>;
   refreshExtensions: () => Promise<void>;
   refreshExtensionCatalog: (force?: boolean) => Promise<void>;
@@ -125,7 +139,7 @@ interface RoveStore {
   refreshApprovals: () => Promise<void>;
   resolveApproval: (id: string, approved: boolean) => Promise<boolean>;
   refreshServiceInstall: () => Promise<void>;
-  installService: (mode: 'login' | 'boot', profile?: 'desktop' | 'headless', port?: number) => Promise<boolean>;
+  installService: (mode: 'login' | 'boot', profile?: 'desktop' | 'headless' | 'edge', port?: number) => Promise<boolean>;
   uninstallService: (mode: 'login' | 'boot') => Promise<boolean>;
   refreshZeroTier: () => Promise<void>;
   installZeroTier: () => Promise<boolean>;
@@ -179,7 +193,66 @@ function mapTask(task: TaskSummary): TaskRecord {
     durationMs: task.duration_ms,
     createdAt: task.created_at * 1000,
     completedAt: task.completed_at ? task.completed_at * 1000 : null,
+    events: [],
   };
+}
+
+function mapTaskWithExisting(task: TaskSummary, existing?: TaskRecord): TaskRecord {
+  return {
+    ...mapTask(task),
+    input: task.input || existing?.input || '',
+    latestEvent: existing?.latestEvent ?? null,
+    events: existing?.events ?? [],
+  };
+}
+
+function buildTaskEvent(
+  label: string,
+  detail?: string | null,
+  tone: TaskEventRecord['tone'] = 'default',
+): TaskEventRecord {
+  return {
+    id: `local:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    label,
+    detail,
+    tone,
+    timestamp: Date.now(),
+  };
+}
+
+function appendEvent(task: TaskRecord, event: TaskEventRecord): TaskRecord {
+  const events = mergeTaskEventLists(task.events, [event]);
+  return {
+    ...task,
+    latestEvent: event.detail ? `${event.label}: ${event.detail}` : event.label,
+    events,
+  };
+}
+
+function upsertTask(
+  tasks: TaskRecord[],
+  taskId: string,
+  update: (task: TaskRecord) => TaskRecord,
+  create?: () => TaskRecord,
+): TaskRecord[] {
+  let found = false;
+  const next = tasks.map((task) => {
+    if (task.id !== taskId) {
+      return task;
+    }
+    found = true;
+    return update(task);
+  });
+
+  if (found) {
+    return next;
+  }
+
+  if (!create) {
+    return next;
+  }
+
+  return [update(create()), ...next];
 }
 
 function stopEventStream() {
@@ -305,31 +378,80 @@ function handleEvent(event: DaemonEvent, get: () => RoveStore) {
       return;
     case 'task.created':
       useRoveStore.setState((state) => ({
-        tasks: [
-          {
+        tasks: upsertTask(
+          state.tasks,
+          event.task_id,
+          (task) =>
+            appendEvent(
+              {
+                ...task,
+                status: 'pending',
+              },
+              buildTaskEvent('Task accepted'),
+            ),
+          () => ({
             id: event.task_id,
             input: 'Task accepted',
             status: 'pending',
             createdAt: Date.now(),
-          },
-          ...state.tasks.filter((task) => task.id !== event.task_id),
-        ],
+            events: [],
+          }),
+        ),
       }));
       return;
     case 'task.event':
       useRoveStore.setState((state) => ({
-        tasks: state.tasks.map((task) =>
-          task.id === event.task_id
-            ? {
+        tasks: upsertTask(
+          state.tasks,
+          event.task_id,
+          (task) =>
+            appendEvent(
+              {
                 ...task,
                 status: task.status === 'pending' ? 'running' : task.status,
-                latestEvent: summarizeEvent(event.event),
-              }
-            : task,
+              },
+              summarizeEvent(event.event),
+            ),
+          () => ({
+            id: event.task_id,
+            input: 'Task running',
+            status: 'running',
+            createdAt: Date.now(),
+            events: [],
+          }),
         ),
       }));
       return;
     case 'task.completed':
+      useRoveStore.setState((state) => ({
+        tasks: upsertTask(
+          state.tasks,
+          event.task_id,
+          (task) =>
+            appendEvent(
+              {
+                ...task,
+                status: task.status === 'failed' ? 'failed' : 'completed',
+                completedAt: Date.now(),
+              },
+              buildTaskEvent(
+                task.status === 'failed' ? 'Task failed' : 'Task completed',
+                event.result ?? null,
+                task.status === 'failed' ? 'error' : 'success',
+              ),
+            ),
+          () => ({
+            id: event.task_id,
+            input: 'Task completed',
+            status: 'completed',
+            createdAt: Date.now(),
+            completedAt: Date.now(),
+            events: event.result
+              ? [buildTaskEvent('Task completed', event.result, 'success')]
+              : [],
+          }),
+        ),
+      }));
       void get().refreshTasks();
       return;
     case 'daemon.status':
@@ -345,18 +467,102 @@ function handleEvent(event: DaemonEvent, get: () => RoveStore) {
   }
 }
 
-function summarizeEvent(event: unknown): string | null {
+function summarizeEvent(event: unknown): TaskEventRecord {
   if (!event || typeof event !== 'object') {
-    return null;
+    return buildTaskEvent('Event received');
   }
   const record = event as Record<string, unknown>;
-  if (typeof record.kind === 'string') {
-    return record.kind;
-  }
-  if (typeof record.event_type === 'string') {
-    return record.event_type;
+  const label =
+    firstString(record.kind, record.event_type, record.type, record.stage, record.status, record.name) ??
+    'Event';
+  const detail =
+    firstString(record.message, record.summary, record.detail, record.tool_name, record.tool) ??
+    formatEventDetail(record);
+  const tone = inferEventTone(label, detail);
+  return buildTaskEvent(label, detail, tone);
+}
+
+function summarizeStoredEvent(event: AgentEventRecord): TaskEventRecord {
+  const parsed = safeJsonParse(event.payload);
+  const normalized = parsed ?? { event_type: event.event_type, payload: event.payload };
+  const summary = summarizeEvent({
+    ...normalized,
+    event_type: event.event_type,
+  });
+  return {
+    ...summary,
+    id: event.id,
+    timestamp: event.created_at * 1000,
+  };
+}
+
+function summarizeStreamEvent(event: TaskStreamEvent): TaskEventRecord {
+  return {
+    id: event.id,
+    label: event.summary,
+    detail: event.detail ?? null,
+    tone: inferEventTone(event.phase, event.detail ?? event.summary),
+    timestamp: event.created_at * 1000,
+  };
+}
+
+function safeJsonParse(payload: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Ignore invalid JSON payloads and fall back to plain text handling.
   }
   return null;
+}
+
+function mergeTaskEventLists(existing: TaskEventRecord[], incoming: TaskEventRecord[]): TaskEventRecord[] {
+  const merged = new Map<string, TaskEventRecord>();
+  for (const event of [...existing, ...incoming]) {
+    merged.set(event.id, event);
+  }
+  return Array.from(merged.values())
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .slice(-40);
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function formatEventDetail(record: Record<string, unknown>): string | null {
+  const fields = ['tool_name', 'tool', 'agent_id', 'workflow_id', 'step', 'reason']
+    .map((key) => {
+      const value = record[key];
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        return null;
+      }
+      return `${key.replace(/_/g, ' ')}=${value.trim()}`;
+    })
+    .filter((value): value is string => Boolean(value));
+
+  return fields.length > 0 ? fields.join(' · ') : null;
+}
+
+function inferEventTone(label: string, detail?: string | null): TaskEventRecord['tone'] {
+  const haystack = `${label} ${detail ?? ''}`.toLowerCase();
+  if (haystack.includes('fail') || haystack.includes('error')) {
+    return 'error';
+  }
+  if (haystack.includes('warn') || haystack.includes('approval')) {
+    return 'warning';
+  }
+  if (haystack.includes('complete') || haystack.includes('done') || haystack.includes('success')) {
+    return 'success';
+  }
+  return 'default';
 }
 
 function settledValue<T>(
@@ -581,6 +787,19 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
     }
   },
 
+  loginWithPasskey: async () => {
+    try {
+      const session = await daemon.loginWithPasskey();
+      setStoredSession(session.access_token);
+      set({ token: session.access_token });
+      await get().initialize();
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Passkey login failed' });
+      return false;
+    }
+  },
+
   reauth: async (password) => {
     try {
       const status = await daemon.authReauth(password);
@@ -592,6 +811,21 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
       return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Reauthentication failed' });
+      return false;
+    }
+  },
+
+  reauthWithPasskey: async () => {
+    try {
+      const status = await daemon.reauthWithPasskey();
+      set({
+        authStatus: status,
+        appState: deriveAppState(status.state, Boolean(get().token)),
+        error: null,
+      });
+      return true;
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Passkey verification failed' });
       return false;
     }
   },
@@ -643,6 +877,7 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
             input,
             status: 'pending',
             createdAt: Date.now(),
+            events: [buildTaskEvent('Task submitted')],
           },
           ...state.tasks.filter((task) => task.id !== accepted.task_id),
         ],
@@ -661,8 +896,9 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
   refreshTasks: async () => {
     try {
       const tasks = await daemon.listTasks();
+      const existing = new Map(get().tasks.map((task) => [task.id, task]));
       set({
-        tasks: tasks.map(mapTask),
+        tasks: tasks.map((task) => mapTaskWithExisting(task, existing.get(task.id))),
         error: null,
       });
     } catch (error) {
@@ -671,6 +907,62 @@ export const useRoveStore = create<RoveStore>((set, get) => ({
         return;
       }
       set({ error: error instanceof Error ? error.message : 'Unable to load task history' });
+    }
+  },
+
+  refreshTaskEvents: async (taskId) => {
+    try {
+      const snapshot = await daemon.getTaskEvents(taskId);
+      const incomingEvents =
+        snapshot.stream_events.length > 0
+          ? snapshot.stream_events.map(summarizeStreamEvent)
+          : snapshot.events.map(summarizeStoredEvent);
+      set((state) => ({
+        tasks: upsertTask(
+          state.tasks,
+          taskId,
+          (task) => {
+            const events = mergeTaskEventLists(task.events, incomingEvents);
+            const latest = events.at(-1) ?? null;
+            return {
+              ...task,
+              input: snapshot.task.input || task.input,
+              status: snapshot.task.status,
+              providerUsed: snapshot.task.provider_used,
+              durationMs: snapshot.task.duration_ms,
+              createdAt: snapshot.task.created_at * 1000,
+              completedAt: snapshot.task.completed_at ? snapshot.task.completed_at * 1000 : null,
+              latestEvent: latest
+                ? latest.detail
+                  ? `${latest.label}: ${latest.detail}`
+                  : latest.label
+                : task.latestEvent,
+              events,
+            };
+          },
+          () => {
+            const mapped = mapTask(snapshot.task);
+            const events = mergeTaskEventLists(mapped.events, incomingEvents);
+            const latest = events.at(-1) ?? null;
+            return {
+              ...mapped,
+              latestEvent: latest
+                ? latest.detail
+                  ? `${latest.label}: ${latest.detail}`
+                  : latest.label
+                : null,
+              events,
+            };
+          },
+        ),
+        error: null,
+      }));
+    } catch (error) {
+      if (error instanceof DaemonError && error.status === 401) {
+        await get().initialize();
+        return;
+      }
+      set({ error: error instanceof Error ? error.message : 'Unable to load task events' });
     }
   },
 

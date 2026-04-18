@@ -51,21 +51,22 @@ pub(super) struct InlineKeyboardMarkup {
     pub(super) inline_keyboard: Vec<Vec<InlineKeyboardButton>>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub(super) struct Update {
     pub(super) update_id: i64,
     pub(super) message: Option<Message>,
     pub(super) callback_query: Option<CallbackQuery>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub(super) struct Message {
+    pub(super) message_id: i64,
     pub(super) chat: Chat,
     pub(super) text: Option<String>,
     pub(super) from: Option<User>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub(super) struct CallbackQuery {
     pub(super) id: String,
     pub(super) data: Option<String>,
@@ -73,27 +74,25 @@ pub(super) struct CallbackQuery {
     pub(super) message: Option<Message>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub(super) struct Chat {
     pub(super) id: i64,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub(super) struct User {
     pub(super) id: i64,
 }
 
 #[derive(Deserialize, Debug)]
-pub(super) struct GetUpdatesResponse {
+pub(super) struct TelegramApiResponse<T> {
     pub(super) ok: bool,
-    pub(super) result: Option<Vec<Update>>,
+    pub(super) result: Option<T>,
+    pub(super) description: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
-pub(super) struct GetMeResponse {
-    pub(super) ok: bool,
-    pub(super) result: Option<BotUser>,
-}
+pub(super) type GetUpdatesResponse = TelegramApiResponse<Vec<Update>>;
+pub(super) type GetMeResponse = TelegramApiResponse<BotUser>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BotUser {

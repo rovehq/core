@@ -5,7 +5,11 @@ import { usePathname } from 'next/navigation';
 
 const tabs = [
   { href: '/', label: 'Home', icon: '⌂' },
+  { href: '/tasks', label: 'Tasks', icon: '≣' },
+  { href: '/audit', label: 'Audit', icon: '⌘' },
+  { href: '/hooks', label: 'Hooks', icon: '⎇' },
   { href: '/memory', label: 'Memory', icon: '⛓' },
+  { href: '/migrate', label: 'Migrate', icon: '⇪' },
   { href: '/starters', label: 'Starters', icon: '✦' },
   { href: '/browser', label: 'Browser', icon: '◎' },
   { href: '/voice', label: 'Voice', icon: '◍' },

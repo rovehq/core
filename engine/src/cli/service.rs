@@ -151,5 +151,6 @@ fn to_daemon_profile(profile: DaemonProfileArg) -> DaemonProfile {
     match profile {
         DaemonProfileArg::Desktop => DaemonProfile::Desktop,
         DaemonProfileArg::Headless => DaemonProfile::Headless,
+        DaemonProfileArg::Edge => DaemonProfile::Edge,
     }
 }

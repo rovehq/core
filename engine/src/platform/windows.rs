@@ -34,6 +34,11 @@ pub fn available_ram() -> u64 {
     8 * 1024 * 1024 * 1024 // 8GB default
 }
 
+/// Approximate CPU load percentage.
+pub fn cpu_load_percent() -> Option<u32> {
+    None
+}
+
 /// Get a secret from Windows Credential Manager
 pub fn keychain_get(_key: &str) -> Result<String, EngineError> {
     // TODO: Implement using windows-sys crate

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use regex::Regex;
 use sdk::core_tool::{CoreContext, CoreTool};
 use sdk::errors::EngineError;
 use sdk::tool_io::{ToolInput, ToolOutput};
@@ -87,6 +88,164 @@ impl FilesystemTool {
         ))
     }
 
+    /// Append `content` to the end of an existing file (or create it if absent).
+    pub async fn append_to_file(&self, path: &str, content: &str) -> Result<String> {
+        let target = PathBuf::from(path);
+        let validated = if target.exists() {
+            self.resolve_path(path)?
+        } else {
+            let abs = if target.is_absolute() {
+                target.clone()
+            } else {
+                self.workspace.join(&target)
+            };
+            self.check_denied(&abs)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            if let Some(parent) = abs.parent() {
+                if !parent.exists() {
+                    fs::create_dir_all(parent).await.map_err(|e| {
+                        anyhow::anyhow!("Failed to create directories {}: {}", parent.display(), e)
+                    })?;
+                }
+                let canonical_parent = parent.canonicalize().map_err(|e| {
+                    anyhow::anyhow!("Failed to resolve {}: {}", parent.display(), e)
+                })?;
+                if !canonical_parent.starts_with(&self.workspace) {
+                    return Err(anyhow::anyhow!("Path outside workspace: {}", abs.display()));
+                }
+            }
+            abs
+        };
+
+        info!(
+            "Appending {} bytes to: {}",
+            content.len(),
+            validated.display()
+        );
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&validated)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to open {}: {}", validated.display(), e))?;
+        file.write_all(content.as_bytes())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to append to {}: {}", validated.display(), e))?;
+        Ok(format!(
+            "Appended {} bytes to {}",
+            content.len(),
+            validated.display()
+        ))
+    }
+
+    /// Replace the first occurrence of `old` with `new` in the file at `path`.
+    ///
+    /// Returns an error when `old` is not found, so the agent knows the edit
+    /// did not apply rather than silently succeeding.
+    pub async fn patch_file(&self, path: &str, old: &str, new: &str) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let original = fs::read_to_string(&resolved)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
+
+        if old.is_empty() {
+            return Err(anyhow::anyhow!("patch_file: old_string must not be empty"));
+        }
+
+        let count = original.matches(old).count();
+        if count == 0 {
+            return Err(anyhow::anyhow!(
+                "patch_file: old_string not found in {}",
+                resolved.display()
+            ));
+        }
+        if count > 1 {
+            return Err(anyhow::anyhow!(
+                "patch_file: old_string matches {} times in {} — make it more specific",
+                count,
+                resolved.display()
+            ));
+        }
+
+        let patched = original.replacen(old, new, 1);
+        fs::write(&resolved, &patched)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", resolved.display(), e))?;
+        let added = new.lines().count().saturating_sub(old.lines().count());
+        let removed = old.lines().count().saturating_sub(new.lines().count());
+        let summary = match (added, removed) {
+            (0, 0) => "patch applied (same line count)".to_string(),
+            (a, 0) => format!("patch applied (+{} lines)", a),
+            (0, r) => format!("patch applied (-{} lines)", r),
+            (a, r) => format!("patch applied (+{} / -{} lines)", a, r),
+        };
+        info!("{} in {}", summary, resolved.display());
+        Ok(summary)
+    }
+
+    // ----- sync variants used by the CoreTool handle() path -----------------
+
+    fn append_to_file_sync(&self, path: &str, content: &str) -> Result<String> {
+        use std::io::Write;
+        let target = PathBuf::from(path);
+        let validated = self.prepare_write_target(path, |parent| {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                anyhow::anyhow!("Failed to create directories {}: {}", parent.display(), e)
+            })
+        })?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&validated)
+            .map_err(|e| anyhow::anyhow!("Failed to open {}: {}", validated.display(), e))?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to append to {}: {}", validated.display(), e))?;
+        let _ = target; // silence unused warning
+        Ok(format!(
+            "Appended {} bytes to {}",
+            content.len(),
+            validated.display()
+        ))
+    }
+
+    fn patch_file_sync(&self, path: &str, old: &str, new: &str) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let original = std::fs::read_to_string(&resolved)
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
+
+        if old.is_empty() {
+            return Err(anyhow::anyhow!("patch_file: old_string must not be empty"));
+        }
+
+        let count = original.matches(old).count();
+        if count == 0 {
+            return Err(anyhow::anyhow!(
+                "patch_file: old_string not found in {}",
+                resolved.display()
+            ));
+        }
+        if count > 1 {
+            return Err(anyhow::anyhow!(
+                "patch_file: old_string matches {} times — make it more specific",
+                count
+            ));
+        }
+
+        let patched = original.replacen(old, new, 1);
+        std::fs::write(&resolved, &patched)
+            .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", resolved.display(), e))?;
+        let added = new.lines().count().saturating_sub(old.lines().count());
+        let removed = old.lines().count().saturating_sub(new.lines().count());
+        let summary = match (added, removed) {
+            (0, 0) => "patch applied (same line count)".to_string(),
+            (a, 0) => format!("patch applied (+{} lines)", a),
+            (0, r) => format!("patch applied (-{} lines)", r),
+            (a, r) => format!("patch applied (+{} / -{} lines)", a, r),
+        };
+        Ok(summary)
+    }
+
     pub async fn list_dir(&self, path: &str) -> Result<String> {
         let path = self.resolve_path(path)?;
         info!("Listing directory: {}", path.display());
@@ -150,6 +309,25 @@ impl FilesystemTool {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete {}: {}", path.display(), e))?;
         Ok(format!("Deleted {}", path.display()))
+    }
+
+    pub async fn glob_files(
+        &self,
+        pattern: &str,
+        path: Option<&str>,
+        max_results: usize,
+    ) -> Result<String> {
+        self.glob_files_sync(pattern, path, max_results)
+    }
+
+    pub async fn grep_files(
+        &self,
+        pattern: &str,
+        path: Option<&str>,
+        file_pattern: Option<&str>,
+        max_results: usize,
+    ) -> Result<String> {
+        self.grep_files_sync(pattern, path, file_pattern, max_results)
     }
 
     fn read_file_sync(&self, path: &str) -> Result<String> {
@@ -245,6 +423,134 @@ impl FilesystemTool {
         Ok(format!("Deleted {}", path.display()))
     }
 
+    fn glob_files_sync(
+        &self,
+        pattern: &str,
+        path: Option<&str>,
+        max_results: usize,
+    ) -> Result<String> {
+        if pattern.trim().is_empty() {
+            return Err(anyhow::anyhow!("glob_files: pattern must not be empty"));
+        }
+
+        let search_root = self.resolve_path(path.unwrap_or("."))?;
+        let matcher = compile_glob_regex(pattern)?;
+        let mut results = Vec::new();
+        let mut truncated = false;
+        self.visit_paths(
+            &search_root,
+            &mut |candidate| {
+                if candidate.is_file() {
+                    let relative = workspace_relative(&self.workspace, candidate)?;
+                    if matcher.is_match(&relative) {
+                        results.push(relative);
+                        if results.len() >= max_results {
+                            truncated = true;
+                            return Ok(VisitControl::Stop);
+                        }
+                    }
+                }
+                Ok(VisitControl::Continue)
+            },
+            true,
+        )?;
+
+        if results.is_empty() {
+            return Ok(format!(
+                "No files matched pattern '{}' under {}",
+                pattern,
+                search_root.display()
+            ));
+        }
+
+        let mut lines = results;
+        if truncated {
+            lines.push(format!("(truncated to {} results)", max_results));
+        }
+        Ok(lines.join("\n"))
+    }
+
+    fn grep_files_sync(
+        &self,
+        pattern: &str,
+        path: Option<&str>,
+        file_pattern: Option<&str>,
+        max_results: usize,
+    ) -> Result<String> {
+        if pattern.trim().is_empty() {
+            return Err(anyhow::anyhow!("grep_files: pattern must not be empty"));
+        }
+
+        let search_root = self.resolve_path(path.unwrap_or("."))?;
+        let content_regex = Regex::new(pattern)
+            .map_err(|error| anyhow::anyhow!("grep_files: invalid regex: {}", error))?;
+        let file_matcher = match file_pattern {
+            Some(value) if !value.trim().is_empty() => Some(compile_glob_regex(value)?),
+            _ => None,
+        };
+
+        let mut results = Vec::new();
+        let mut truncated = false;
+        self.visit_paths(
+            &search_root,
+            &mut |candidate| {
+                if !candidate.is_file() {
+                    return Ok(VisitControl::Continue);
+                }
+
+                let relative = workspace_relative(&self.workspace, candidate)?;
+                if let Some(file_matcher) = &file_matcher {
+                    if !file_matcher.is_match(&relative) {
+                        return Ok(VisitControl::Continue);
+                    }
+                }
+
+                let metadata = std::fs::metadata(candidate).map_err(|error| {
+                    anyhow::anyhow!("Failed to inspect {}: {}", candidate.display(), error)
+                })?;
+                if metadata.len() > 2 * 1024 * 1024 {
+                    return Ok(VisitControl::Continue);
+                }
+
+                let content = match std::fs::read_to_string(candidate) {
+                    Ok(content) => content,
+                    Err(_) => return Ok(VisitControl::Continue),
+                };
+
+                for (index, line) in content.lines().enumerate() {
+                    if content_regex.is_match(line) {
+                        results.push(format!(
+                            "{}:{}:{}",
+                            relative,
+                            index + 1,
+                            summarize_search_line(line)
+                        ));
+                        if results.len() >= max_results {
+                            truncated = true;
+                            return Ok(VisitControl::Stop);
+                        }
+                    }
+                }
+
+                Ok(VisitControl::Continue)
+            },
+            true,
+        )?;
+
+        if results.is_empty() {
+            return Ok(format!(
+                "No matches for regex '{}' under {}",
+                pattern,
+                search_root.display()
+            ));
+        }
+
+        if truncated {
+            results.push(format!("(truncated to {} results)", max_results));
+        }
+        Ok(results.join("\n"))
+    }
+
     fn prepare_write_target<CreateDir>(&self, path: &str, create_dir: CreateDir) -> Result<PathBuf>
     where
         CreateDir: FnOnce(&Path) -> Result<()>,
@@ -276,6 +582,44 @@ impl FilesystemTool {
         }
 
         Ok(abs)
+    }
+
+    fn visit_paths<F>(&self, root: &Path, visitor: &mut F, include_root: bool) -> Result<()>
+    where
+        F: FnMut(&Path) -> Result<VisitControl>,
+    {
+        if include_root {
+            match visitor(root)? {
+                VisitControl::Continue => {}
+                VisitControl::Stop => return Ok(()),
+            }
+        }
+
+        if root.is_file() {
+            return Ok(());
+        }
+
+        let entries = std::fs::read_dir(root).map_err(|error| {
+            anyhow::anyhow!("Failed to read directory {}: {}", root.display(), error)
+        })?;
+
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            match visitor(&path)? {
+                VisitControl::Continue => {}
+                VisitControl::Stop => return Ok(()),
+            }
+            if file_type.is_dir() {
+                self.visit_paths(&path, visitor, false)?;
+            }
+        }
+
+        Ok(())
     }
 
     fn resolve_path(&self, path: &str) -> Result<PathBuf> {
@@ -440,6 +784,67 @@ impl CoreTool for FilesystemTool {
                     .map_err(|error| EngineError::ToolError(error.to_string()))?;
                 Ok(ToolOutput::json(serde_json::json!(value)))
             }
+            "append_to_file" => {
+                let path = input.param_str("path").map_err(tool_input_error)?;
+                let content = input.param_str("content").map_err(tool_input_error)?;
+                let value = self
+                    .append_to_file_sync(&path, &content)
+                    .map_err(|error| EngineError::ToolError(error.to_string()))?;
+                Ok(ToolOutput::json(serde_json::json!(value)))
+            }
+            "patch_file" => {
+                let path = input.param_str("path").map_err(tool_input_error)?;
+                let old = input.param_str("old_string").map_err(tool_input_error)?;
+                let new = input.param_str("new_string").map_err(tool_input_error)?;
+                let value = self
+                    .patch_file_sync(&path, &old, &new)
+                    .map_err(|error| EngineError::ToolError(error.to_string()))?;
+                Ok(ToolOutput::json(serde_json::json!(value)))
+            }
+            "glob_files" => {
+                let pattern = input.param_str("pattern").map_err(tool_input_error)?;
+                let path = input
+                    .params
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned);
+                let max_results = input
+                    .params
+                    .get("max_results")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(200) as usize;
+                let value = self
+                    .glob_files_sync(&pattern, path.as_deref(), max_results)
+                    .map_err(|error| EngineError::ToolError(error.to_string()))?;
+                Ok(ToolOutput::json(serde_json::json!(value)))
+            }
+            "grep_files" => {
+                let pattern = input.param_str("pattern").map_err(tool_input_error)?;
+                let path = input
+                    .params
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned);
+                let file_pattern = input
+                    .params
+                    .get("file_pattern")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned);
+                let max_results = input
+                    .params
+                    .get("max_results")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(100) as usize;
+                let value = self
+                    .grep_files_sync(
+                        &pattern,
+                        path.as_deref(),
+                        file_pattern.as_deref(),
+                        max_results,
+                    )
+                    .map_err(|error| EngineError::ToolError(error.to_string()))?;
+                Ok(ToolOutput::json(serde_json::json!(value)))
+            }
             other => Err(EngineError::ToolError(format!(
                 "Unknown filesystem method '{}'",
                 other
@@ -515,6 +920,73 @@ fn tool_input_error(error: sdk::tool_io::ToolError) -> EngineError {
     EngineError::ToolError(error.to_string())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisitControl {
+    Continue,
+    Stop,
+}
+
+fn compile_glob_regex(pattern: &str) -> Result<Regex> {
+    let mut regex = String::from("^");
+    let chars: Vec<char> = pattern.replace('\\', "/").chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        match chars[index] {
+            '*' => {
+                if chars.get(index + 1) == Some(&'*') {
+                    if chars.get(index + 2) == Some(&'/') {
+                        regex.push_str("(?:.*/)?");
+                        index += 3;
+                    } else {
+                        regex.push_str(".*");
+                        index += 2;
+                    }
+                } else {
+                    regex.push_str("[^/]*");
+                    index += 1;
+                }
+            }
+            '?' => {
+                regex.push_str("[^/]");
+                index += 1;
+            }
+            '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '[' | ']' => {
+                regex.push('\\');
+                regex.push(chars[index]);
+                index += 1;
+            }
+            '/' => {
+                regex.push('/');
+                index += 1;
+            }
+            other => {
+                regex.push(other);
+                index += 1;
+            }
+        }
+    }
+    regex.push('$');
+    Regex::new(&regex).map_err(|error| anyhow::anyhow!("Invalid glob '{}': {}", pattern, error))
+}
+
+fn workspace_relative(workspace: &Path, candidate: &Path) -> Result<String> {
+    let relative = candidate
+        .strip_prefix(workspace)
+        .unwrap_or(candidate)
+        .to_string_lossy()
+        .replace('\\', "/");
+    Ok(relative)
+}
+
+fn summarize_search_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.len() > 180 {
+        format!("{}...", &trimmed[..177])
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::FilesystemTool;
@@ -545,6 +1017,61 @@ mod tests {
             std::fs::read_to_string(workspace.join("temp.txt")).expect("read output file"),
             "4"
         );
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn handle_glob_files_returns_matching_relative_paths() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let workspace = std::env::temp_dir().join(format!("rove-fs-glob-{}", unique));
+        std::fs::create_dir_all(workspace.join("src/nested")).expect("workspace");
+        std::fs::write(workspace.join("src/lib.rs"), "pub fn lib() {}").expect("lib");
+        std::fs::write(workspace.join("src/nested/mod.rs"), "pub fn nested() {}").expect("nested");
+
+        let tool = FilesystemTool::new(workspace.clone()).expect("tool");
+        let output = tool
+            .handle(
+                ToolInput::new("glob_files")
+                    .with_param("pattern", serde_json::json!("src/**/*.rs")),
+            )
+            .expect("glob files");
+
+        let value = output.data.as_str().expect("string output").to_string();
+        assert!(value.contains("src/lib.rs"));
+        assert!(value.contains("src/nested/mod.rs"));
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn handle_grep_files_returns_line_matches() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let workspace = std::env::temp_dir().join(format!("rove-fs-grep-{}", unique));
+        std::fs::create_dir_all(workspace.join("src")).expect("workspace");
+        std::fs::write(
+            workspace.join("src/main.rs"),
+            "fn alpha() {}\nfn beta_workflow() {}\n",
+        )
+        .expect("main");
+
+        let tool = FilesystemTool::new(workspace.clone()).expect("tool");
+        let output = tool
+            .handle(
+                ToolInput::new("grep_files")
+                    .with_param("pattern", serde_json::json!("workflow"))
+                    .with_param("file_pattern", serde_json::json!("src/**/*.rs")),
+            )
+            .expect("grep files");
+
+        let value = output.data.as_str().expect("string output").to_string();
+        assert!(value.contains("src/main.rs:2:fn beta_workflow() {}"));
 
         let _ = std::fs::remove_dir_all(&workspace);
     }

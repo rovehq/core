@@ -20,6 +20,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 use tracing::{error, info, warn};
 
 use crate::builtin_tools::ToolRegistry;
@@ -28,6 +29,7 @@ use crate::db::tasks::{TaskRepository, TaskStatus};
 use crate::gateway::{Task, WorkspaceLocks};
 use crate::llm::router::LLMRouter;
 use crate::llm::ToolCall;
+use crate::message_bus::{Event as BusEvent, MessageBus};
 use crate::policy::PolicyEngine;
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::{OperationSource, RiskAssessor};
@@ -59,6 +61,8 @@ pub struct AgentCore {
     background_jobs: Vec<JoinHandle<()>>,
     current_task_sensitive: bool,
     current_execution_profile: Option<TaskExecutionProfile>,
+    current_trace: Option<crate::telemetry::TaskTraceContext>,
+    message_bus: Option<Arc<MessageBus>>,
     policy_preflight_commands: Vec<String>,
     policy_after_write_commands: Vec<String>,
     policy_executed_commands: HashSet<String>,
@@ -97,6 +101,8 @@ impl AgentCore {
             background_jobs: Vec::new(),
             current_task_sensitive: false,
             current_execution_profile: None,
+            current_trace: None,
+            message_bus: None,
             policy_preflight_commands: Vec::new(),
             policy_after_write_commands: Vec::new(),
             policy_executed_commands: HashSet::new(),
@@ -112,6 +118,10 @@ impl AgentCore {
         self.tools = tools;
     }
 
+    pub fn set_message_bus(&mut self, message_bus: Arc<MessageBus>) {
+        self.message_bus = Some(message_bus);
+    }
+
     pub fn memory_system(&self) -> Option<&Arc<MemorySystem>> {
         self.memory_system.as_ref()
     }
@@ -123,25 +133,53 @@ impl AgentCore {
         let task_id = task.id;
         let task_id_str = task_id.to_string();
         let task_input = task.input.clone();
+        let task_source = format!("{:?}", task.source);
+        let trace = crate::telemetry::TaskTraceContext::new();
+        let task_span = crate::telemetry::task_span(&trace, &task_id, &task_source);
 
-        info!("Starting task {}: {}", task_id, scrub_text(&task.input));
+        self.current_trace = Some(trace.clone());
 
-        self.task_repo
-            .create_task(&task_id, &task.input)
-            .await
-            .context("Failed to create task in database")?;
-        self.task_repo
-            .update_task_status(&task_id, TaskStatus::Running)
-            .await
-            .context("Failed to update task status")?;
+        let result = async {
+            info!(
+                trace_id = %trace.trace_id,
+                "Starting task {}: {}",
+                task_id,
+                scrub_text(&task.input)
+            );
 
-        let result = match self.try_shortcut_task(&task_id, &task).await {
-            Ok(Some(result)) => Ok(result),
-            Ok(None) => self.execute_task_loop(&task_id, task).await,
-            Err(error) => Err(error),
-        };
+            self.task_repo
+                .create_task_with_metadata(
+                    &task_id,
+                    &task.input,
+                    Some(&task.source),
+                    task.execution_profile.as_ref(),
+                )
+                .await
+                .context("Failed to create task in database")?;
+            self.task_repo
+                .update_task_status(&task_id, TaskStatus::Running)
+                .await
+                .context("Failed to update task status")?;
+            if let Some(bus) = &self.message_bus {
+                bus.publish(BusEvent::TaskStarted {
+                    task_id: task_id.to_string(),
+                    input: scrub_text(&task.input),
+                })
+                .await;
+            }
+            self.publish_turn_start_event(&task_id, &task.input, &task_source)
+                .await;
 
-        match result {
+            match self.try_shortcut_task(&task_id, &task).await {
+                Ok(Some(result)) => Ok(result),
+                Ok(None) => self.execute_task_loop(&task_id, task).await,
+                Err(error) => Err(error),
+            }
+        }
+        .instrument(task_span)
+        .await;
+
+        let final_result = match result {
             Ok(task_result) => {
                 self.task_repo
                     .complete_task(
@@ -166,6 +204,20 @@ impl AgentCore {
                     iterations = task_result.iterations,
                     "Task completed"
                 );
+                if let Some(bus) = &self.message_bus {
+                    bus.publish(BusEvent::TaskCompleted {
+                        task_id: task_id.to_string(),
+                        result: scrub_text(&task_result.answer),
+                    })
+                    .await;
+                }
+                self.publish_turn_end_event(
+                    &task_id,
+                    "completed",
+                    "Task completed",
+                    task_result.duration_ms,
+                )
+                .await;
 
                 Ok(task_result)
             }
@@ -175,14 +227,7 @@ impl AgentCore {
                     .await
                     .context("Failed to mark task as failed")?;
                 let _ = self
-                    .task_repo
-                    .insert_agent_event(
-                        &task_id,
-                        "error",
-                        &serde_json::json!({ "error": scrub_text(&error.to_string()) }).to_string(),
-                        -1,
-                        None,
-                    )
+                    .insert_error_event(&task_id, &error.to_string(), "")
                     .await;
 
                 error!(
@@ -190,9 +235,21 @@ impl AgentCore {
                     task_id,
                     scrub_text(&error.to_string())
                 );
+                if let Some(bus) = &self.message_bus {
+                    bus.publish(BusEvent::TaskFailed {
+                        task_id: task_id.to_string(),
+                        error: scrub_text(&error.to_string()),
+                    })
+                    .await;
+                }
+                self.publish_turn_end_event(&task_id, "failed", "Task failed", 0)
+                    .await;
                 Err(error)
             }
-        }
+        };
+
+        self.current_trace = None;
+        final_result
     }
 
     /// Execute a coordinator-provided direct tool plan without entering the LLM loop.
@@ -206,27 +263,51 @@ impl AgentCore {
         let task_id = task.id;
         let task_id_str = task_id.to_string();
         let task_input = task.input.clone();
+        let task_source = format!("{:?}", task.source);
+        let trace = crate::telemetry::TaskTraceContext::new();
+        let task_span = crate::telemetry::task_span(&trace, &task_id, &task_source);
 
-        info!(
-            task_id = %task_id,
-            tool = %plan.primary_tool_name().unwrap_or("unknown"),
-            "Starting planned task {}: {}",
-            task_id,
-            scrub_text(&task.input)
-        );
+        self.current_trace = Some(trace.clone());
 
-        self.task_repo
-            .create_task(&task_id, &task.input)
-            .await
-            .context("Failed to create planned task in database")?;
-        self.task_repo
-            .update_task_status(&task_id, TaskStatus::Running)
-            .await
-            .context("Failed to update planned task status")?;
+        let result = async {
+            info!(
+                trace_id = %trace.trace_id,
+                task_id = %task_id,
+                tool = %plan.primary_tool_name().unwrap_or("unknown"),
+                "Starting planned task {}: {}",
+                task_id,
+                scrub_text(&task.input)
+            );
 
-        let result = self.execute_planned_task_body(&task, &plan).await;
+            self.task_repo
+                .create_task_with_metadata(
+                    &task_id,
+                    &task.input,
+                    Some(&task.source),
+                    task.execution_profile.as_ref(),
+                )
+                .await
+                .context("Failed to create planned task in database")?;
+            self.task_repo
+                .update_task_status(&task_id, TaskStatus::Running)
+                .await
+                .context("Failed to update planned task status")?;
+            if let Some(bus) = &self.message_bus {
+                bus.publish(BusEvent::TaskStarted {
+                    task_id: task_id.to_string(),
+                    input: scrub_text(&task.input),
+                })
+                .await;
+            }
+            self.publish_turn_start_event(&task_id, &task.input, &task_source)
+                .await;
 
-        match result {
+            self.execute_planned_task_body(&task, &plan).await
+        }
+        .instrument(task_span)
+        .await;
+
+        let final_result = match result {
             Ok(task_result) => {
                 self.task_repo
                     .complete_task(
@@ -251,6 +332,20 @@ impl AgentCore {
                     tool = %plan.primary_tool_name().unwrap_or("unknown"),
                     "Planned task completed"
                 );
+                if let Some(bus) = &self.message_bus {
+                    bus.publish(BusEvent::TaskCompleted {
+                        task_id: task_id.to_string(),
+                        result: scrub_text(&task_result.answer),
+                    })
+                    .await;
+                }
+                self.publish_turn_end_event(
+                    &task_id,
+                    "completed",
+                    "Task completed",
+                    task_result.duration_ms,
+                )
+                .await;
 
                 Ok(task_result)
             }
@@ -260,14 +355,7 @@ impl AgentCore {
                     .await
                     .context("Failed to mark planned task as failed")?;
                 let _ = self
-                    .task_repo
-                    .insert_agent_event(
-                        &task_id,
-                        "error",
-                        &serde_json::json!({ "error": scrub_text(&error.to_string()) }).to_string(),
-                        -1,
-                        None,
-                    )
+                    .insert_error_event(&task_id, &error.to_string(), "")
                     .await;
 
                 error!(
@@ -277,9 +365,21 @@ impl AgentCore {
                     task_id,
                     scrub_text(&error.to_string())
                 );
+                if let Some(bus) = &self.message_bus {
+                    bus.publish(BusEvent::TaskFailed {
+                        task_id: task_id.to_string(),
+                        error: scrub_text(&error.to_string()),
+                    })
+                    .await;
+                }
+                self.publish_turn_end_event(&task_id, "failed", "Task failed", 0)
+                    .await;
                 Err(error)
             }
-        }
+        };
+
+        self.current_trace = None;
+        final_result
     }
 
     pub async fn drain_background_jobs(&mut self) {

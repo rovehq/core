@@ -8,7 +8,7 @@ import { useRoveStore } from '@/stores/roveStore';
 export default function ConfigPage() {
   const { appState, clearError, config, daemonUrl, error, hello, initialize, remoteStatus, updateConfig } = useRoveStore();
   const [nodeName, setNodeName] = useState('');
-  const [profile, setProfile] = useState<'desktop' | 'headless'>('desktop');
+  const [profile, setProfile] = useState<'desktop' | 'headless' | 'edge'>('desktop');
   const [developerMode, setDeveloperMode] = useState(false);
   const [privacyMode, setPrivacyMode] = useState('local_only');
   const [idleTimeout, setIdleTimeout] = useState('1200');
@@ -111,11 +111,12 @@ export default function ConfigPage() {
               <Field label="Profile">
                 <select
                   value={profile}
-                  onChange={(event) => setProfile(event.target.value as 'desktop' | 'headless')}
+                  onChange={(event) => setProfile(event.target.value as 'desktop' | 'headless' | 'edge')}
                   className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
                 >
                   <option value="desktop">Desktop</option>
                   <option value="headless">Headless</option>
+                  <option value="edge">Edge</option>
                 </select>
               </Field>
               <Field label="Node name">

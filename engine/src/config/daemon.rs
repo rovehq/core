@@ -8,6 +8,7 @@ pub enum DaemonProfile {
     #[default]
     Desktop,
     Headless,
+    Edge,
 }
 
 impl DaemonProfile {
@@ -15,6 +16,7 @@ impl DaemonProfile {
         match self {
             Self::Desktop => "desktop",
             Self::Headless => "headless",
+            Self::Edge => "edge",
         }
     }
 }

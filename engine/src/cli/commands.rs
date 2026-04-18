@@ -71,6 +71,10 @@ pub enum Command {
         /// The task description.
         prompt: Vec<String>,
 
+        /// Run under a saved agent execution profile.
+        #[arg(long)]
+        agent: Option<String>,
+
         /// Explicit remote node target.
         #[arg(long)]
         node: Option<String>,
@@ -137,6 +141,12 @@ pub enum Command {
     Memory {
         #[command(subcommand)]
         action: MemoryAction,
+    },
+
+    /// Inspect configured lifecycle hooks discovered from `.rove/hooks`.
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
     },
 
     /// Replay a task and show every recorded step.
@@ -217,7 +227,7 @@ pub enum Command {
         dir: Option<PathBuf>,
     },
 
-    /// Unified extension management across skills, systems, connectors, and channels.
+    /// Unified extension management across skills, drivers, connectors, and channels.
     Extension {
         #[command(subcommand)]
         action: ExtensionFacadeAction,
@@ -229,8 +239,15 @@ pub enum Command {
         action: ExtensionAction,
     },
 
-    /// System extension management.
+    /// Compatibility alias for driver extension management.
+    #[command(hide = true)]
     System {
+        #[command(subcommand)]
+        action: ExtensionAction,
+    },
+
+    /// Driver extension management.
+    Driver {
         #[command(subcommand)]
         action: ExtensionAction,
     },
@@ -331,7 +348,10 @@ pub enum Command {
     },
 
     /// Show the current security posture (trust, approvals, sandbox, secrets).
-    Security,
+    Security {
+        #[command(subcommand)]
+        action: Option<SecurityAction>,
+    },
 
     /// Manage knowledge base: ingest files, URLs, folders, sitemaps.
     Knowledge {
@@ -363,6 +383,14 @@ pub enum AuthAction {
         #[arg(long)]
         recovery_code: Option<String>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SecurityAction {
+    /// Show the current security posture and installed extension trust table.
+    Show,
+    /// Audit installed extensions for provenance, integrity, and privilege risks.
+    Audit,
 }
 
 #[derive(Subcommand, Debug)]
@@ -735,6 +763,7 @@ pub enum PluginScaffoldType {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum ExtensionKindArg {
     Skill,
+    Driver,
     System,
     Connector,
     Channel,
@@ -744,7 +773,8 @@ impl ExtensionKindArg {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Skill => "skill",
-            Self::System => "system",
+            Self::Driver => "driver",
+            Self::System => "driver",
             Self::Connector => "connector",
             Self::Channel => "channel",
         }
@@ -1000,6 +1030,8 @@ pub enum WorkflowAction {
     Run { id: String, input: Vec<String> },
     /// Resume or retry an existing workflow run from its last incomplete step.
     ResumeRun { run_id: String },
+    /// Request cancellation of an active workflow run.
+    CancelRun { run_id: String },
     /// Export a workflow spec to a TOML file.
     Export { id: String, path: PathBuf },
     /// Import a workflow spec from a TOML file.
@@ -1021,6 +1053,85 @@ pub enum WorkflowAction {
         id: Option<String>,
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Manage workflow trigger bindings.
+    Trigger {
+        #[command(subcommand)]
+        action: WorkflowTriggerAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorkflowTriggerAction {
+    /// List channel bindings for one workflow.
+    List { id: String },
+    /// Bind a workflow to an inbound channel target.
+    Add {
+        id: String,
+        #[arg(long)]
+        channel: String,
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// Remove a workflow channel binding.
+    Remove {
+        id: String,
+        #[arg(long)]
+        channel: String,
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// Manage workflow webhook bindings.
+    Webhook {
+        #[command(subcommand)]
+        action: WorkflowWebhookTriggerAction,
+    },
+    /// Manage workflow file-watch bindings.
+    FileWatch {
+        #[command(subcommand)]
+        action: WorkflowFileWatchTriggerAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorkflowWebhookTriggerAction {
+    /// List webhook bindings for one workflow.
+    List { id: String },
+    /// Bind a workflow to a webhook id.
+    Add {
+        id: String,
+        #[arg(long)]
+        webhook: String,
+        #[arg(long)]
+        secret: Option<String>,
+    },
+    /// Remove a workflow webhook binding.
+    Remove {
+        id: String,
+        #[arg(long)]
+        webhook: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorkflowFileWatchTriggerAction {
+    /// List file-watch bindings for one workflow.
+    List { id: String },
+    /// Bind a workflow to a local file-watch path.
+    Add {
+        id: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long, default_value_t = true)]
+        recursive: bool,
+        #[arg(long = "event")]
+        event: Vec<String>,
+    },
+    /// Remove a workflow file-watch binding.
+    Remove {
+        id: String,
+        #[arg(long)]
+        path: String,
     },
 }
 
@@ -1199,7 +1310,10 @@ pub enum VoiceAction {
         action: VoiceDeviceAction,
     },
     /// Run a speech-input smoke test through the active input engine.
-    TestInput,
+    TestInput {
+        #[arg(long = "audio-path")]
+        audio_path: Option<String>,
+    },
     /// Run a spoken-output smoke test through the active output engine.
     TestOutput {
         text: String,
@@ -1324,6 +1438,14 @@ pub enum MemoryAdapterAction {
     Refresh,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum HookAction {
+    /// List active lifecycle hooks discovered for this node.
+    List,
+    /// Inspect one active lifecycle hook by name.
+    Inspect { name: String },
+}
+
 #[derive(ValueEnum, Debug, Clone, Copy)]
 pub enum MemoryModeArg {
     GraphOnly,
@@ -1438,6 +1560,23 @@ pub enum LogsAction {
         #[arg(short, long, default_value_t = 120)]
         lines: usize,
     },
+    /// Query the security and tool-execution audit log.
+    Security {
+        #[arg(long)]
+        action: Option<String>,
+
+        #[arg(long)]
+        source: Option<String>,
+
+        #[arg(long)]
+        severity: Option<String>,
+
+        #[arg(long)]
+        since_hours: Option<i64>,
+
+        #[arg(short, long, default_value_t = 100)]
+        limit: i64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1489,6 +1628,16 @@ pub enum MigrateAction {
 pub enum RemoteAction {
     /// Show remote service status for this node.
     Status,
+    /// Guided setup for the official ZeroTier transport.
+    Init {
+        /// ZeroTier network id to configure. If omitted in a terminal, the wizard prompts for it.
+        #[arg(long = "network")]
+        network_id: Option<String>,
+
+        /// Secret name that stores the ZeroTier controller token.
+        #[arg(long)]
+        token_key: Option<String>,
+    },
     /// Manage official remote transports such as ZeroTier.
     Transport {
         #[command(subcommand)]
@@ -1532,6 +1681,16 @@ pub enum RemoteAction {
 
         /// Task prompt to forward.
         prompt: Vec<String>,
+    },
+    /// Push the local syncable driver set to one or more paired nodes.
+    SyncDrivers {
+        /// Sync only one paired node by name, id, or target URL. Defaults to all trusted nodes.
+        #[arg(long)]
+        node: Option<String>,
+
+        /// Preview the planned actions without mutating remote nodes.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Compatibility alias for `rove remote node list`.
     #[command(hide = true)]
@@ -1758,6 +1917,7 @@ pub enum ActivateTarget {
 pub enum DaemonProfileArg {
     Desktop,
     Headless,
+    Edge,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1872,6 +2032,8 @@ pub enum ApprovalRuleActionArg {
 pub enum McpAction {
     /// List configured MCP servers.
     List,
+    /// Serve Rove's live tool registry as an MCP stdio server.
+    Serve,
     /// Show one configured MCP server.
     Show { name: String },
     /// Install an MCP package.

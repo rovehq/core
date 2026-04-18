@@ -29,9 +29,19 @@ pub enum PluginType {
 pub struct Permissions {
     pub filesystem: Vec<PathPattern>,
     pub network: Vec<DomainPattern>,
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    #[serde(default)]
+    pub host_patterns: Vec<DomainPattern>,
     pub memory_read: bool,
     pub memory_write: bool,
+    #[serde(default)]
+    pub wasm_max_memory_mb: Option<u32>,
     pub tools: Vec<String>,
+    #[serde(default)]
+    pub wasm_fuel_limit: Option<u64>,
+    #[serde(default)]
+    pub max_execution_time: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -227,6 +237,34 @@ mod tests {
         assert_eq!(manifest.name, "echo-skill");
         assert_eq!(manifest.plugin_type, PluginType::Skill);
         assert_eq!(manifest.trust_tier, TrustTier::Reviewed);
+    }
+
+    #[test]
+    fn parses_secret_permissions_and_host_patterns() {
+        let manifest = Manifest::from_json(
+            r#"{
+                "name": "fetcher",
+                "version": "0.1.0",
+                "sdk_version": "0.1.0",
+                "plugin_type": "Skill",
+                "permissions": {
+                    "filesystem": [],
+                    "network": ["api.openai.com"],
+                    "secrets": ["OPENAI_API_KEY"],
+                    "host_patterns": ["api.openai.com"],
+                    "memory_read": false,
+                    "memory_write": false,
+                    "tools": []
+                },
+                "trust_tier": "Reviewed",
+                "min_model": null,
+                "description": "Fetcher"
+            }"#,
+        )
+        .expect("manifest");
+
+        assert_eq!(manifest.permissions.secrets, vec!["OPENAI_API_KEY"]);
+        assert_eq!(manifest.permissions.host_patterns[0].0, "api.openai.com");
     }
 
     #[test]

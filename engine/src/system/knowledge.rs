@@ -7,6 +7,14 @@ use crate::storage::knowledge::KnowledgeIngestResult;
 use crate::storage::KnowledgeRepository;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebFetchResult {
+    pub url: String,
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestSummary {
     pub total: usize,
     pub ingested: Vec<KnowledgeIngestResult>,
@@ -125,6 +133,37 @@ pub async fn ingest_url(
         tags,
     )
     .await
+}
+
+pub async fn fetch_url_text(url: &str, max_chars: usize) -> Result<WebFetchResult> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let resp = client.get(url).send().await?;
+    let status = resp.status().as_u16();
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+
+    let text = resp.text().await?;
+    let mut content = if content_type.as_deref().unwrap_or("").contains("text/html") {
+        html_to_text(&text)
+    } else {
+        text
+    };
+    if max_chars > 0 && content.chars().count() > max_chars {
+        content = content.chars().take(max_chars).collect();
+    }
+
+    Ok(WebFetchResult {
+        url: url.to_string(),
+        status,
+        content_type,
+        content,
+    })
 }
 
 pub async fn ingest_sitemap(
@@ -266,6 +305,44 @@ fn html_to_text(html: &str) -> String {
         }
     }
     result.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fetch_url_text, html_to_text};
+    use axum::{routing::get, Router};
+
+    #[test]
+    fn html_to_text_strips_tags() {
+        let text = html_to_text("<html><body><h1>Hello</h1><p>world</p></body></html>");
+        assert_eq!(text, "Hello world");
+    }
+
+    #[tokio::test]
+    async fn fetch_url_text_converts_html_to_text() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                    "<html><body><h1>Hello</h1><p>world</p></body></html>",
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let result = fetch_url_text(&format!("http://{}/", addr), 1024)
+            .await
+            .unwrap();
+        assert_eq!(result.status, 200);
+        assert_eq!(result.content, "Hello world");
+
+        server.abort();
+    }
 }
 
 fn extract_title(content: &str, url: &str) -> String {

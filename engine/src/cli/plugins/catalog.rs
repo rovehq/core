@@ -441,7 +441,7 @@ pub(crate) fn trust_badge_from_manifest_tier(value: TrustTier) -> ExtensionTrust
 pub(crate) fn public_kind_from_plugin_type(plugin_type: &str) -> &'static str {
     match plugin_type {
         "Skill" => "skill",
-        "Workspace" => "system",
+        "Workspace" => "driver",
         "Channel" => "channel",
         "Mcp" => "connector",
         "Brain" => "brain",
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn plugin_type_maps_to_public_kind() {
         assert_eq!(public_kind_from_plugin_type("Skill"), "skill");
-        assert_eq!(public_kind_from_plugin_type("Workspace"), "system");
+        assert_eq!(public_kind_from_plugin_type("Workspace"), "driver");
         assert_eq!(public_kind_from_plugin_type("Channel"), "channel");
     }
 

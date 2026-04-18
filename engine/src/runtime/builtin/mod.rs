@@ -48,6 +48,7 @@ pub async fn register_selected(
     workspace: PathBuf,
     selection: BuiltinSelection,
 ) -> Result<(), EngineError> {
+    registry.register_builtin_web_fetch().await;
     if selection.filesystem {
         registry
             .register_builtin_filesystem(FilesystemTool::new(workspace.clone())?)

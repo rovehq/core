@@ -60,6 +60,8 @@ pub(crate) struct RegistryVersionEntry {
     pub package_path: String,
     pub runtime_path: Option<String>,
     pub artifact_path: Option<String>,
+    #[serde(default)]
+    pub artifact_sidecar_path: Option<String>,
     pub readme_path: Option<String>,
     pub release_path: String,
 }
@@ -73,6 +75,7 @@ pub(super) struct PublishedBundle {
     pub package_path: String,
     pub runtime_path: Option<String>,
     pub artifact_path: Option<String>,
+    pub artifact_sidecar_path: Option<String>,
     pub readme_path: Option<String>,
     pub release_path: String,
 }
@@ -177,6 +180,7 @@ pub(super) fn update_registry_metadata(
         package_path: published.package_path.clone(),
         runtime_path: published.runtime_path.clone(),
         artifact_path: published.artifact_path.clone(),
+        artifact_sidecar_path: published.artifact_sidecar_path.clone(),
         readme_path: published.readme_path.clone(),
         release_path: published.release_path.clone(),
     });
@@ -273,6 +277,12 @@ pub(super) async fn materialize_registry_bundle(
             .path()
             .join(file_name_from_relative(artifact_path)?);
         fetch_bytes_into(&location, artifact_path, &destination).await?;
+    }
+    if let Some(artifact_sidecar_path) = &entry.artifact_sidecar_path {
+        let destination = temp_dir
+            .path()
+            .join(file_name_from_relative(artifact_sidecar_path)?);
+        fetch_text_into(&location, artifact_sidecar_path, &destination).await?;
     }
     if let Some(readme_path) = &entry.readme_path {
         let destination = temp_dir.path().join(file_name_from_relative(readme_path)?);
@@ -557,9 +567,14 @@ mod tests {
             permissions: Permissions {
                 filesystem: Vec::<PathPattern>::new(),
                 network: Vec::<DomainPattern>::new(),
+                secrets: Vec::new(),
+                host_patterns: Vec::new(),
                 memory_read: false,
                 memory_write: false,
+                wasm_max_memory_mb: None,
                 tools: Vec::new(),
+                wasm_fuel_limit: None,
+                max_execution_time: None,
             },
             trust_tier: TrustTier::Reviewed,
             min_model: None,
@@ -584,6 +599,9 @@ mod tests {
                 package_path: "echo-skill/0.2.0/plugin-package.json".to_string(),
                 runtime_path: Some("echo-skill/0.2.0/runtime.json".to_string()),
                 artifact_path: Some("echo-skill/0.2.0/echo.wasm".to_string()),
+                artifact_sidecar_path: Some(
+                    "echo-skill/0.2.0/echo.capabilities.json".to_string(),
+                ),
                 readme_path: Some("echo-skill/0.2.0/README.md".to_string()),
                 release_path: "echo-skill/0.2.0/release.json".to_string(),
             },
@@ -619,6 +637,11 @@ mod tests {
         fs::write(release_dir.join("plugin-package.json"), "{}").expect("package");
         fs::write(release_dir.join("runtime.json"), "{}").expect("runtime");
         fs::write(release_dir.join("echo.wasm"), b"wasm").expect("artifact");
+        fs::write(
+            release_dir.join("echo.capabilities.json"),
+            r#"{"max_execution_time_secs":15}"#,
+        )
+        .expect("artifact sidecar");
 
         update_registry_metadata(
             temp_dir.path(),
@@ -632,6 +655,9 @@ mod tests {
                 package_path: "echo-skill/0.1.0/plugin-package.json".to_string(),
                 runtime_path: Some("echo-skill/0.1.0/runtime.json".to_string()),
                 artifact_path: Some("echo-skill/0.1.0/echo.wasm".to_string()),
+                artifact_sidecar_path: Some(
+                    "echo-skill/0.1.0/echo.capabilities.json".to_string(),
+                ),
                 readme_path: None,
                 release_path: "echo-skill/0.1.0/release.json".to_string(),
             },
@@ -650,6 +676,7 @@ mod tests {
         assert!(bundle.path().join("plugin-package.json").exists());
         assert!(bundle.path().join("runtime.json").exists());
         assert!(bundle.path().join("echo.wasm").exists());
+        assert!(bundle.path().join("echo.capabilities.json").exists());
     }
 
     #[test]

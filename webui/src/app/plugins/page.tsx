@@ -163,7 +163,7 @@ export default function PluginsPage() {
                   >
                     <option value="">Auto</option>
                     <option value="skill">Skill</option>
-                    <option value="system">System</option>
+                    <option value="driver">Driver</option>
                     <option value="channel">Channel</option>
                   </select>
                 </Field>
@@ -249,6 +249,12 @@ function InstalledExtensionCard({
     latest_version?: string | null;
     update_available: boolean;
     provenance: { source: string; registry?: string | null };
+    wasm_limits?: {
+      timeout_secs: number;
+      max_memory_mb: number;
+      fuel_limit: number;
+      sidecar_path?: string | null;
+    } | null;
   };
   onEnable: () => void;
   onDisable: () => void;
@@ -295,6 +301,26 @@ function InstalledExtensionCard({
         <MetaRow label="Latest version" value={extension.latest_version ?? 'unknown'} />
         <MetaRow label="Source" value={extension.provenance.source} />
         <MetaRow label="Registry" value={extension.provenance.registry ?? 'n/a'} />
+        {extension.wasm_limits ? (
+          <>
+            <MetaRow
+              label="WASM timeout"
+              value={`${extension.wasm_limits.timeout_secs}s`}
+            />
+            <MetaRow
+              label="WASM memory cap"
+              value={`${extension.wasm_limits.max_memory_mb} MB`}
+            />
+            <MetaRow
+              label="WASM fuel limit"
+              value={String(extension.wasm_limits.fuel_limit)}
+            />
+            <MetaRow
+              label="WASM sidecar"
+              value={extension.wasm_limits.sidecar_path ?? 'none'}
+            />
+          </>
+        ) : null}
       </div>
     </div>
   );

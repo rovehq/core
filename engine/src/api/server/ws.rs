@@ -1,23 +1,33 @@
-//! WebSocket Task Streaming
+//! WebSocket Event Stream
 //!
-//! Provides a WebSocket endpoint that the local WebUI connects to.
-//! Clients send a JSON `StartTask` message to kick off agent execution
-//! and receive streamed progress / result events back.
+//! Provides a WebSocket endpoint at /v1/events/ws that pushes real-time events
+//! to the local WebUI. Clients subscribe to topics and receive typed events.
 //!
 //! Protocol (client → server):
 //! ```json
-//! { "type": "start_task", "input": "Do something useful" }
+//! { "type": "subscribe", "topic": "tasks" }
+//! { "type": "subscribe", "topic": "daemon" }
+//! { "type": "start_task", "input": "..." }
+//! { "type": "subscribe_task", "task_id": "..." }
 //! { "type": "ping" }
 //! ```
 //!
 //! Protocol (server → client):
 //! ```json
-//! { "type": "accepted",  "task_id": "..." }
-//! { "type": "progress",  "message": "..." }
-//! { "type": "result",    "answer": "...", "duration_ms": 1234, "iterations": 3 }
-//! { "type": "error",     "message": "..." }
+//! { "type": "connected", "version": "..." }
+//! { "type": "task.created", "task_id": "..." }
+//! { "type": "task.event", "task_id": "...", "event": {...} }
+//! { "type": "task.completed", "task_id": "...", "result": "..." }
+//! { "type": "auth.locked" }
+//! { "type": "approval.required", "task_id": "...", "risk": "..." }
 //! { "type": "pong" }
 //! ```
+//!
+//! Subscriptions are topic-gated. Subscribing to "tasks" delivers events for
+//! all tasks. Subscribing to "task:<id>" delivers events for a specific task.
+//! Subscribing to "daemon" enables auth and daemon state events.
+//! No event is sent as an immediate response to a subscribe — the stream is
+//! push-only from the server side.
 
 use axum::{
     extract::{
@@ -28,13 +38,14 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use futures::stream::StreamExt;
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use tracing::{error, info, warn};
+use futures::StreamExt;
+use serde::Deserialize;
+use std::collections::HashSet;
+use tracing::{info, warn};
 
-use super::{auth::AuthManager, completion, AppState};
+use super::{auth::AuthManager, AppState};
 use crate::config::Config;
+use crate::message_bus::{Event as BusEvent, EventType as BusEventType};
 use crate::remote::RemoteManager;
 
 // ── Client → Server messages ─────────────────────────────────────────────────
@@ -42,53 +53,31 @@ use crate::remote::RemoteManager;
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg {
-    StartTask { input: String },
-    SubscribeTask { task_id: String },
-    Subscribe { topic: String },
+    /// Submit a new task and stream its events.
+    StartTask {
+        input: String,
+    },
+    /// Subscribe to events for a specific task by ID.
+    SubscribeTask {
+        task_id: String,
+    },
+    /// Subscribe to a named topic: "tasks", "daemon", or "task:<id>".
+    Subscribe {
+        topic: String,
+    },
     Ping,
 }
 
-// ── Server → Client messages ─────────────────────────────────────────────────
+// ── Auth query ────────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ServerMsg {
-    Accepted {
-        task_id: String,
-    },
-    Progress {
-        message: String,
-    },
-    Event {
-        task_id: String,
-        event_type: String,
-        payload: String,
-        step_num: i64,
-        domain: Option<String>,
-        created_at: i64,
-    },
-    Result {
-        answer: String,
-        provider: Option<String>,
-        duration_ms: i64,
-        iterations: usize,
-    },
-    Error {
-        message: String,
-    },
-    Pong,
+#[derive(Deserialize)]
+pub struct AuthQuery {
+    pub token: Option<String>,
 }
 
-impl ServerMsg {
-    fn to_text(&self) -> String {
-        serde_json::to_string(self)
-            .unwrap_or_else(|_| r#"{"type":"error","message":"serialization failure"}"#.into())
-    }
-}
+// ── Axum handlers ─────────────────────────────────────────────────────────────
 
-// ── Axum handler ─────────────────────────────────────────────────────────────
-
-/// Upgrade incoming HTTP to WebSocket and hand off to `handle_socket`.
+/// Primary event-stream WebSocket handler (`GET /v1/events/ws?token=...`).
 pub async fn task_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -123,210 +112,168 @@ pub async fn telemetry_handler(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    let manager = AuthManager::new(state.db.clone());
-    if let Some(token) = query.token.as_deref() {
-        if let Err(error) = manager.validate_session(token, true).await {
-            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
-        }
-    } else {
-        let config = match Config::load_or_create() {
-            Ok(config) => config,
-            Err(error) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
-            }
-        };
-        if let Err(error) =
-            RemoteManager::new(config).verify_signed_request(&headers, "event_stream", None)
-        {
-            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
-        }
-    }
-    ws.on_upgrade(|socket| handle_socket(socket, state))
+    task_ws_handler(ws, State(state), headers, Query(query)).await
 }
 
-#[derive(Deserialize)]
-pub struct AuthQuery {
-    pub token: Option<String>,
-}
+// ── Socket handler ─────────────────────────────────────────────────────────────
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     info!("WebUI client connected via WebSocket");
 
-    // Send a welcome ping so the client knows the connection is live
+    // Send a welcome message so the client knows the connection is live.
     let welcome =
         serde_json::json!({ "type": "connected", "version": crate::info::VERSION }).to_string();
     if socket.send(Message::Text(welcome)).await.is_err() {
-        warn!("Failed to send welcome message; client may have disconnected");
+        warn!("Failed to send welcome; client may have disconnected immediately");
         return;
     }
 
-    while let Some(msg) = socket.next().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(e) => {
-                warn!("WebSocket read error: {}", e);
-                break;
-            }
-        };
+    // Subscribe to all bus events from the start. We filter by client
+    // subscriptions when deciding what to forward.
+    let mut bus_rx = state.message_bus.subscribe(BusEventType::All).await;
 
-        match msg {
-            Message::Text(text) => {
-                let client_msg: ClientMsg = match serde_json::from_str(&text) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        let err = ServerMsg::Error {
-                            message: format!("Invalid message: {}", e),
-                        };
-                        let _ = socket.send(Message::Text(err.to_text())).await;
-                        continue;
-                    }
+    // Topics the client has explicitly subscribed to.
+    let mut subscribed: HashSet<String> = HashSet::new();
+
+    loop {
+        tokio::select! {
+            // ── Incoming WebSocket message ─────────────────────────────────
+            msg_result = socket.next() => {
+                let msg = match msg_result {
+                    Some(Ok(m)) => m,
+                    _ => break, // socket closed or error
                 };
 
-                match client_msg {
-                    ClientMsg::StartTask { input } => {
-                        handle_start_task(&mut socket, &state, input).await;
-                    }
-                    ClientMsg::SubscribeTask { task_id } => {
-                        stream_task_updates(&mut socket, &state, task_id).await;
-                    }
-                    ClientMsg::Subscribe { topic } => {
-                        if let Some(task_id) = topic.strip_prefix("task:") {
-                            stream_task_updates(&mut socket, &state, task_id.to_string()).await;
-                        } else if topic == "daemon" {
-                            let _ = socket
-                                .send(Message::Text(
-                                    serde_json::json!({
-                                        "type": "daemon.status",
-                                        "state": "running"
-                                    })
-                                    .to_string(),
-                                ))
-                                .await;
+                match msg {
+                    Message::Text(text) => {
+                        let client_msg: ClientMsg = match serde_json::from_str(&text) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                let err = serde_json::json!({
+                                    "type": "error",
+                                    "message": format!("Invalid message: {}", e)
+                                })
+                                .to_string();
+                                let _ = socket.send(Message::Text(err)).await;
+                                continue;
+                            }
+                        };
+
+                        match client_msg {
+                            // Client subscribes to a topic — register it silently.
+                            // No immediate response; events are pushed as they occur.
+                            ClientMsg::Subscribe { topic } => {
+                                subscribed.insert(topic);
+                            }
+                            ClientMsg::SubscribeTask { task_id } => {
+                                subscribed.insert(format!("task:{}", task_id));
+                            }
+                            ClientMsg::StartTask { input } => {
+                                handle_start_task(&mut socket, &state, input).await;
+                            }
+                            ClientMsg::Ping => {
+                                let pong = serde_json::json!({"type": "pong"}).to_string();
+                                let _ = socket.send(Message::Text(pong)).await;
+                            }
                         }
                     }
-                    ClientMsg::Ping => {
-                        let _ = socket.send(Message::Text(ServerMsg::Pong.to_text())).await;
+                    Message::Ping(bytes) => {
+                        let _ = socket.send(Message::Pong(bytes)).await;
                     }
+                    Message::Close(_) => {
+                        info!("WebUI client disconnected from WebSocket");
+                        break;
+                    }
+                    _ => {}
                 }
             }
-            Message::Ping(bytes) => {
-                let _ = socket.send(Message::Pong(bytes)).await;
+
+            // ── Outgoing event from the message bus ───────────────────────
+            bus_event = bus_rx.recv() => {
+                let Some(event) = bus_event else { break };
+
+                let outbound = match &event {
+                    BusEvent::TaskStarted { task_id, .. }
+                        if wants_task(&subscribed, task_id) =>
+                    {
+                        serde_json::json!({
+                            "type": "task.created",
+                            "task_id": task_id,
+                        })
+                        .to_string()
+                    }
+                    BusEvent::TaskStream { task_id, event }
+                        if wants_task(&subscribed, task_id) =>
+                    {
+                        serde_json::json!({
+                            "type": "task.event",
+                            "task_id": task_id,
+                            "event": event,
+                        })
+                        .to_string()
+                    }
+                    BusEvent::TaskCompleted { task_id, result }
+                        if wants_task(&subscribed, task_id) =>
+                    {
+                        serde_json::json!({
+                            "type": "task.completed",
+                            "task_id": task_id,
+                            "result": result,
+                        })
+                        .to_string()
+                    }
+                    BusEvent::TaskFailed { task_id, error }
+                        if wants_task(&subscribed, task_id) =>
+                    {
+                        serde_json::json!({
+                            "type": "task.completed",
+                            "task_id": task_id,
+                            "result": error,
+                        })
+                        .to_string()
+                    }
+                    // Auth events go to "daemon" subscribers.
+                    BusEvent::DaemonStopping if subscribed.contains("daemon") => {
+                        serde_json::json!({"type": "auth.locked"}).to_string()
+                    }
+                    _ => continue, // not subscribed or not a forwarded event type
+                };
+
+                if socket.send(Message::Text(outbound)).await.is_err() {
+                    break;
+                }
             }
-            Message::Close(_) => {
-                info!("WebUI client disconnected from WebSocket");
-                break;
-            }
-            _ => {}
         }
     }
 }
 
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+/// Returns true if the client wants events for this task_id.
+/// "tasks" subscription covers all tasks; "task:<id>" covers a specific one.
+fn wants_task(subscribed: &HashSet<String>, task_id: &str) -> bool {
+    subscribed.contains("tasks") || subscribed.contains(&format!("task:{}", task_id))
+}
+
 async fn handle_start_task(socket: &mut WebSocket, state: &AppState, input: String) {
-    // Submit task through gateway (durable inbox pattern)
-    let task_id = match state.gateway.submit_webui(&input, None).await {
+    let task_id = match state.gateway.submit_webui(&input, None, None).await {
         Ok(id) => id,
         Err(e) => {
-            let msg = ServerMsg::Error {
-                message: format!("Failed to submit task: {}", e),
-            };
-            let _ = socket.send(Message::Text(msg.to_text())).await;
+            let err = serde_json::json!({
+                "type": "error",
+                "message": format!("Failed to submit task: {}", e),
+            })
+            .to_string();
+            let _ = socket.send(Message::Text(err)).await;
             return;
         }
     };
 
-    // Immediately acknowledge with the task ID so the client can track it
-    let accepted = ServerMsg::Accepted {
-        task_id: task_id.clone(),
-    };
-    if socket
-        .send(Message::Text(accepted.to_text()))
-        .await
-        .is_err()
-    {
-        return;
-    }
-
-    let _ = socket
-        .send(Message::Text(
-            ServerMsg::Progress {
-                message: "Task accepted. Executing...".to_string(),
-            }
-            .to_text(),
-        ))
-        .await;
-
-    stream_task_updates(socket, state, task_id).await;
-}
-
-async fn stream_task_updates(socket: &mut WebSocket, state: &AppState, task_id: String) {
-    let mut sent_event_ids = std::collections::HashSet::new();
-
-    loop {
-        match state.db.tasks().get_agent_events(&task_id).await {
-            Ok(events) => {
-                for event in events
-                    .into_iter()
-                    .filter(|event| sent_event_ids.insert(event.id.clone()))
-                {
-                    let message = ServerMsg::Event {
-                        task_id: event.task_id,
-                        event_type: event.event_type,
-                        payload: event.payload,
-                        step_num: event.step_num,
-                        domain: event.domain,
-                        created_at: event.created_at,
-                    };
-                    if socket.send(Message::Text(message.to_text())).await.is_err() {
-                        return;
-                    }
-                }
-            }
-            Err(error) => {
-                let msg = ServerMsg::Error {
-                    message: format!("Failed to load task events: {}", error),
-                };
-                let _ = socket.send(Message::Text(msg.to_text())).await;
-                return;
-            }
-        }
-
-        match completion::load_completion(state, &task_id).await {
-            Ok(completion::CompletionState::Done(result)) => {
-                let msg = ServerMsg::Result {
-                    answer: result.answer,
-                    provider: result.provider,
-                    duration_ms: result.duration_ms.unwrap_or(0),
-                    iterations: 0,
-                };
-                if let Err(error) = socket.send(Message::Text(msg.to_text())).await {
-                    error!("Failed to stream task result over WebSocket: {}", error);
-                }
-                break;
-            }
-            Ok(completion::CompletionState::Failed(error)) => {
-                let msg = ServerMsg::Error {
-                    message: format!("Task failed: {}", error),
-                };
-                let _ = socket.send(Message::Text(msg.to_text())).await;
-                break;
-            }
-            Ok(completion::CompletionState::Missing) => {
-                let msg = ServerMsg::Error {
-                    message: "Task not found".to_string(),
-                };
-                let _ = socket.send(Message::Text(msg.to_text())).await;
-                break;
-            }
-            Ok(completion::CompletionState::Running) => {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-            }
-            Err(error) => {
-                let msg = ServerMsg::Error {
-                    message: format!("Failed to get task status: {}", error),
-                };
-                let _ = socket.send(Message::Text(msg.to_text())).await;
-                break;
-            }
-        }
-    }
+    // Acknowledge with task.created so the client can track it.
+    let accepted = serde_json::json!({
+        "type": "task.created",
+        "task_id": task_id,
+    })
+    .to_string();
+    let _ = socket.send(Message::Text(accepted)).await;
 }

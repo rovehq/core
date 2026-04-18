@@ -30,11 +30,13 @@ use crate::storage::{Database, PendingTaskStatus, TaskRepository};
 use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
 
+use super::agents::execution_profile_for_agent;
 use super::output::{OutputFormat, TaskView};
 use super::task_view::{self, DispatchSummary, TaskSuccess};
 
 pub struct RunRequest {
     pub task: String,
+    pub agent: Option<String>,
     pub node: Option<String>,
     pub auto_approve: bool,
     pub stream: bool,
@@ -68,8 +70,17 @@ pub async fn handle_run(request: RunRequest, config: &Config) -> Result<()> {
         Some(TaskIsolationArg::Snapshot) => RunIsolation::Snapshot,
         None => RunIsolation::None,
     };
+    let execution_profile = if let Some(agent_id) = request.agent.as_deref() {
+        let repo = crate::system::specs::SpecRepository::new()?;
+        Some(execution_profile_for_agent(&repo, agent_id)?)
+    } else {
+        None
+    };
 
     if let Some(node) = requested_node {
+        if execution_profile.is_some() {
+            anyhow::bail!("`rove task --agent` is not supported for remote node dispatch yet");
+        }
         return handle_remote_run(task, &node, &runtime_config, request.format, task_view).await;
     }
 
@@ -78,11 +89,19 @@ pub async fn handle_run(request: RunRequest, config: &Config) -> Result<()> {
         && !request.parallel
         && request.isolate.is_none()
     {
-        return handle_daemon_run(task, &runtime_config, request.format, task_view).await;
+        return handle_daemon_run(
+            task,
+            execution_profile,
+            &runtime_config,
+            request.format,
+            task_view,
+        )
+        .await;
     }
 
     handle_local_run(
         task,
+        execution_profile,
         &runtime_config,
         request.format,
         task_view,
@@ -94,6 +113,7 @@ pub async fn handle_run(request: RunRequest, config: &Config) -> Result<()> {
 
 async fn handle_local_run(
     task: String,
+    execution_profile: Option<TaskExecutionProfile>,
     runtime_config: &Config,
     format: OutputFormat,
     view: TaskView,
@@ -108,7 +128,7 @@ async fn handle_local_run(
         runtime_config,
         run_mode,
         run_isolation,
-        None,
+        execution_profile,
         task_id,
     )
     .await;
@@ -376,6 +396,7 @@ fn task_likely_writes_workspace(task: &str) -> bool {
 
 async fn handle_daemon_run(
     task: String,
+    execution_profile: Option<TaskExecutionProfile>,
     runtime_config: &Config,
     format: OutputFormat,
     view: TaskView,
@@ -387,7 +408,9 @@ async fn handle_daemon_run(
     );
     let gateway = Gateway::new(database.clone(), GatewayConfig::from_config(runtime_config))?;
 
-    let task_id = gateway.submit_cli(&task, None).await?;
+    let task_id = gateway
+        .submit_cli(&task, None, execution_profile.as_ref())
+        .await?;
     let dispatch = load_pending_dispatch(database.pending_tasks().get_task(&task_id).await?);
     task_view::print_start(&task, &task_id, format, view, dispatch.as_ref())?;
     let mut stream_state = StreamState::default();

@@ -15,6 +15,23 @@ Rove treats plugins as versioned packages with three layers:
 
 The engine only executes installed plugins. Authoring, testing, packing, publishing, and installing all converge on that package shape.
 
+## Secret injection contract
+
+WASM plugins can request daemon-managed secret injection for JSON tool inputs, but the contract is explicit:
+
+- `permissions.secrets`
+  - exact secret names the plugin is allowed to reference, for example `OPENAI_API_KEY`
+- `permissions.host_patterns`
+  - allowed destination hosts for those injected secrets, for example `api.openai.com`
+
+At call time the plugin may include placeholders like `{OPENAI_API_KEY}` in JSON input. Rove will only resolve them when:
+
+- the secret name is declared in `permissions.secrets`
+- the request input also includes at least one URL host
+- every detected host matches `permissions.host_patterns`
+
+Keep both lists narrow. Wildcards are allowed by the parser but will be flagged as broader than recommended by the permission review and security audit surfaces.
+
 ## Fast author loop
 
 1. Create a scaffold:
@@ -27,6 +44,7 @@ The engine only executes installed plugins. Authoring, testing, packing, publish
    - `cargo build --target wasm32-wasip1 --release`
 5. Replace placeholder hash and signature values in `plugin-package.json`
 6. Sign `manifest.json`
+7. If the plugin needs outbound credentials, replace the scaffolded `permissions.secrets` and `permissions.host_patterns` arrays with explicit values before install or publish
 
 If you need a reference package, start from:
 

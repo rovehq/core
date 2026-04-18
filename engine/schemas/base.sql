@@ -5,6 +5,11 @@
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     input TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'cli',
+    agent_id TEXT,
+    agent_name TEXT,
+    worker_preset_id TEXT,
+    worker_preset_name TEXT,
     status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
     provider_used TEXT,
     duration_ms INTEGER,
@@ -14,6 +19,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_agent_created_at ON tasks(agent_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS task_steps (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -284,6 +290,7 @@ CREATE TABLE IF NOT EXISTS pending_tasks (
     session_id TEXT,
     workspace  TEXT,
     team_id    TEXT,
+    execution_profile_json TEXT,
     domain     TEXT    NOT NULL DEFAULT 'general',
     complexity TEXT    NOT NULL DEFAULT 'simple',
     sensitive  INTEGER NOT NULL DEFAULT 0
@@ -337,7 +344,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_workflow
 CREATE TABLE IF NOT EXISTS workflow_runs (
     run_id         TEXT PRIMARY KEY,
     workflow_id    TEXT NOT NULL,
-    status         TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+    status         TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed', 'canceled')),
     input          TEXT NOT NULL,
     output         TEXT,
     error          TEXT,
@@ -348,6 +355,8 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     current_step_name TEXT,
     retry_count    INTEGER NOT NULL DEFAULT 0,
     last_task_id   TEXT,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    cancel_requested_at INTEGER,
     created_at     INTEGER NOT NULL,
     completed_at   INTEGER
 );
@@ -566,6 +575,36 @@ CREATE TABLE IF NOT EXISTS auth_events (
 CREATE INDEX IF NOT EXISTS idx_auth_events_created
     ON auth_events(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS auth_passkeys (
+    id           TEXT PRIMARY KEY,
+    user_uuid    TEXT NOT NULL,
+    rp_id        TEXT NOT NULL,
+    credential_id TEXT NOT NULL UNIQUE,
+    label        TEXT,
+    passkey_json TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    last_used_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_passkeys_rp_id
+    ON auth_passkeys(rp_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS auth_passkey_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    challenge_type TEXT NOT NULL,
+    session_id   TEXT,
+    rp_id        TEXT NOT NULL,
+    origin       TEXT NOT NULL,
+    state_json   TEXT NOT NULL,
+    label        TEXT,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_passkey_challenges_expiry
+    ON auth_passkey_challenges(expires_at);
+
 CREATE TABLE IF NOT EXISTS pending_approvals (
     approval_id  TEXT PRIMARY KEY,
     task_id      TEXT NOT NULL,
@@ -693,3 +732,38 @@ CREATE INDEX IF NOT EXISTS idx_mem_graph_from       ON memory_graph_edges(from_i
 CREATE INDEX IF NOT EXISTS idx_mem_graph_to         ON memory_graph_edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_mem_graph_entity     ON memory_graph_edges(entity) WHERE entity IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_mem_graph_type_from  ON memory_graph_edges(edge_type, from_id);
+
+-- 14. Memory versioning + audit
+CREATE TABLE IF NOT EXISTS memory_versions (
+    id              TEXT PRIMARY KEY,
+    entity_kind     TEXT NOT NULL,
+    entity_id       TEXT NOT NULL,
+    version_num     INTEGER NOT NULL,
+    action          TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    snapshot_json   TEXT NOT NULL,
+    actor           TEXT NOT NULL,
+    source_task_id  TEXT,
+    created_at      INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_versions_entity_version
+    ON memory_versions(entity_kind, entity_id, version_num);
+CREATE INDEX IF NOT EXISTS idx_memory_versions_entity_created
+    ON memory_versions(entity_kind, entity_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS memory_audit_log (
+    id                 TEXT PRIMARY KEY,
+    entity_kind        TEXT NOT NULL,
+    entity_id          TEXT NOT NULL,
+    action             TEXT NOT NULL,
+    actor              TEXT NOT NULL,
+    source_task_id     TEXT,
+    precondition_hash  TEXT,
+    content_hash       TEXT,
+    metadata_json      TEXT,
+    created_at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_audit_entity_created
+    ON memory_audit_log(entity_kind, entity_id, created_at DESC);

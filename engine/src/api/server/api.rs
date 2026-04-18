@@ -14,9 +14,12 @@ use uuid::Uuid;
 use super::{auth::AuthManager, completion, AppState};
 use crate::channels::manager::{ChannelManager, PluginChannelDeliverInput, TelegramSetupInput};
 use crate::cli::brain::dispatch_family;
+use crate::cli::database_path::database_path;
 use crate::cli::extensions;
 use crate::config::Config;
 use crate::gateway::Task;
+pub use crate::message_bus::TaskStreamEvent;
+use crate::message_bus::{Event as BusEvent, EventType as BusEventType};
 use crate::policy::PolicyManager;
 use crate::remote::RemoteManager;
 use crate::security::approvals;
@@ -24,15 +27,17 @@ use crate::service_install::{ServiceInstallMode, ServiceInstaller};
 use crate::services::{ManagedService, ServiceManager};
 use crate::specs::{allowed_tools, SpecRepository};
 use crate::system::{
-    backup, browser as browser_surface, factory, health, logs, memory as memory_surface, migrate,
-    onboarding, starter_catalog, voice as voice_surface, worker_presets, workflow_runtime,
+    backup, browser as browser_surface, factory, health, logs, memory as memory_surface,
+    metrics as prometheus_metrics, migrate, onboarding, starter_catalog, voice as voice_surface,
+    worker_presets, workflow_runtime, workflow_triggers,
 };
 use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
 use sdk::{
     AgentSpec, AuthState, DaemonCapabilities, DaemonHello, NodeLoadSnapshot, NodeSummary,
-    PolicyScope, RemoteExecutionPlan, RunContextId, RunIsolation, RunMode, SpecRunStatus,
-    TaskExecutionProfile, TaskSource, WorkflowSpec,
+    PasskeyFinishRequest, PasskeyRegistrationStartRequest, PolicyScope, RemoteExecutionPlan,
+    RunContextId, RunIsolation, RunMode, SpecRunStatus, TaskExecutionProfile, TaskSource,
+    WorkflowSpec,
 };
 
 #[derive(Serialize)]
@@ -47,6 +52,18 @@ pub async fn health_check() -> impl IntoResponse {
         version: crate::info::VERSION.to_string(),
     };
     (StatusCode::OK, Json(res))
+}
+
+pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    match prometheus_metrics::collect_metrics(&state.db).await {
+        Ok(snapshot) => (
+            StatusCode::OK,
+            [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+            prometheus_metrics::render_prometheus(&snapshot),
+        )
+            .into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
 }
 
 async fn request_auth_status(state: &AppState, headers: &HeaderMap) -> Option<sdk::AuthStatus> {
@@ -69,11 +86,38 @@ pub struct AuthLoginRequest {
     pub password: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct EmptyJsonObject {}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskRequest {
     pub prompt: Option<String>,
     pub input: Option<String>,
     pub node: Option<String>,
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskEventsResponse {
+    pub task: crate::storage::Task,
+    pub events: Vec<crate::storage::AgentEvent>,
+    pub stream_events: Vec<TaskStreamEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TaskListRequest {
+    pub status: Option<String>,
+    pub agent_id: Option<String>,
+    pub date_from: Option<i64>,
+    pub date_to: Option<i64>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskAgentFacet {
+    pub agent_id: String,
+    pub agent_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +245,11 @@ pub struct PluginChannelDeliverRequest {
     pub session_id: Option<String>,
     pub workspace: Option<String>,
     pub team_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkflowTriggerResponse {
+    pub triggered: Vec<workflow_triggers::TriggeredWorkflowRun>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -338,6 +387,46 @@ pub async fn auth_login(
     }
 }
 
+pub async fn auth_passkey_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    match AuthManager::new(state.db.clone())
+        .passkey_status(&headers)
+        .await
+    {
+        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn auth_passkey_login_start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    match AuthManager::new(state.db.clone())
+        .start_passkey_login(&headers)
+        .await
+    {
+        Ok(challenge) => (StatusCode::OK, Json(challenge)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn auth_passkey_login_finish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PasskeyFinishRequest>,
+) -> impl IntoResponse {
+    match AuthManager::new(state.db.clone())
+        .finish_passkey_login(&payload, &headers)
+        .await
+    {
+        Ok(session) => (StatusCode::OK, Json(session)).into_response(),
+        Err(error) => json_error_response(StatusCode::UNAUTHORIZED, error),
+    }
+}
+
 pub async fn auth_status(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let Some(token) = AuthManager::bearer_token(&headers) else {
         return (
@@ -393,10 +482,463 @@ pub async fn auth_reauth(
     }
 }
 
-pub async fn list_tasks(State(state): State<AppState>) -> impl IntoResponse {
-    match state.db.tasks().get_recent_tasks(50).await {
+pub async fn list_passkeys(State(state): State<AppState>) -> impl IntoResponse {
+    match AuthManager::new(state.db.clone()).list_passkeys().await {
+        Ok(passkeys) => (StatusCode::OK, Json(passkeys)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn start_passkey_registration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PasskeyRegistrationStartRequest>,
+) -> impl IntoResponse {
+    let Some(token) = AuthManager::bearer_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Missing bearer token" })),
+        )
+            .into_response();
+    };
+
+    match AuthManager::new(state.db.clone())
+        .start_passkey_registration(&token, &payload, &headers)
+        .await
+    {
+        Ok(challenge) => (StatusCode::OK, Json(challenge)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn finish_passkey_registration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PasskeyFinishRequest>,
+) -> impl IntoResponse {
+    let Some(token) = AuthManager::bearer_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Missing bearer token" })),
+        )
+            .into_response();
+    };
+
+    match AuthManager::new(state.db.clone())
+        .finish_passkey_registration(&token, &payload, &headers)
+        .await
+    {
+        Ok(passkey) => (StatusCode::OK, Json(passkey)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn start_passkey_reauth(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(_payload): Json<EmptyJsonObject>,
+) -> impl IntoResponse {
+    let Some(token) = AuthManager::bearer_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Missing bearer token" })),
+        )
+            .into_response();
+    };
+
+    match AuthManager::new(state.db.clone())
+        .start_passkey_reauth(&token, &headers)
+        .await
+    {
+        Ok(challenge) => (StatusCode::OK, Json(challenge)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn finish_passkey_reauth(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PasskeyFinishRequest>,
+) -> impl IntoResponse {
+    let Some(token) = AuthManager::bearer_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Missing bearer token" })),
+        )
+            .into_response();
+    };
+
+    match AuthManager::new(state.db.clone())
+        .finish_passkey_reauth(&token, &payload, &headers)
+        .await
+    {
+        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+        Err(error) => json_error_response(StatusCode::UNAUTHORIZED, error),
+    }
+}
+
+pub async fn remove_passkey(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(token) = AuthManager::bearer_token(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Missing bearer token" })),
+        )
+            .into_response();
+    };
+
+    match AuthManager::new(state.db.clone())
+        .delete_passkey(&token, &id)
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => json_error_response(StatusCode::NOT_FOUND, "Passkey not found"),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn list_tasks(
+    State(state): State<AppState>,
+    Query(query): Query<TaskListRequest>,
+) -> impl IntoResponse {
+    let status = match query.status.as_deref() {
+        Some("pending") => Some(crate::storage::TaskStatus::Pending),
+        Some("running") => Some(crate::storage::TaskStatus::Running),
+        Some("completed") => Some(crate::storage::TaskStatus::Completed),
+        Some("failed") => Some(crate::storage::TaskStatus::Failed),
+        Some(other) => {
+            return json_error_response(
+                StatusCode::BAD_REQUEST,
+                anyhow::anyhow!(
+                    "Invalid task status '{}'. Use pending, running, completed, or failed.",
+                    other
+                ),
+            );
+        }
+        None => None,
+    };
+
+    match state
+        .db
+        .tasks()
+        .list_tasks(&crate::storage::TaskListQuery {
+            status,
+            agent_id: query.agent_id.filter(|value| !value.trim().is_empty()),
+            date_from: query.date_from,
+            date_to: query.date_to,
+            limit: query.limit.unwrap_or(50).clamp(1, 500),
+            offset: query.offset.unwrap_or(0).max(0),
+        })
+        .await
+    {
         Ok(tasks) => (StatusCode::OK, Json(tasks)).into_response(),
         Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_task_agents(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.tasks().list_task_agents().await {
+        Ok(agents) => (
+            StatusCode::OK,
+            Json(
+                agents
+                    .into_iter()
+                    .map(|(agent_id, agent_name)| TaskAgentFacet {
+                        agent_id,
+                        agent_name,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        )
+            .into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct AgentActionQueryRequest {
+    pub action: Option<String>,
+    pub source: Option<String>,
+    pub severity: Option<String>,
+    pub date_from: Option<i64>,
+    pub date_to: Option<i64>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+pub async fn list_audit_log(
+    State(state): State<AppState>,
+    Query(query): Query<AgentActionQueryRequest>,
+) -> impl IntoResponse {
+    match state
+        .db
+        .tasks()
+        .list_agent_actions(&crate::storage::AgentActionQuery {
+            action_type: query.action.filter(|value| !value.trim().is_empty()),
+            source: query.source.filter(|value| !value.trim().is_empty()),
+            severity: query.severity.filter(|value| !value.trim().is_empty()),
+            date_from: query.date_from,
+            date_to: query.date_to,
+            limit: query.limit.unwrap_or(100).clamp(1, 500),
+            offset: query.offset.unwrap_or(0).max(0),
+        })
+        .await
+    {
+        Ok(entries) => (StatusCode::OK, Json(entries)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_task_events(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> impl IntoResponse {
+    let task_uuid = match Uuid::parse_str(&task_id) {
+        Ok(task_uuid) => task_uuid,
+        Err(_) => {
+            return json_error_response(StatusCode::BAD_REQUEST, "Invalid task id");
+        }
+    };
+
+    let task = match state.db.tasks().get_task(&task_uuid).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return json_error_response(StatusCode::NOT_FOUND, "Task not found"),
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    match state.db.tasks().get_agent_events(&task_id).await {
+        Ok(events) => (
+            StatusCode::OK,
+            Json(TaskEventsResponse {
+                stream_events: normalize_task_stream_events(&task, &events),
+                task,
+                events,
+            }),
+        )
+            .into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn stream_task_events(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> impl IntoResponse {
+    let task_uuid = match Uuid::parse_str(&task_id) {
+        Ok(task_uuid) => task_uuid,
+        Err(_) => {
+            return json_error_response(StatusCode::BAD_REQUEST, "Invalid task id");
+        }
+    };
+
+    let task = match state.db.tasks().get_task(&task_uuid).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return json_error_response(StatusCode::NOT_FOUND, "Task not found"),
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    let events = match state.db.tasks().get_agent_events(&task_id).await {
+        Ok(events) => events,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let initial = normalize_task_stream_events(&task, &events);
+    let mut rx = state.message_bus.subscribe(BusEventType::All).await;
+    let state_clone = state.clone();
+    let task_id_clone = task_id.clone();
+    let task_status = task.status.clone();
+
+    let stream = stream! {
+        for event in initial {
+            let payload = serde_json::json!({
+                "type": "task.event",
+                "task_id": task_id_clone,
+                "event": event,
+            });
+            yield Ok::<Bytes, Infallible>(Bytes::from(format!("data: {payload}\n\n")));
+        }
+
+        if matches!(task_status, crate::storage::TaskStatus::Completed | crate::storage::TaskStatus::Failed) {
+            let final_payload = final_task_stream_payload(&state_clone, &task_id).await;
+            yield Ok::<Bytes, Infallible>(Bytes::from(format!("data: {final_payload}\n\n")));
+            return;
+        }
+
+        while let Some(event) = rx.recv().await {
+            match event {
+                BusEvent::TaskStream { task_id: live_task_id, event } if live_task_id == task_id => {
+                    let payload = serde_json::json!({
+                        "type": "task.event",
+                        "task_id": live_task_id,
+                        "event": event,
+                    });
+                    yield Ok::<Bytes, Infallible>(Bytes::from(format!("data: {payload}\n\n")));
+                }
+                BusEvent::TaskCompleted { task_id: live_task_id, .. } if live_task_id == task_id => {
+                    let final_payload = final_task_stream_payload(&state_clone, &task_id).await;
+                    yield Ok::<Bytes, Infallible>(Bytes::from(format!("data: {final_payload}\n\n")));
+                    break;
+                }
+                BusEvent::TaskFailed { task_id: live_task_id, .. } if live_task_id == task_id => {
+                    let final_payload = final_task_stream_payload(&state_clone, &task_id).await;
+                    yield Ok::<Bytes, Infallible>(Bytes::from(format!("data: {final_payload}\n\n")));
+                    break;
+                }
+                _ => {}
+            }
+        }
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-store")
+        .body(Body::from_stream(stream))
+        .expect("task event stream response")
+}
+
+pub(super) fn normalize_task_stream_events(
+    task: &crate::storage::Task,
+    events: &[crate::storage::AgentEvent],
+) -> Vec<TaskStreamEvent> {
+    let mut normalized = vec![TaskStreamEvent {
+        id: format!("{}:turn_start", task.id),
+        task_id: task.id.to_string(),
+        phase: "turn_start".to_string(),
+        summary: "Task started".to_string(),
+        detail: Some(task.input.clone()),
+        raw_event_type: None,
+        tool_name: None,
+        status: Some(task.status.as_str().to_string()),
+        step_num: 0,
+        domain: None,
+        created_at: task.created_at,
+    }];
+
+    for event in events {
+        normalized.push(normalize_agent_event(event));
+    }
+
+    if matches!(
+        task.status,
+        crate::storage::TaskStatus::Completed | crate::storage::TaskStatus::Failed
+    ) {
+        normalized.push(TaskStreamEvent {
+            id: format!("{}:turn_end", task.id),
+            task_id: task.id.to_string(),
+            phase: "turn_end".to_string(),
+            summary: if task.status == crate::storage::TaskStatus::Completed {
+                "Task completed".to_string()
+            } else {
+                "Task failed".to_string()
+            },
+            detail: None,
+            raw_event_type: None,
+            tool_name: None,
+            status: Some(task.status.as_str().to_string()),
+            step_num: events.iter().map(|event| event.step_num).max().unwrap_or(0) + 1,
+            domain: None,
+            created_at: task.completed_at.unwrap_or(task.created_at),
+        });
+    }
+
+    normalized.sort_by_key(|event| (event.created_at, event.step_num));
+    normalized
+}
+
+async fn final_task_stream_payload(state: &AppState, task_id: &str) -> serde_json::Value {
+    match completion::load_completion(state, task_id).await {
+        Ok(completion::CompletionState::Done(result)) => serde_json::json!({
+            "type": "task.completed",
+            "task_id": task_id,
+            "result": result.answer,
+        }),
+        Ok(completion::CompletionState::Failed(error)) => serde_json::json!({
+            "type": "task.completed",
+            "task_id": task_id,
+            "result": error,
+        }),
+        _ => serde_json::json!({
+            "type": "task.completed",
+            "task_id": task_id,
+        }),
+    }
+}
+
+fn normalize_agent_event(event: &crate::storage::AgentEvent) -> TaskStreamEvent {
+    let payload = parse_event_payload(&event.payload);
+    let phase = match event.event_type.as_str() {
+        "tool_call" => "tool_use",
+        "observation" => "tool_result",
+        "answer" => "final_answer",
+        "error" => "error",
+        "thought" => "thought",
+        _ => "activity",
+    }
+    .to_string();
+
+    let tool_name = payload
+        .as_ref()
+        .and_then(|value| json_string(value, &["tool_name", "tool"]));
+    let detail = event_detail(&event.event_type, payload.as_ref(), &event.payload);
+    let summary = match event.event_type.as_str() {
+        "tool_call" => tool_name
+            .clone()
+            .map(|tool_name| format!("Tool call: {}", tool_name))
+            .unwrap_or_else(|| "Tool call".to_string()),
+        "observation" => "Tool result".to_string(),
+        "answer" => "Final answer".to_string(),
+        "error" => "Execution error".to_string(),
+        "thought" => "Reasoning".to_string(),
+        other => other.replace('_', " "),
+    };
+
+    TaskStreamEvent {
+        id: event.id.clone(),
+        task_id: event.task_id.clone(),
+        phase,
+        summary,
+        detail,
+        raw_event_type: Some(event.event_type.clone()),
+        tool_name,
+        status: None,
+        step_num: event.step_num,
+        domain: event.domain.clone(),
+        created_at: event.created_at,
+    }
+}
+
+fn parse_event_payload(payload: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(payload).ok()
+}
+
+fn json_string(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = payload.get(*key).and_then(|value| value.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn event_detail(
+    event_type: &str,
+    payload: Option<&serde_json::Value>,
+    raw_payload: &str,
+) -> Option<String> {
+    let payload = payload?;
+    match event_type {
+        "thought" => json_string(payload, &["content"]),
+        "tool_call" => json_string(payload, &["tool_args"]),
+        "observation" => json_string(payload, &["observation"]),
+        "answer" => json_string(payload, &["answer"]),
+        "error" => json_string(payload, &["error"]),
+        _ => Some(raw_payload.to_string()),
     }
 }
 
@@ -870,6 +1412,83 @@ pub async fn run_workflow(
         .into_response()
 }
 
+pub async fn invoke_workflow_webhook(
+    State(_state): State<AppState>,
+    Path(webhook_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let config = match Config::load_or_create() {
+        Ok(config) => config,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    let webhook_exists = match workflow_triggers::webhook_binding_exists(&repo, &webhook_id) {
+        Ok(exists) => exists,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    if !webhook_exists {
+        return json_error_response(
+            StatusCode::NOT_FOUND,
+            anyhow::anyhow!("No workflow webhook '{}' is configured", webhook_id),
+        );
+    }
+
+    let provided_secret = headers
+        .get("x-rove-webhook-secret")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let db = match crate::storage::Database::new(&database_path(&config)).await {
+        Ok(db) => db,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let payload = String::from_utf8_lossy(&body);
+    let input = if payload.trim().is_empty() {
+        format!(
+            "Webhook '{}' triggered.\nContent-Type: {}",
+            webhook_id, content_type
+        )
+    } else {
+        format!(
+            "Webhook '{}' triggered.\nContent-Type: {}\n\n{}",
+            webhook_id, content_type, payload
+        )
+    };
+
+    match workflow_triggers::trigger_matching_webhook_workflows(
+        &repo,
+        &db,
+        &config,
+        &webhook_id,
+        provided_secret,
+        &input,
+    )
+    .await
+    {
+        Ok(triggered) if !triggered.is_empty() => (
+            StatusCode::ACCEPTED,
+            Json(WorkflowTriggerResponse { triggered }),
+        )
+            .into_response(),
+        Ok(_) => json_error_response(
+            StatusCode::UNAUTHORIZED,
+            anyhow::anyhow!("Webhook secret did not match any enabled workflow binding"),
+        ),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
 pub async fn resume_workflow_run(
     State(state): State<AppState>,
     Path(run_id): Path<String>,
@@ -900,6 +1519,40 @@ pub async fn resume_workflow_run(
         }),
     )
         .into_response()
+}
+
+pub async fn cancel_workflow_run(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> impl IntoResponse {
+    match state
+        .db
+        .agent_runs()
+        .request_workflow_run_cancel(&run_id)
+        .await
+    {
+        Ok(true) => (
+            StatusCode::ACCEPTED,
+            Json(ExecuteResponse {
+                success: true,
+                task_id: None,
+                status: "cancel_requested".to_string(),
+                answer: None,
+                provider: None,
+                duration_ms: None,
+                message: Some(run_id),
+            }),
+        )
+            .into_response(),
+        Ok(false) => json_error_response(
+            StatusCode::NOT_FOUND,
+            anyhow::anyhow!(
+                "Workflow run '{}' was not found or is already settled",
+                run_id
+            ),
+        ),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
 }
 
 pub async fn get_config() -> impl IntoResponse {
@@ -1055,8 +1708,9 @@ fn parse_profile(value: &str) -> anyhow::Result<crate::config::DaemonProfile> {
     match value.trim().to_ascii_lowercase().as_str() {
         "desktop" => Ok(crate::config::DaemonProfile::Desktop),
         "headless" => Ok(crate::config::DaemonProfile::Headless),
+        "edge" => Ok(crate::config::DaemonProfile::Edge),
         other => Err(anyhow::anyhow!(
-            "Invalid daemon profile '{}'. Use desktop or headless.",
+            "Invalid daemon profile '{}'. Use desktop, headless, or edge.",
             other
         )),
     }
@@ -1307,9 +1961,14 @@ pub async fn activate_voice_output(
     }
 }
 
-pub async fn test_voice_input() -> impl IntoResponse {
+pub async fn test_voice_input(
+    payload: Option<Json<sdk::VoiceInputTestRequest>>,
+) -> impl IntoResponse {
     match Config::load_or_create() {
-        Ok(config) => match voice_surface::VoiceManager::new(config).test_input().await {
+        Ok(config) => match voice_surface::VoiceManager::new(config)
+            .test_input(payload.map(|value| value.0).unwrap_or_default())
+            .await
+        {
             Ok(result) => (StatusCode::OK, Json(result)).into_response(),
             Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
         },
@@ -1474,6 +2133,176 @@ pub async fn ingest_memory_note(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct EpisodicBrowseQuery {
+    pub offset: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct MemoryDeleteQuery {
+    pub expected_content_hash: Option<String>,
+    pub actor: Option<String>,
+    pub source_task_id: Option<String>,
+}
+
+pub async fn list_episodic_memories(Query(query): Query<EpisodicBrowseQuery>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let offset = query.offset.unwrap_or(0).max(0);
+            let limit = query.limit.unwrap_or(50).clamp(1, 200);
+            match memory_surface::MemoryManager::new(config)
+                .list_episodic(offset, limit)
+                .await
+            {
+                Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+                Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+            }
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_memory_facts() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .list_facts()
+            .await
+        {
+            Ok(facts) => (StatusCode::OK, Json(facts)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn episodic_memory_history(Path(id): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .episodic_history(&id)
+            .await
+        {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn fact_memory_history(Path(key): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .fact_history(&key)
+            .await
+        {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn redact_episodic_memory(
+    Path(id): Path<String>,
+    Json(payload): Json<memory_surface::MemoryRedactRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .redact_episodic(&id, payload)
+            .await
+        {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn redact_memory_fact(
+    Path(key): Path<String>,
+    Json(payload): Json<memory_surface::MemoryRedactRequest>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .redact_fact(&key, payload)
+            .await
+        {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn delete_episodic_memory(
+    Path(id): Path<String>,
+    Query(query): Query<MemoryDeleteQuery>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .delete_episodic(
+                &id,
+                memory_surface::MemoryDeleteRequest {
+                    expected_content_hash: query.expected_content_hash,
+                    actor: query.actor,
+                    source_task_id: query.source_task_id,
+                },
+            )
+            .await
+        {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn delete_memory_fact(
+    Path(key): Path<String>,
+    Query(query): Query<MemoryDeleteQuery>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match memory_surface::MemoryManager::new(config)
+            .delete_fact(
+                &key,
+                memory_surface::MemoryDeleteRequest {
+                    expected_content_hash: query.expected_content_hash,
+                    actor: query.actor,
+                    source_task_id: query.source_task_id,
+                },
+            )
+            .await
+        {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn hook_status() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = crate::hooks::HookManager::discover(&config);
+            (StatusCode::OK, Json(manager.status().await)).into_response()
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn inspect_hook(Path(name): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = crate::hooks::HookManager::discover(&config);
+            match manager.inspect(&name).await {
+                Some(hook) => (StatusCode::OK, Json(hook)).into_response(),
+                None => json_error_response(StatusCode::NOT_FOUND, "Hook not found"),
+            }
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn get_approval_mode() -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => (
@@ -1567,8 +2396,30 @@ pub async fn create_task(
 
     let (input, implicit_node) = extract_task_target(&raw_input);
     let target_node = payload.node.or(implicit_node);
+    let execution_profile = if let Some(agent_id) = payload
+        .agent_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let repo = match crate::system::specs::SpecRepository::new() {
+            Ok(repo) => repo,
+            Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        };
+        match crate::cli::agents::execution_profile_for_agent(&repo, agent_id) {
+            Ok(profile) => Some(profile),
+            Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
+        }
+    } else {
+        None
+    };
 
     if let Some(node) = target_node.filter(|value| !value.trim().is_empty()) {
+        if execution_profile.is_some() {
+            return json_error_response(
+                StatusCode::BAD_REQUEST,
+                anyhow::anyhow!("`agent_id` is not supported for remote node task submission yet"),
+            );
+        }
         match Config::load_or_create() {
             Ok(config) => match RemoteManager::new(config)
                 .send_with_options(
@@ -1598,7 +2449,11 @@ pub async fn create_task(
         }
     }
 
-    match state.gateway.submit_webui(&input, None).await {
+    match state
+        .gateway
+        .submit_webui(&input, None, execution_profile.as_ref())
+        .await
+    {
         Ok(task_id) => (
             StatusCode::ACCEPTED,
             Json(serde_json::json!({
@@ -1616,6 +2471,7 @@ pub struct ExecuteRequest {
     pub input: Option<String>,
     pub task: Option<String>,
     pub risk_tier: Option<u8>,
+    pub agent_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1650,7 +2506,28 @@ pub async fn execute_task(
         return invalid_request("Request must include a non-empty `input` or `task` field");
     };
 
-    let task_id = match state.gateway.submit_webui(&input, None).await {
+    let execution_profile = if let Some(agent_id) = payload
+        .agent_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let repo = match crate::system::specs::SpecRepository::new() {
+            Ok(repo) => repo,
+            Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        };
+        match crate::cli::agents::execution_profile_for_agent(&repo, agent_id) {
+            Ok(profile) => Some(profile),
+            Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
+        }
+    } else {
+        None
+    };
+
+    let task_id = match state
+        .gateway
+        .submit_webui(&input, None, execution_profile.as_ref())
+        .await
+    {
         Ok(task_id) => task_id,
         Err(error) => return internal_submission_error(error),
     };
@@ -1742,6 +2619,7 @@ async fn accept_remote_planned_task(
             &task_id_str,
             &input,
             source.clone(),
+            None,
             &domain,
             "simple",
             false,
@@ -2705,13 +3583,15 @@ async fn current_node_load(state: &AppState) -> anyhow::Result<NodeLoadSnapshot>
         running_tasks: queue.running,
         recent_failures: outcomes.recent_failures,
         recent_successes: outcomes.recent_successes,
+        cpu_load_percent: crate::platform::cpu_load_percent(),
+        available_ram_mb: Some(crate::platform::available_ram() / (1024 * 1024)),
         recent_avg_duration_ms: outcomes.recent_avg_duration_ms,
     })
 }
 
 pub async fn remote_nodes() -> impl IntoResponse {
     match Config::load_or_create() {
-        Ok(config) => match RemoteManager::new(config).nodes() {
+        Ok(config) => match RemoteManager::new(config).nodes_with_status().await {
             Ok(nodes) => (StatusCode::OK, Json(nodes)).into_response(),
             Err(error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

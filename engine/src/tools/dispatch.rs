@@ -22,11 +22,16 @@ impl ToolRegistry {
         }
 
         match name {
+            "web_fetch" => self.dispatch_web_fetch(&args).await,
             "read_file" => self.dispatch_read_file(&args).await,
             "write_file" => self.dispatch_write_file(&args).await,
+            "patch_file" => self.dispatch_patch_file(&args).await,
+            "append_to_file" => self.dispatch_append_to_file(&args).await,
             "delete_file" => self.dispatch_delete_file(&args).await,
             "list_dir" => self.dispatch_list_dir(&args).await,
             "file_exists" => self.dispatch_file_exists(&args).await,
+            "glob_files" => self.dispatch_glob_files(&args).await,
+            "grep_files" => self.dispatch_grep_files(&args).await,
             "run_command" => self.dispatch_run_command(&args).await,
             "capture_screen" => self.dispatch_capture_screen(&args).await,
             "browse_url" => self.dispatch_browse_url(&args).await,
@@ -72,6 +77,34 @@ impl ToolRegistry {
         }
     }
 
+    async fn dispatch_web_fetch(&self, args: &serde_json::Value) -> String {
+        let url = args
+            .get("url")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if url.is_empty() {
+            return "ERROR: web_fetch requires a non-empty url".to_string();
+        }
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return "ERROR: web_fetch only supports http:// and https:// URLs".to_string();
+        }
+        let max_chars = args
+            .get("max_chars")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(20_000) as usize;
+
+        match crate::system::knowledge::fetch_url_text(url, max_chars).await {
+            Ok(result) => serde_json::json!({
+                "url": result.url,
+                "status": result.status,
+                "content_type": result.content_type,
+                "content": result.content,
+            })
+            .to_string(),
+            Err(error) => format!("ERROR: {}", error),
+        }
+    }
+
     async fn dispatch_write_file(&self, args: &serde_json::Value) -> String {
         let Some(fs) = &self.fs else {
             return "ERROR: write_file tool is not enabled".to_string();
@@ -88,6 +121,46 @@ impl ToolRegistry {
 
         match fs.write_file(path, content).await {
             Ok(message) => message,
+            Err(error) => format!("ERROR: {}", error),
+        }
+    }
+
+    async fn dispatch_append_to_file(&self, args: &serde_json::Value) -> String {
+        let Some(fs) = &self.fs else {
+            return "ERROR: append_to_file tool is not enabled".to_string();
+        };
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        match fs.append_to_file(path, content).await {
+            Ok(msg) => msg,
+            Err(error) => format!("ERROR: {}", error),
+        }
+    }
+
+    async fn dispatch_patch_file(&self, args: &serde_json::Value) -> String {
+        let Some(fs) = &self.fs else {
+            return "ERROR: patch_file tool is not enabled".to_string();
+        };
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let old = args
+            .get("old_string")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let new = args
+            .get("new_string")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        match fs.patch_file(path, old, new).await {
+            Ok(msg) => msg,
             Err(error) => format!("ERROR: {}", error),
         }
     }
@@ -135,6 +208,52 @@ impl ToolRegistry {
         match fs.file_exists(path).await {
             Ok(true) => "true".to_string(),
             Ok(false) => "false".to_string(),
+            Err(error) => format!("ERROR: {}", error),
+        }
+    }
+
+    async fn dispatch_glob_files(&self, args: &serde_json::Value) -> String {
+        let Some(fs) = &self.fs else {
+            return "ERROR: glob_files tool is not enabled".to_string();
+        };
+
+        let pattern = args
+            .get("pattern")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let path = args.get("path").and_then(|value| value.as_str());
+        let max_results = args
+            .get("max_results")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(200) as usize;
+
+        match fs.glob_files(pattern, path, max_results).await {
+            Ok(output) => output,
+            Err(error) => format!("ERROR: {}", error),
+        }
+    }
+
+    async fn dispatch_grep_files(&self, args: &serde_json::Value) -> String {
+        let Some(fs) = &self.fs else {
+            return "ERROR: grep_files tool is not enabled".to_string();
+        };
+
+        let pattern = args
+            .get("pattern")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let path = args.get("path").and_then(|value| value.as_str());
+        let file_pattern = args.get("file_pattern").and_then(|value| value.as_str());
+        let max_results = args
+            .get("max_results")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(100) as usize;
+
+        match fs
+            .grep_files(pattern, path, file_pattern, max_results)
+            .await
+        {
+            Ok(output) => output,
             Err(error) => format!("ERROR: {}", error),
         }
     }

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use sdk::{
-    VoiceEngineInstallRequest, VoiceEngineKind, VoiceOutputTestRequest, VoicePolicyControls,
+    VoiceEngineInstallRequest, VoiceEngineKind, VoiceInputTestRequest, VoiceOutputTestRequest,
+    VoicePolicyControls,
 };
 
 use crate::config::Config;
@@ -44,8 +45,10 @@ pub async fn handle_voice(action: VoiceAction) -> Result<()> {
         VoiceAction::Devices { action } => match action {
             VoiceDeviceAction::List => print_devices(&manager.status().await?),
         },
-        VoiceAction::TestInput => {
-            let result = manager.test_input().await?;
+        VoiceAction::TestInput { audio_path } => {
+            let result = manager
+                .test_input(VoiceInputTestRequest { audio_path })
+                .await?;
             println!(
                 "Input test [{}]: {}",
                 result.engine.as_str(),

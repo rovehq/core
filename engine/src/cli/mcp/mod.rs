@@ -1,4 +1,5 @@
 mod scaffold;
+mod serve;
 mod servers;
 mod templates;
 
@@ -12,6 +13,7 @@ use crate::config::Config;
 pub async fn handle(action: McpAction, config: &Config) -> Result<()> {
     match action {
         McpAction::List => servers::list_servers(config).await,
+        McpAction::Serve => serve::serve_stdio(config).await,
         McpAction::Show { name } => servers::show_server(config, &name).await,
         McpAction::Install { source } => servers::install_package(config, &source).await,
         McpAction::Upgrade { source } => servers::upgrade_package(config, &source).await,

@@ -1,0 +1,560 @@
+#[derive(Clone)]
+pub struct Cmd {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub args_hint: &'static str,
+    pub subcommands: &'static [Cmd],
+}
+
+pub const COMMANDS: &[Cmd] = &[
+    Cmd {
+        name: "task",
+        description: "Execute a task",
+        args_hint: "<prompt>",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "status",
+        description: "Show daemon and env status",
+        args_hint: "",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "history",
+        description: "Show recent task history",
+        args_hint: "",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "replay",
+        description: "Replay a task step-by-step",
+        args_hint: "<task-id>",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "doctor",
+        description: "Run system diagnostics",
+        args_hint: "",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "model",
+        description: "LLM model/provider management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List configured providers",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "setup",
+                description: "Interactively add a provider",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "pull",
+                description: "Download a model",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "memory",
+        description: "Graph-first memory management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "status",
+                description: "Show memory mode and health",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "query",
+                description: "Query stored memories",
+                args_hint: "<question>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "ingest",
+                description: "Manually ingest a note",
+                args_hint: "<text>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "graph inspect",
+                description: "Inspect the memory graph",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "backfill",
+                description: "Backfill embeddings",
+                args_hint: "",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "agent",
+        description: "Manage reusable agent specs",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List saved agents",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "show",
+                description: "Show one agent",
+                args_hint: "<id>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "run",
+                description: "Run a saved agent once",
+                args_hint: "<id>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "create",
+                description: "Create a new agent",
+                args_hint: "<id>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "enable",
+                description: "Enable an agent",
+                args_hint: "<id>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "disable",
+                description: "Disable an agent",
+                args_hint: "<id>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "runs",
+                description: "Show recent agent runs",
+                args_hint: "",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "workflow",
+        description: "Manage reusable workflow specs",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List saved workflows",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "show",
+                description: "Show one workflow",
+                args_hint: "<id>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "run",
+                description: "Run a workflow once",
+                args_hint: "<id>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "runs",
+                description: "Show recent workflow runs",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "enable",
+                description: "Enable a workflow",
+                args_hint: "<id>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "disable",
+                description: "Disable a workflow",
+                args_hint: "<id>",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "schedule",
+        description: "Recurring background tasks",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List schedules",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "add",
+                description: "Add a recurring task",
+                args_hint: "<name> --every-minutes <n> <prompt>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "pause",
+                description: "Pause a schedule",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "resume",
+                description: "Resume a schedule",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "remove",
+                description: "Remove a schedule",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "config",
+        description: "Configuration management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "show",
+                description: "Show current config",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "reload",
+                description: "Reload config from disk",
+                args_hint: "",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "secrets",
+        description: "Secret management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List secret slots",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "set",
+                description: "Store a secret",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "remove",
+                description: "Remove a secret",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "approvals",
+        description: "Approval mode and allowlists",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "mode show",
+                description: "Show current approval mode",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "rules list",
+                description: "List allowlist rules",
+                args_hint: "",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "brain",
+        description: "Local brain management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "status",
+                description: "Show local brain status",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "list",
+                description: "List installed brains",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "start",
+                description: "Start llama-server",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "stop",
+                description: "Stop llama-server",
+                args_hint: "",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "knowledge",
+        description: "Knowledge base management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List knowledge documents",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "search",
+                description: "Search knowledge base",
+                args_hint: "<query>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "stats",
+                description: "Show knowledge base stats",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "ingest file",
+                description: "Ingest a file",
+                args_hint: "<path>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "ingest folder",
+                description: "Ingest a folder",
+                args_hint: "<path>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "ingest url",
+                description: "Ingest a URL",
+                args_hint: "<url>",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "plugin",
+        description: "Plugin management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List installed plugins",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "install",
+                description: "Install a plugin",
+                args_hint: "<source>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "remove",
+                description: "Remove a plugin",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "channel",
+        description: "Runtime channel management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List channels",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "telegram status",
+                description: "Telegram status",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "telegram setup",
+                description: "Configure Telegram",
+                args_hint: "",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "remote",
+        description: "Remote node and mesh management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "status",
+                description: "Show remote service status",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "node list",
+                description: "List paired nodes",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "node pair",
+                description: "Pair with a remote node",
+                args_hint: "<target>",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "service",
+        description: "Optional service management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List services",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "enable",
+                description: "Enable a service",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "disable",
+                description: "Disable a service",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "policy",
+        description: "Policy/steering management",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "list",
+                description: "List loaded policy files",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "status",
+                description: "Show active policy stack",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "enable",
+                description: "Enable a policy",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "disable",
+                description: "Disable a policy",
+                args_hint: "<name>",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "logs",
+        description: "Daemon log access",
+        args_hint: "",
+        subcommands: &[
+            Cmd {
+                name: "tail",
+                description: "Show recent log lines",
+                args_hint: "",
+                subcommands: &[],
+            },
+            Cmd {
+                name: "follow",
+                description: "Follow the log file",
+                args_hint: "",
+                subcommands: &[],
+            },
+        ],
+    },
+    Cmd {
+        name: "security",
+        description: "Show security posture",
+        args_hint: "",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "start",
+        description: "Start the daemon in background",
+        args_hint: "",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "stop",
+        description: "Stop the running daemon",
+        args_hint: "",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "update",
+        description: "Update Rove to latest version",
+        args_hint: "",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "setup",
+        description: "Interactively configure Rove",
+        args_hint: "",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "help",
+        description: "Show this help",
+        args_hint: "",
+        subcommands: &[],
+    },
+    Cmd {
+        name: "quit",
+        description: "Exit interactive mode",
+        args_hint: "",
+        subcommands: &[],
+    },
+];

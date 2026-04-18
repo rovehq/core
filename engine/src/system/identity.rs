@@ -175,8 +175,10 @@ fn default_node_name() -> String {
 }
 
 fn identity_root(config: &Config) -> PathBuf {
-    if config.daemon.profile == DaemonProfile::Headless
-        && config.core.data_dir == crate::config::default_data_dir()
+    if matches!(
+        config.daemon.profile,
+        DaemonProfile::Headless | DaemonProfile::Edge
+    ) && config.core.data_dir == crate::config::default_data_dir()
     {
         return PathBuf::from("/var/lib/rove");
     }

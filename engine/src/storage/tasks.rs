@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use std::time::{SystemTime, UNIX_EPOCH};
+use sdk::{TaskExecutionProfile, TaskSource};
 
 /// Task status enum
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,6 +27,16 @@ impl TaskStatus {
             TaskStatus::Running => "running",
             TaskStatus::Completed => "completed",
             TaskStatus::Failed => "failed",
+        }
+    }
+
+    pub fn parse_str(value: &str) -> Self {
+        match value {
+            "pending" => TaskStatus::Pending,
+            "running" => TaskStatus::Running,
+            "completed" => TaskStatus::Completed,
+            "failed" => TaskStatus::Failed,
+            _ => TaskStatus::Failed,
         }
     }
 }
@@ -62,6 +73,11 @@ impl StepType {
 pub struct Task {
     pub id: uuid::Uuid,
     pub input: String,
+    pub source: String,
+    pub agent_id: Option<String>,
+    pub agent_name: Option<String>,
+    pub worker_preset_id: Option<String>,
+    pub worker_preset_name: Option<String>,
     pub status: TaskStatus,
     pub provider_used: Option<String>,
     pub duration_ms: Option<i64>,
@@ -94,6 +110,21 @@ pub struct AgentEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentActionRecord {
+    pub id: String,
+    pub task_id: String,
+    pub action_type: String,
+    pub tool_name: String,
+    pub args_hash: String,
+    pub risk_tier: i32,
+    pub severity: String,
+    pub approved_by: String,
+    pub result_summary: String,
+    pub source: Option<String>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DagHistorySummary {
     pub task_id: String,
     pub status: TaskStatus,
@@ -116,6 +147,27 @@ pub struct TaskOutcomeStats {
     pub recent_avg_duration_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TaskListQuery {
+    pub status: Option<TaskStatus>,
+    pub agent_id: Option<String>,
+    pub date_from: Option<i64>,
+    pub date_to: Option<i64>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentActionQuery {
+    pub action_type: Option<String>,
+    pub source: Option<String>,
+    pub severity: Option<String>,
+    pub date_from: Option<i64>,
+    pub date_to: Option<i64>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
 impl TaskRepository {
     /// Create a new task repository
     pub fn new(pool: SqlitePool) -> Self {
@@ -126,17 +178,44 @@ impl TaskRepository {
     ///
     /// Requirements: 12.4, 12.10
     pub async fn create_task(&self, id: &uuid::Uuid, input: &str) -> Result<Task> {
+        self.create_task_with_metadata(id, input, None, None).await
+    }
+
+    pub async fn create_task_with_metadata(
+        &self,
+        id: &uuid::Uuid,
+        input: &str,
+        source: Option<&TaskSource>,
+        execution_profile: Option<&TaskExecutionProfile>,
+    ) -> Result<Task> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
 
         let status = TaskStatus::Pending.as_str();
         let id_str = id.to_string();
+        let source = source
+            .map(TaskSource::as_str)
+            .unwrap_or_else(|| "cli".to_string());
+        let (agent_id, agent_name, worker_preset_id, worker_preset_name) =
+            execution_profile.map_or((None, None, None, None), |profile| {
+                (
+                    profile.agent_id.clone(),
+                    profile.agent_name.clone(),
+                    profile.worker_preset_id.clone(),
+                    profile.worker_preset_name.clone(),
+                )
+            });
 
         // Use parameterized query to prevent SQL injection
         sqlx::query(
-            "INSERT OR IGNORE INTO tasks (id, input, status, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO tasks (id, input, source, agent_id, agent_name, worker_preset_id, worker_preset_name, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id_str)
         .bind(input)
+        .bind(&source)
+        .bind(&agent_id)
+        .bind(&agent_name)
+        .bind(&worker_preset_id)
+        .bind(&worker_preset_name)
         .bind(status)
         .bind(now)
         .execute(&self.pool)
@@ -146,6 +225,11 @@ impl TaskRepository {
         Ok(Task {
             id: *id,
             input: input.to_string(),
+            source,
+            agent_id,
+            agent_name,
+            worker_preset_id,
+            worker_preset_name,
             status: TaskStatus::Pending,
             provider_used: None,
             duration_ms: None,
@@ -226,7 +310,7 @@ impl TaskRepository {
     pub async fn get_task(&self, task_id: &uuid::Uuid) -> Result<Option<Task>> {
         let task_id_str = task_id.to_string();
         let row = sqlx::query(
-            "SELECT id, input, status, provider_used, duration_ms, created_at, completed_at FROM tasks WHERE id = ?"
+            "SELECT id, input, source, agent_id, agent_name, worker_preset_id, worker_preset_name, status, provider_used, duration_ms, created_at, completed_at FROM tasks WHERE id = ?"
         )
         .bind(&task_id_str)
         .fetch_optional(&self.pool)
@@ -234,22 +318,7 @@ impl TaskRepository {
         .context("Failed to fetch task")?;
 
         Ok(row.map(|r| {
-            let id_str: String = r.get("id");
-            Task {
-                id: uuid::Uuid::parse_str(&id_str).unwrap_or_else(|_| uuid::Uuid::nil()),
-                input: r.get("input"),
-                status: match r.get::<String, _>("status").as_str() {
-                    "pending" => TaskStatus::Pending,
-                    "running" => TaskStatus::Running,
-                    "completed" => TaskStatus::Completed,
-                    "failed" => TaskStatus::Failed,
-                    _ => TaskStatus::Failed,
-                },
-                provider_used: r.get("provider_used"),
-                duration_ms: r.get("duration_ms"),
-                created_at: r.get("created_at"),
-                completed_at: r.get("completed_at"),
-            }
+            map_task_row(r)
         }))
     }
 
@@ -257,33 +326,56 @@ impl TaskRepository {
     ///
     /// Requirements: 12.4, 12.10
     pub async fn get_recent_tasks(&self, limit: i64) -> Result<Vec<Task>> {
+        self.list_tasks(&TaskListQuery {
+            limit,
+            ..TaskListQuery::default()
+        })
+        .await
+    }
+
+    pub async fn list_tasks(&self, query: &TaskListQuery) -> Result<Vec<Task>> {
         let rows = sqlx::query(
-            "SELECT id, input, status, provider_used, duration_ms, created_at, completed_at FROM tasks ORDER BY created_at DESC LIMIT ?"
+            r#"SELECT id, input, source, agent_id, agent_name, worker_preset_id, worker_preset_name,
+                      status, provider_used, duration_ms, created_at, completed_at
+               FROM tasks
+               WHERE (?1 IS NULL OR status = ?1)
+                 AND (?2 IS NULL OR agent_id = ?2)
+                 AND (?3 IS NULL OR created_at >= ?3)
+                 AND (?4 IS NULL OR created_at <= ?4)
+               ORDER BY created_at DESC
+               LIMIT ?5 OFFSET ?6"#,
         )
-        .bind(limit)
+        .bind(query.status.as_ref().map(TaskStatus::as_str))
+        .bind(query.agent_id.as_deref())
+        .bind(query.date_from)
+        .bind(query.date_to)
+        .bind(query.limit.max(1))
+        .bind(query.offset.max(0))
         .fetch_all(&self.pool)
         .await
-        .context("Failed to fetch recent tasks")?;
+        .context("Failed to list tasks")?;
+
+        Ok(rows.into_iter().map(map_task_row).collect())
+    }
+
+    pub async fn list_task_agents(&self) -> Result<Vec<(String, Option<String>)>> {
+        let rows = sqlx::query(
+            r#"SELECT DISTINCT agent_id, agent_name
+               FROM tasks
+               WHERE agent_id IS NOT NULL AND TRIM(agent_id) != ''
+               ORDER BY agent_name ASC, agent_id ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to list task agents")?;
 
         Ok(rows
             .into_iter()
-            .map(|r| {
-                let id_str: String = r.get("id");
-                Task {
-                    id: uuid::Uuid::parse_str(&id_str).unwrap_or_else(|_| uuid::Uuid::nil()),
-                    input: r.get("input"),
-                    status: match r.get::<String, _>("status").as_str() {
-                        "pending" => TaskStatus::Pending,
-                        "running" => TaskStatus::Running,
-                        "completed" => TaskStatus::Completed,
-                        "failed" => TaskStatus::Failed,
-                        _ => TaskStatus::Failed,
-                    },
-                    provider_used: r.get("provider_used"),
-                    duration_ms: r.get("duration_ms"),
-                    created_at: r.get("created_at"),
-                    completed_at: r.get("completed_at"),
-                }
+            .map(|row| {
+                (
+                    row.get::<String, _>("agent_id"),
+                    row.get::<Option<String>, _>("agent_name"),
+                )
             })
             .collect())
     }
@@ -321,6 +413,64 @@ impl TaskRepository {
             recent_successes,
             recent_avg_duration_ms: (duration_count > 0).then_some(duration_total / duration_count),
         })
+    }
+
+    pub async fn list_agent_actions(&self, query: &AgentActionQuery) -> Result<Vec<AgentActionRecord>> {
+        let limit = if query.limit <= 0 { 100 } else { query.limit };
+        let offset = query.offset.max(0);
+        let rows = sqlx::query(
+            r#"SELECT aa.id,
+                      aa.task_id,
+                      aa.action_type,
+                      aa.tool_name,
+                      aa.args_hash,
+                      aa.risk_tier,
+                      aa.approved_by,
+                      aa.result_summary,
+                      aa.timestamp,
+                      t.source
+               FROM agent_actions aa
+               LEFT JOIN tasks t ON t.id = aa.task_id
+               WHERE (?1 IS NULL OR aa.action_type = ?1)
+                 AND (?2 IS NULL OR t.source = ?2)
+                 AND (
+                        ?3 IS NULL
+                        OR (?3 = 'low' AND aa.risk_tier <= 0)
+                        OR (?3 = 'medium' AND aa.risk_tier = 1)
+                        OR (?3 = 'high' AND aa.risk_tier >= 2)
+                     )
+                 AND (?4 IS NULL OR aa.timestamp >= ?4)
+                 AND (?5 IS NULL OR aa.timestamp <= ?5)
+               ORDER BY aa.timestamp DESC
+               LIMIT ?6 OFFSET ?7"#,
+        )
+        .bind(query.action_type.as_deref())
+        .bind(query.source.as_deref())
+        .bind(query.severity.as_deref())
+        .bind(query.date_from)
+        .bind(query.date_to)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to list agent action audit log")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| AgentActionRecord {
+                id: row.get("id"),
+                task_id: row.get("task_id"),
+                action_type: row.get("action_type"),
+                tool_name: row.get("tool_name"),
+                args_hash: row.get("args_hash"),
+                risk_tier: row.get("risk_tier"),
+                severity: severity_label(row.get("risk_tier")),
+                approved_by: row.get("approved_by"),
+                result_summary: row.get("result_summary"),
+                source: row.get("source"),
+                timestamp: row.get("timestamp"),
+            })
+            .collect())
     }
 
     /// Add a step to a task
@@ -618,9 +768,235 @@ impl TaskRepository {
     }
 }
 
+fn map_task_row(r: sqlx::sqlite::SqliteRow) -> Task {
+    let id_str: String = r.get("id");
+    Task {
+        id: uuid::Uuid::parse_str(&id_str).unwrap_or_else(|_| uuid::Uuid::nil()),
+        input: r.get("input"),
+        source: r.get("source"),
+        agent_id: r.get("agent_id"),
+        agent_name: r.get("agent_name"),
+        worker_preset_id: r.get("worker_preset_id"),
+        worker_preset_name: r.get("worker_preset_name"),
+        status: TaskStatus::parse_str(r.get::<String, _>("status").as_str()),
+        provider_used: r.get("provider_used"),
+        duration_ms: r.get("duration_ms"),
+        created_at: r.get("created_at"),
+        completed_at: r.get("completed_at"),
+    }
+}
+
 fn parse_answer_payload(payload: &str) -> Option<String> {
     let json: serde_json::Value = serde_json::from_str(payload).ok()?;
     json.get("answer")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
+}
+
+fn severity_label(risk_tier: i32) -> String {
+    if risk_tier >= 2 {
+        "high".to_string()
+    } else if risk_tier == 1 {
+        "medium".to_string()
+    } else {
+        "low".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::Database;
+    use tempfile::TempDir;
+
+    fn test_profile(agent_id: &str, agent_name: &str) -> TaskExecutionProfile {
+        TaskExecutionProfile {
+            agent_id: Some(agent_id.to_string()),
+            agent_name: Some(agent_name.to_string()),
+            worker_preset_id: Some("worker.research".to_string()),
+            worker_preset_name: Some("Research Worker".to_string()),
+            purpose: Some("test".to_string()),
+            instructions: "Be precise".to_string(),
+            allowed_tools: vec!["read_file".to_string()],
+            output_contract: None,
+            max_iterations: Some(4),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_task_with_metadata_persists_agent_fields() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::new(&temp_dir.path().join("tasks.db"))
+            .await
+            .unwrap();
+        let repo = db.tasks();
+        let task_id = uuid::Uuid::new_v4();
+        let profile = test_profile("agent.release", "Release Agent");
+
+        let created = repo
+            .create_task_with_metadata(&task_id, "ship release", Some(&TaskSource::WebUI), Some(&profile))
+            .await
+            .unwrap();
+
+        assert_eq!(created.source, "webui");
+        assert_eq!(created.agent_id.as_deref(), Some("agent.release"));
+        assert_eq!(created.agent_name.as_deref(), Some("Release Agent"));
+        assert_eq!(created.worker_preset_id.as_deref(), Some("worker.research"));
+        assert_eq!(created.worker_preset_name.as_deref(), Some("Research Worker"));
+
+        let persisted = repo.get_task(&task_id).await.unwrap().unwrap();
+        assert_eq!(persisted.source, "webui");
+        assert_eq!(persisted.agent_id, created.agent_id);
+        assert_eq!(persisted.agent_name, created.agent_name);
+        assert_eq!(persisted.worker_preset_id, created.worker_preset_id);
+        assert_eq!(persisted.worker_preset_name, created.worker_preset_name);
+    }
+
+    #[tokio::test]
+    async fn list_agent_actions_filters_by_source_and_severity() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::new(&temp_dir.path().join("audit.db"))
+            .await
+            .unwrap();
+        let repo = db.tasks();
+        let task_id = uuid::Uuid::new_v4();
+        repo.create_task_with_metadata(&task_id, "audit me", Some(&TaskSource::WebUI), None)
+            .await
+            .unwrap();
+        repo.insert_agent_action(
+            &task_id.to_string(),
+            "tool_execution",
+            "write_file",
+            "hash",
+            2,
+            "registry",
+            "wrote file",
+        )
+        .await
+        .unwrap();
+
+        let records = repo
+            .list_agent_actions(&AgentActionQuery {
+                source: Some("webui".to_string()),
+                severity: Some("high".to_string()),
+                limit: 20,
+                ..AgentActionQuery::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tool_name, "write_file");
+        assert_eq!(records[0].severity, "high");
+        assert_eq!(records[0].source.as_deref(), Some("webui"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_supports_status_and_agent_filters() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::new(&temp_dir.path().join("task-list.db"))
+            .await
+            .unwrap();
+        let repo = db.tasks();
+
+        let alpha_id = uuid::Uuid::new_v4();
+        repo.create_task_with_metadata(
+            &alpha_id,
+            "investigate incident",
+            Some(&TaskSource::Cli),
+            Some(&test_profile("agent.alpha", "Alpha")),
+        )
+        .await
+        .unwrap();
+        repo.update_task_status(&alpha_id, TaskStatus::Running)
+            .await
+            .unwrap();
+
+        let beta_id = uuid::Uuid::new_v4();
+        repo.create_task_with_metadata(
+            &beta_id,
+            "fix regression",
+            Some(&TaskSource::Remote("node-b".to_string())),
+            Some(&test_profile("agent.beta", "Beta")),
+        )
+        .await
+        .unwrap();
+        repo.complete_task(&beta_id, "localbrain", 2400)
+            .await
+            .unwrap();
+
+        let running_for_alpha = repo
+            .list_tasks(&TaskListQuery {
+                status: Some(TaskStatus::Running),
+                agent_id: Some("agent.alpha".to_string()),
+                limit: 20,
+                offset: 0,
+                ..TaskListQuery::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(running_for_alpha.len(), 1);
+        assert_eq!(running_for_alpha[0].id, alpha_id);
+        assert_eq!(running_for_alpha[0].status, TaskStatus::Running);
+        assert_eq!(running_for_alpha[0].agent_id.as_deref(), Some("agent.alpha"));
+
+        let completed_for_beta = repo
+            .list_tasks(&TaskListQuery {
+                status: Some(TaskStatus::Completed),
+                agent_id: Some("agent.beta".to_string()),
+                limit: 20,
+                offset: 0,
+                ..TaskListQuery::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(completed_for_beta.len(), 1);
+        assert_eq!(completed_for_beta[0].id, beta_id);
+        assert_eq!(completed_for_beta[0].source, "remote:node-b");
+        assert_eq!(completed_for_beta[0].provider_used.as_deref(), Some("localbrain"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_supports_date_windows() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::new(&temp_dir.path().join("task-dates.db"))
+            .await
+            .unwrap();
+        let repo = db.tasks();
+
+        let old_id = uuid::Uuid::new_v4();
+        repo.create_task(&old_id, "older task").await.unwrap();
+        sqlx::query("UPDATE tasks SET created_at = ? WHERE id = ?")
+            .bind(100_i64)
+            .bind(old_id.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let new_id = uuid::Uuid::new_v4();
+        repo.create_task(&new_id, "newer task").await.unwrap();
+        sqlx::query("UPDATE tasks SET created_at = ? WHERE id = ?")
+            .bind(200_i64)
+            .bind(new_id.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let filtered = repo
+            .list_tasks(&TaskListQuery {
+                date_from: Some(200),
+                date_to: Some(200),
+                limit: 20,
+                offset: 0,
+                ..TaskListQuery::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, new_id);
+        assert_eq!(filtered[0].created_at, 200);
+    }
 }

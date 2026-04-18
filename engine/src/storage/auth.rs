@@ -33,6 +33,31 @@ pub struct AuthEvent {
     pub metadata: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthPasskeyRecord {
+    pub id: String,
+    pub user_uuid: String,
+    pub rp_id: String,
+    pub credential_id: String,
+    pub label: Option<String>,
+    pub passkey_json: String,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthPasskeyChallenge {
+    pub challenge_id: String,
+    pub challenge_type: String,
+    pub session_id: Option<String>,
+    pub rp_id: String,
+    pub origin: String,
+    pub state_json: String,
+    pub label: Option<String>,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
 pub struct AuthRepository {
     pool: SqlitePool,
 }
@@ -246,6 +271,155 @@ impl AuthRepository {
         .context("Failed to append auth event")?;
         Ok(())
     }
+
+    pub async fn list_passkeys(&self) -> Result<Vec<AuthPasskeyRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, user_uuid, rp_id, credential_id, label, passkey_json, created_at, last_used_at
+             FROM auth_passkeys
+             ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to list auth passkeys")?;
+
+        Ok(rows.into_iter().map(map_passkey).collect())
+    }
+
+    pub async fn list_passkeys_for_rp(&self, rp_id: &str) -> Result<Vec<AuthPasskeyRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, user_uuid, rp_id, credential_id, label, passkey_json, created_at, last_used_at
+             FROM auth_passkeys
+             WHERE rp_id = ?
+             ORDER BY created_at DESC",
+        )
+        .bind(rp_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to list auth passkeys for rp_id")?;
+
+        Ok(rows.into_iter().map(map_passkey).collect())
+    }
+
+    pub async fn insert_passkey(
+        &self,
+        id: &str,
+        user_uuid: &str,
+        rp_id: &str,
+        credential_id: &str,
+        label: Option<&str>,
+        passkey_json: &str,
+    ) -> Result<()> {
+        let now = now_ts()?;
+        sqlx::query(
+            "INSERT INTO auth_passkeys (
+                id, user_uuid, rp_id, credential_id, label, passkey_json, created_at, last_used_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+        )
+        .bind(id)
+        .bind(user_uuid)
+        .bind(rp_id)
+        .bind(credential_id)
+        .bind(label)
+        .bind(passkey_json)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .context("Failed to insert auth passkey")?;
+        Ok(())
+    }
+
+    pub async fn update_passkey(
+        &self,
+        id: &str,
+        passkey_json: &str,
+        last_used_at: Option<i64>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE auth_passkeys
+             SET passkey_json = ?, last_used_at = COALESCE(?, last_used_at)
+             WHERE id = ?",
+        )
+        .bind(passkey_json)
+        .bind(last_used_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .context("Failed to update auth passkey")?;
+        Ok(())
+    }
+
+    pub async fn delete_passkey(&self, id: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM auth_passkeys WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete auth passkey")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn create_passkey_challenge(
+        &self,
+        challenge: &AuthPasskeyChallenge,
+    ) -> Result<()> {
+        self.delete_expired_passkey_challenges().await?;
+        sqlx::query(
+            "INSERT INTO auth_passkey_challenges (
+                challenge_id, challenge_type, session_id, rp_id, origin, state_json, label, created_at, expires_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&challenge.challenge_id)
+        .bind(&challenge.challenge_type)
+        .bind(challenge.session_id.as_deref())
+        .bind(&challenge.rp_id)
+        .bind(&challenge.origin)
+        .bind(&challenge.state_json)
+        .bind(challenge.label.as_deref())
+        .bind(challenge.created_at)
+        .bind(challenge.expires_at)
+        .execute(&self.pool)
+        .await
+        .context("Failed to create auth passkey challenge")?;
+        Ok(())
+    }
+
+    pub async fn take_passkey_challenge(
+        &self,
+        challenge_id: &str,
+        challenge_type: &str,
+    ) -> Result<Option<AuthPasskeyChallenge>> {
+        self.delete_expired_passkey_challenges().await?;
+        let row = sqlx::query(
+            "SELECT challenge_id, challenge_type, session_id, rp_id, origin, state_json, label, created_at, expires_at
+             FROM auth_passkey_challenges
+             WHERE challenge_id = ? AND challenge_type = ?",
+        )
+        .bind(challenge_id)
+        .bind(challenge_type)
+        .fetch_optional(&self.pool)
+        .await
+        .context("Failed to fetch auth passkey challenge")?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let challenge = map_passkey_challenge(row);
+        sqlx::query("DELETE FROM auth_passkey_challenges WHERE challenge_id = ?")
+            .bind(challenge_id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete consumed auth passkey challenge")?;
+        Ok(Some(challenge))
+    }
+
+    async fn delete_expired_passkey_challenges(&self) -> Result<()> {
+        let now = now_ts()?;
+        sqlx::query("DELETE FROM auth_passkey_challenges WHERE expires_at <= ?")
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete expired auth passkey challenges")?;
+        Ok(())
+    }
 }
 
 fn map_session(row: sqlx::sqlite::SqliteRow) -> AuthSession {
@@ -260,6 +434,33 @@ fn map_session(row: sqlx::sqlite::SqliteRow) -> AuthSession {
         origin: row.get("origin"),
         user_agent: row.get("user_agent"),
         requires_reauth: row.get::<i64, _>("requires_reauth") != 0,
+    }
+}
+
+fn map_passkey(row: sqlx::sqlite::SqliteRow) -> AuthPasskeyRecord {
+    AuthPasskeyRecord {
+        id: row.get("id"),
+        user_uuid: row.get("user_uuid"),
+        rp_id: row.get("rp_id"),
+        credential_id: row.get("credential_id"),
+        label: row.get("label"),
+        passkey_json: row.get("passkey_json"),
+        created_at: row.get("created_at"),
+        last_used_at: row.get("last_used_at"),
+    }
+}
+
+fn map_passkey_challenge(row: sqlx::sqlite::SqliteRow) -> AuthPasskeyChallenge {
+    AuthPasskeyChallenge {
+        challenge_id: row.get("challenge_id"),
+        challenge_type: row.get("challenge_type"),
+        session_id: row.get("session_id"),
+        rp_id: row.get("rp_id"),
+        origin: row.get("origin"),
+        state_json: row.get("state_json"),
+        label: row.get("label"),
+        created_at: row.get("created_at"),
+        expires_at: row.get("expires_at"),
     }
 }
 

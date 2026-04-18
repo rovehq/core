@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use sdk::TaskSource;
+use sdk::{TaskExecutionProfile, TaskSource};
 use tempfile::TempDir;
 
 use super::{recover_crashed_tasks, Gateway, GatewayConfig, WorkspaceLocks};
@@ -13,7 +13,7 @@ async fn test_submit_cli_task() {
     let db = Arc::new(Database::new(&db_path).await.unwrap());
 
     let gateway = Gateway::new(Arc::clone(&db), GatewayConfig::default()).unwrap();
-    let task_id = gateway.submit_cli("list files", None).await.unwrap();
+    let task_id = gateway.submit_cli("list files", None, None).await.unwrap();
 
     let repo = db.pending_tasks();
     let task = repo.get_task(&task_id).await.unwrap().unwrap();
@@ -23,16 +23,44 @@ async fn test_submit_cli_task() {
 }
 
 #[tokio::test]
+async fn test_submit_cli_task_preserves_execution_profile() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let db = Arc::new(Database::new(&db_path).await.unwrap());
+
+    let gateway = Gateway::new(Arc::clone(&db), GatewayConfig::default()).unwrap();
+    let profile = TaskExecutionProfile {
+        agent_id: Some("agent.ops".to_string()),
+        agent_name: Some("Ops Agent".to_string()),
+        worker_preset_id: None,
+        worker_preset_name: None,
+        purpose: Some("Run ops tasks".to_string()),
+        instructions: "Follow the saved agent profile".to_string(),
+        allowed_tools: vec!["read_file".to_string()],
+        output_contract: None,
+        max_iterations: Some(4),
+    };
+    let task_id = gateway
+        .submit_cli("inspect service health", None, Some(&profile))
+        .await
+        .unwrap();
+
+    let repo = db.pending_tasks();
+    let task = repo.get_task(&task_id).await.unwrap().unwrap();
+    assert_eq!(task.execution_profile, Some(profile));
+}
+
+#[tokio::test]
 async fn test_recover_crashed_tasks() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
     let db = Arc::new(Database::new(&db_path).await.unwrap());
 
     let repo = db.pending_tasks();
-    repo.create_task("task-1", "first", TaskSource::Cli, None, None, None)
+    repo.create_task("task-1", "first", TaskSource::Cli, None, None, None, None)
         .await
         .unwrap();
-    repo.create_task("task-2", "second", TaskSource::Cli, None, None, None)
+    repo.create_task("task-2", "second", TaskSource::Cli, None, None, None, None)
         .await
         .unwrap();
     repo.mark_running("task-1").await.unwrap();
@@ -54,8 +82,10 @@ async fn test_concurrent_tasks_independent() {
 
     let gateway1 = gateway.clone();
     let gateway2 = gateway.clone();
-    let submit1 = tokio::spawn(async move { gateway1.submit_cli("task one", None).await.unwrap() });
-    let submit2 = tokio::spawn(async move { gateway2.submit_cli("task two", None).await.unwrap() });
+    let submit1 =
+        tokio::spawn(async move { gateway1.submit_cli("task one", None, None).await.unwrap() });
+    let submit2 =
+        tokio::spawn(async move { gateway2.submit_cli("task two", None, None).await.unwrap() });
 
     let (task_id_1, task_id_2) = tokio::join!(submit1, submit2);
     let task_id_1 = task_id_1.unwrap();
@@ -82,7 +112,10 @@ async fn test_gateway_crash_recovery() {
     let db = Arc::new(Database::new(&db_path).await.unwrap());
     let gateway = Gateway::new(Arc::clone(&db), GatewayConfig::default()).unwrap();
 
-    let task_id = gateway.submit_cli("crash test task", None).await.unwrap();
+    let task_id = gateway
+        .submit_cli("crash test task", None, None)
+        .await
+        .unwrap();
 
     let repo = db.pending_tasks();
     let task = repo.get_task(&task_id).await.unwrap().unwrap();

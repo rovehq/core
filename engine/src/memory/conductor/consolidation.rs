@@ -17,6 +17,9 @@ use crate::conductor::memory_types::*;
 use crate::conductor::memory_utils::*;
 use crate::conductor::types::ConsolidationBackend;
 use crate::llm::router::LLMRouter;
+use crate::storage::{
+    record_episodic_version_by_id, record_insight_version_by_id, MemoryMutationAction,
+};
 
 /// Consolidate unconsolidated episodic memories into cross-cutting insights.
 ///
@@ -146,6 +149,7 @@ pub async fn consolidate(
         let mut tx = pool.begin().await.context("Failed to begin transaction")?;
         let consolidation_id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp();
+        let mut inserted_insight_ids = Vec::new();
 
         for insight in &insights {
             let insight_id = Uuid::new_v4().to_string();
@@ -166,6 +170,7 @@ pub async fn consolidate(
             .await
             .context("Failed to insert consolidation insight")?;
 
+            inserted_insight_ids.push(insight_id);
             total_insights += 1;
         }
 
@@ -187,6 +192,27 @@ pub async fn consolidate(
         tx.commit()
             .await
             .context("Failed to commit consolidation transaction")?;
+
+        for insight_id in &inserted_insight_ids {
+            let _ = record_insight_version_by_id(
+                pool,
+                insight_id,
+                MemoryMutationAction::Create,
+                "memory_consolidation",
+            )
+            .await;
+        }
+
+        for id in &memory_ids {
+            let _ = record_episodic_version_by_id(
+                pool,
+                id,
+                MemoryMutationAction::Update,
+                "memory_consolidation",
+                None,
+            )
+            .await;
+        }
     }
 
     info!(

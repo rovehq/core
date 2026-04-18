@@ -8,10 +8,13 @@ mod restart;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use load::installed_plugin_wasm_limit_report;
+
 use crate::config::Config;
 use crate::crypto::CryptoModule;
 use crate::fs_guard::FileSystemGuard;
 use crate::message_bus::MessageBus;
+use crate::secrets::SecretManager;
 use extism::Plugin;
 use sdk::{errors::EngineError, manifest::Manifest};
 use std::collections::HashMap;
@@ -31,6 +34,7 @@ pub struct WasmRuntime {
     #[allow(dead_code)]
     fs_guard: Arc<FileSystemGuard>,
     config: Arc<Config>,
+    secret_manager: Arc<SecretManager>,
     message_bus: Option<Arc<MessageBus>>,
 }
 
@@ -48,6 +52,7 @@ impl WasmRuntime {
             crypto,
             fs_guard,
             config: Arc::new(config),
+            secret_manager: Arc::new(SecretManager::new("rove")),
             message_bus: None,
         }
     }

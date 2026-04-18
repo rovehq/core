@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::conductor::extract::MemoryExtractor;
 use crate::conductor::types::{GraphSourceKind, IngestResult, TaskDomain};
 use crate::security::secrets::scrub_text;
+use crate::storage::{record_episodic_version_by_id, MemoryMutationAction};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ingest() — public entry point
@@ -102,6 +103,15 @@ pub async fn ingest(
     .execute(pool)
     .await
     .context("Failed to insert episodic memory")?;
+
+    let _ = record_episodic_version_by_id(
+        pool,
+        &memory_id,
+        MemoryMutationAction::Create,
+        "memory_ingest",
+        Some(task_id),
+    )
+    .await;
 
     // Store embedding if generated
     if let Some(blob) = embedding_blob {

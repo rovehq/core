@@ -25,7 +25,7 @@ impl ServiceInstallMode {
     pub fn default_profile(&self) -> DaemonProfile {
         match self {
             Self::Login => DaemonProfile::Desktop,
-            Self::Boot => DaemonProfile::Headless,
+            Self::Boot => DaemonProfile::Edge,
         }
     }
 }
@@ -393,7 +393,7 @@ mod tests {
         );
         assert_eq!(
             ServiceInstallMode::Boot.default_profile(),
-            DaemonProfile::Headless
+            DaemonProfile::Edge
         );
     }
 

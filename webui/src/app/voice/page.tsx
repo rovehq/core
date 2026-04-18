@@ -8,6 +8,7 @@ import {
   RoveDaemonClient,
   VoiceEngineInput,
   VoiceEngineKind,
+  VoiceInputTestRequest,
   VoiceEngineRecord,
   VoiceOutputTestRequest,
   VoicePolicyControls,
@@ -48,6 +49,7 @@ export default function VoicePage() {
   const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
   const [selectedOutputDeviceId, setSelectedOutputDeviceId] = useState('');
   const [drafts, setDrafts] = useState<Record<VoiceEngineKind, EngineDraft>>(emptyDrafts());
+  const [testAudioPath, setTestAudioPath] = useState('');
   const [testText, setTestText] = useState('Rove voice output check');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -191,7 +193,10 @@ export default function VoicePage() {
     setError(null);
     setMessage(null);
     try {
-      const result = await daemonClient().testVoiceInput();
+      const payload: VoiceInputTestRequest = {
+        audio_path: testAudioPath.trim() || null,
+      };
+      const result = await daemonClient().testVoiceInput(payload);
       setMessage(result.message);
     } catch (nextError) {
       setError(formatError(nextError));
@@ -414,8 +419,9 @@ export default function VoicePage() {
                 <div>
                   <h2 className="text-lg font-semibold">Smoke Tests</h2>
                   <p className="text-sm text-gray-400">
-                    Native output can speak through the installed Voice Pack today. Self-hosted
-                    engines stay explicit about readiness instead of pretending to run.
+                    Native output and self-hosted local engines run through the same voice surface.
+                    Local Whisper expects an audio file path; Piper speaks through the configured
+                    local model.
                   </p>
                 </div>
                 <div className="flex gap-3">
@@ -435,6 +441,15 @@ export default function VoicePage() {
                   </button>
                 </div>
               </div>
+              <label className="block text-sm text-gray-300">
+                Input audio file path
+                <input
+                  value={testAudioPath}
+                  onChange={(event) => setTestAudioPath(event.target.value)}
+                  className="mt-2 w-full rounded-lg border border-surface2 bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                  placeholder="/tmp/sample.wav"
+                />
+              </label>
               <label className="block text-sm text-gray-300">
                 Spoken output text
                 <input

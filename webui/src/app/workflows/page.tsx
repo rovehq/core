@@ -11,6 +11,7 @@ import {
   RoveDaemonClient,
   SpecTemplateSummary,
   WorkerPreset,
+  WorkflowBranchSpec,
   WorkflowFactoryResult,
   WorkflowRunDetail,
   WorkflowRunRecord,
@@ -32,8 +33,13 @@ const EMPTY_WORKFLOW: WorkflowSpec = {
       prompt: '',
       worker_preset: null,
       continue_on_error: false,
+      branches: [],
     },
   ],
+  channels: [],
+  webhooks: [],
+  file_watches: [],
+  schedules: [],
   tags: [],
 };
 
@@ -242,6 +248,19 @@ export default function WorkflowsPage() {
     }
   }
 
+  async function cancelWorkflowRun(runId: string) {
+    setError(null);
+    try {
+      const client = daemonClient();
+      await client.cancelWorkflowRun(runId);
+      await refresh();
+      const detail = await client.getWorkflowRun(runId);
+      setRunDetails((current) => ({ ...current, [runId]: detail }));
+    } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
   function updateStep(index: number, patch: Partial<WorkflowStepSpec>) {
     setForm((current) => ({
       ...current,
@@ -249,6 +268,66 @@ export default function WorkflowsPage() {
         stepIndex === index ? { ...step, ...patch } : step,
       ),
     }));
+  }
+
+  function updateBranch(
+    stepIndex: number,
+    branchIndex: number,
+    patch: Partial<WorkflowBranchSpec>,
+  ) {
+    setForm((current) => ({
+      ...current,
+      steps: current.steps.map((step, currentStepIndex) =>
+        currentStepIndex === stepIndex
+          ? {
+              ...step,
+              branches: (step.branches ?? []).map((branch, currentBranchIndex) =>
+                currentBranchIndex === branchIndex ? { ...branch, ...patch } : branch,
+              ),
+            }
+          : step,
+      ),
+    }));
+  }
+
+  function updateChannel(index: number, patch: Partial<WorkflowSpec['channels'][number]>) {
+    setForm((current) => ({
+      ...current,
+      channels: current.channels.map((binding, bindingIndex) =>
+        bindingIndex === index ? { ...binding, ...patch } : binding,
+      ),
+    }));
+  }
+
+  function updateWebhook(index: number, patch: Partial<WorkflowSpec['webhooks'][number]>) {
+    setForm((current) => ({
+      ...current,
+      webhooks: current.webhooks.map((binding, bindingIndex) =>
+        bindingIndex === index ? { ...binding, ...patch } : binding,
+      ),
+    }));
+  }
+
+  function updateFileWatch(index: number, patch: Partial<WorkflowSpec['file_watches'][number]>) {
+    setForm((current) => ({
+      ...current,
+      file_watches: current.file_watches.map((binding, bindingIndex) =>
+        bindingIndex === index ? { ...binding, ...patch } : binding,
+      ),
+    }));
+  }
+
+  function moveStep(index: number, direction: -1 | 1) {
+    setForm((current) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= current.steps.length) {
+        return current;
+      }
+      const steps = [...current.steps];
+      const [step] = steps.splice(index, 1);
+      steps.splice(nextIndex, 0, step);
+      return { ...current, steps };
+    });
   }
 
   return (
@@ -330,7 +409,7 @@ export default function WorkflowsPage() {
             <div>
               <h2 className="text-lg font-semibold">Workflow Spec</h2>
               <p className="text-sm text-gray-400">
-                Each step can run directly or inherit an agent profile or bounded worker preset. <code>{'{{input}}'}</code> and <code>{'{{last_output}}'}</code> are available in step prompts.
+                Each step can run directly or inherit an agent profile or bounded worker preset. <code>{'{{input}}'}</code>, <code>{'{{last_output}}'}</code>, and prior step outputs like <code>{'{{step_id.result}}'}</code> are available in step prompts.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -380,6 +459,7 @@ export default function WorkflowsPage() {
                 <option value="">Inherited</option>
                 <option value="desktop">desktop</option>
                 <option value="headless">headless</option>
+                <option value="edge">edge</option>
               </select>
             </Field>
             <Field label="Tags">
@@ -388,6 +468,14 @@ export default function WorkflowsPage() {
                 onChange={(event) => setForm((current) => ({ ...current, tags: parseCsv(event.target.value) }))}
                 className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
                 placeholder="deploy, release"
+              />
+            </Field>
+            <Field label="Schedules">
+              <input
+                value={formatCsv(form.schedules)}
+                onChange={(event) => setForm((current) => ({ ...current, schedules: parseCsv(event.target.value) }))}
+                className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                placeholder="0 * * * *, weekdays-09:00"
               />
             </Field>
           </div>
@@ -423,12 +511,249 @@ export default function WorkflowsPage() {
             onChange={(checked) => setForm((current) => ({ ...current, enabled: checked }))}
           />
 
+          <section className="space-y-4">
+            <div>
+              <h3 className="font-medium">Triggers</h3>
+              <p className="text-sm text-gray-400">
+                Bind workflows to inbound channels, public webhooks, or local file changes. Relative file-watch paths resolve from the daemon workspace root.
+              </p>
+            </div>
+
+            <div className="space-y-3 rounded-lg bg-surface2 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-medium">Channel Bindings</h4>
+                  <p className="text-xs text-gray-500">Telegram and plugin-channel ingress can start matching workflows directly.</p>
+                </div>
+                <button
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      channels: [
+                        ...current.channels,
+                        {
+                          kind: '',
+                          target: null,
+                          enabled: true,
+                        },
+                      ],
+                    }))
+                  }
+                  className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary"
+                >
+                  Add Channel
+                </button>
+              </div>
+              {form.channels.length === 0 ? (
+                <EmptyState text="No channel triggers configured." />
+              ) : (
+                <div className="space-y-3">
+                  {form.channels.map((binding, index) => (
+                    <div key={`${binding.kind}-${binding.target ?? index}`} className="rounded-lg border border-surface bg-background/40 p-3 space-y-3">
+                      <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                        <input
+                          value={binding.kind}
+                          onChange={(event) => updateChannel(index, { kind: event.target.value })}
+                          className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                          placeholder="telegram"
+                        />
+                        <input
+                          value={binding.target ?? ''}
+                          onChange={(event) => updateChannel(index, { target: event.target.value })}
+                          className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                          placeholder="default or chat:123"
+                        />
+                        <button
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              channels: current.channels.filter((_, bindingIndex) => bindingIndex !== index),
+                            }))
+                          }
+                          className="rounded-lg border border-error/30 px-3 py-2 text-sm text-error hover:bg-error/10"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <Checkbox
+                        label="Enabled"
+                        checked={binding.enabled}
+                        onChange={(checked) => updateChannel(index, { enabled: checked })}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3 rounded-lg bg-surface2 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-medium">Webhook Bindings</h4>
+                  <p className="text-xs text-gray-500">
+                    Public POST target: <code>/v1/workflows/webhooks/&lt;id&gt;</code>. Optional secret uses the <code>x-rove-webhook-secret</code> header.
+                  </p>
+                </div>
+                <button
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      webhooks: [
+                        ...current.webhooks,
+                        {
+                          id: '',
+                          secret: null,
+                          enabled: true,
+                        },
+                      ],
+                    }))
+                  }
+                  className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary"
+                >
+                  Add Webhook
+                </button>
+              </div>
+              {form.webhooks.length === 0 ? (
+                <EmptyState text="No webhook triggers configured." />
+              ) : (
+                <div className="space-y-3">
+                  {form.webhooks.map((binding, index) => (
+                    <div key={`${binding.id}-${index}`} className="rounded-lg border border-surface bg-background/40 p-3 space-y-3">
+                      <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                        <input
+                          value={binding.id}
+                          onChange={(event) => updateWebhook(index, { id: event.target.value })}
+                          className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                          placeholder="github-push"
+                        />
+                        <input
+                          value={binding.secret ?? ''}
+                          onChange={(event) => updateWebhook(index, { secret: event.target.value })}
+                          className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                          placeholder="Optional shared secret"
+                        />
+                        <button
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              webhooks: current.webhooks.filter((_, bindingIndex) => bindingIndex !== index),
+                            }))
+                          }
+                          className="rounded-lg border border-error/30 px-3 py-2 text-sm text-error hover:bg-error/10"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <Checkbox
+                        label="Enabled"
+                        checked={binding.enabled}
+                        onChange={(checked) => updateWebhook(index, { enabled: checked })}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3 rounded-lg bg-surface2 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-medium">File-Watch Bindings</h4>
+                  <p className="text-xs text-gray-500">
+                    Local daemon watcher triggers on create, modify, or remove. Leave events empty to match any supported file event.
+                  </p>
+                </div>
+                <button
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      file_watches: [
+                        ...current.file_watches,
+                        {
+                          path: '',
+                          recursive: true,
+                          events: [],
+                          enabled: true,
+                        },
+                      ],
+                    }))
+                  }
+                  className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary"
+                >
+                  Add File Watch
+                </button>
+              </div>
+              {form.file_watches.length === 0 ? (
+                <EmptyState text="No file-watch triggers configured." />
+              ) : (
+                <div className="space-y-3">
+                  {form.file_watches.map((binding, index) => (
+                    <div key={`${binding.path}-${index}`} className="rounded-lg border border-surface bg-background/40 p-3 space-y-3">
+                      <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_auto]">
+                        <input
+                          value={binding.path}
+                          onChange={(event) => updateFileWatch(index, { path: event.target.value })}
+                          className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                          placeholder="src or docs/notes.md"
+                        />
+                        <input
+                          value={formatCsv(binding.events ?? [])}
+                          onChange={(event) => updateFileWatch(index, { events: parseCsv(event.target.value) })}
+                          className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                          placeholder="modify, create"
+                        />
+                        <button
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              file_watches: current.file_watches.filter((_, bindingIndex) => bindingIndex !== index),
+                            }))
+                          }
+                          className="rounded-lg border border-error/30 px-3 py-2 text-sm text-error hover:bg-error/10"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Checkbox
+                          label="Recursive"
+                          checked={binding.recursive}
+                          onChange={(checked) => updateFileWatch(index, { recursive: checked })}
+                        />
+                        <Checkbox
+                          label="Enabled"
+                          checked={binding.enabled}
+                          onChange={(checked) => updateFileWatch(index, { enabled: checked })}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3 rounded-lg bg-surface2 p-4">
+              <div>
+                <h4 className="text-sm font-medium">Schedules</h4>
+                <p className="text-xs text-gray-500">
+                  Schedule strings are stored directly on the workflow spec and are visible to the daemon scheduler and import/export flows.
+                </p>
+              </div>
+              <input
+                value={formatCsv(form.schedules)}
+                onChange={(event) => setForm((current) => ({ ...current, schedules: parseCsv(event.target.value) }))}
+                className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                placeholder="0 * * * *, nightly-check"
+              />
+            </div>
+          </section>
+
           <section className="space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="font-medium">Steps</h3>
                 <p className="text-sm text-gray-400">
-                  Steps execute in order. Each step may use either an agent profile or a bounded worker preset.
+                  Steps execute in order unless a branch rule redirects the run to another step by id. Each step may use either an agent profile or a bounded worker preset.
                 </p>
               </div>
               <button
@@ -443,6 +768,7 @@ export default function WorkflowsPage() {
                         prompt: '',
                         worker_preset: null,
                         continue_on_error: false,
+                        branches: [],
                       },
                     ],
                   }))
@@ -507,7 +833,7 @@ export default function WorkflowsPage() {
                   value={step.prompt}
                   onChange={(event) => updateStep(index, { prompt: event.target.value })}
                   className="min-h-28 w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
-                  placeholder="Use {{input}} and {{last_output}} when needed"
+                  placeholder="Use {{input}}, {{last_output}}, and {{step_id.result}} when needed"
                 />
                 <div className="flex items-center justify-between gap-3">
                   <Checkbox
@@ -515,18 +841,101 @@ export default function WorkflowsPage() {
                     checked={step.continue_on_error}
                     onChange={(checked) => updateStep(index, { continue_on_error: checked })}
                   />
-                  <button
-                    onClick={() =>
-                      setForm((current) => ({
-                        ...current,
-                        steps: current.steps.filter((_, stepIndex) => stepIndex !== index),
-                      }))
-                    }
-                    disabled={form.steps.length === 1}
-                    className="rounded-lg border border-error/30 px-3 py-2 text-sm text-error hover:bg-error/10 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Remove Step
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => moveStep(index, -1)}
+                      disabled={index === 0}
+                      className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Move Up
+                    </button>
+                    <button
+                      onClick={() => moveStep(index, 1)}
+                      disabled={index === form.steps.length - 1}
+                      className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Move Down
+                    </button>
+                    <button
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          steps: current.steps.filter((_, stepIndex) => stepIndex !== index),
+                        }))
+                      }
+                      disabled={form.steps.length === 1}
+                      className="rounded-lg border border-error/30 px-3 py-2 text-sm text-error hover:bg-error/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Remove Step
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-3 rounded-lg border border-surface bg-background/40 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium">Branch Rules</p>
+                      <p className="text-xs text-gray-500">
+                        First case-insensitive <code>contains</code> match wins. If no rule matches, the workflow continues to the next step.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() =>
+                        updateStep(index, {
+                          branches: [
+                            ...(step.branches ?? []),
+                            {
+                              contains: '',
+                              next_step_id: '',
+                            },
+                          ],
+                        })
+                      }
+                      className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary"
+                    >
+                      Add Branch
+                    </button>
+                  </div>
+                  {(step.branches ?? []).length === 0 ? (
+                    <EmptyState text="No conditional branches. The next step stays linear." />
+                  ) : (
+                    <div className="space-y-3">
+                      {(step.branches ?? []).map((branch, branchIndex) => (
+                        <div
+                          key={`${step.id || index}-branch-${branchIndex}`}
+                          className="grid gap-3 md:grid-cols-[1fr_1fr_auto]"
+                        >
+                          <input
+                            value={branch.contains}
+                            onChange={(event) =>
+                              updateBranch(index, branchIndex, { contains: event.target.value })
+                            }
+                            className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                            placeholder="retry"
+                          />
+                          <input
+                            value={branch.next_step_id}
+                            onChange={(event) =>
+                              updateBranch(index, branchIndex, { next_step_id: event.target.value })
+                            }
+                            className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                            placeholder="fix-step"
+                          />
+                          <button
+                            onClick={() =>
+                              updateStep(index, {
+                                branches: (step.branches ?? []).filter(
+                                  (_, currentBranchIndex) => currentBranchIndex !== branchIndex,
+                                ),
+                              })
+                            }
+                            className="rounded-lg border border-error/30 px-3 py-2 text-sm text-error hover:bg-error/10"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -558,6 +967,8 @@ export default function WorkflowsPage() {
               </button>
             ) : null}
           </div>
+
+          <SpecMetadataPanel provenance={form.provenance} snapshot={normalizeWorkflow(form)} />
 
           <ErrorBanner error={error} onDismiss={() => setError(null)} />
         </section>
@@ -592,6 +1003,28 @@ export default function WorkflowsPage() {
                         <p className="mt-2 text-sm text-gray-500">
                           {workflow.steps.map((step) => step.name).join(' → ')}
                         </p>
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-gray-400">
+                          {workflow.channels.length > 0 ? (
+                            <span className="rounded-full border border-surface px-2 py-1">
+                              channels: {workflow.channels.map(formatChannelBinding).join(' · ')}
+                            </span>
+                          ) : null}
+                          {workflow.webhooks.length > 0 ? (
+                            <span className="rounded-full border border-surface px-2 py-1">
+                              webhooks: {workflow.webhooks.map(formatWebhookBinding).join(' · ')}
+                            </span>
+                          ) : null}
+                          {workflow.file_watches.length > 0 ? (
+                            <span className="rounded-full border border-surface px-2 py-1">
+                              file watch: {workflow.file_watches.map(formatFileWatchBinding).join(' · ')}
+                            </span>
+                          ) : null}
+                          {workflow.schedules.length > 0 ? (
+                            <span className="rounded-full border border-surface px-2 py-1">
+                              schedules: {workflow.schedules.join(' · ')}
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
                       <button
                         onClick={() => setForm(cloneWorkflow(workflow))}
@@ -649,6 +1082,7 @@ export default function WorkflowsPage() {
                     Progress: {run.steps_completed}/{run.steps_total} steps
                     {run.current_step_name ? ` · current: ${run.current_step_name}` : ''}
                     {run.retry_count > 0 ? ` · retries: ${run.retry_count}` : ''}
+                    {run.cancel_requested ? ' · cancel requested' : ''}
                   </p>
                   <p className="mt-2 text-sm text-gray-300 whitespace-pre-wrap">{run.input}</p>
                   {run.output ? <p className="mt-2 text-sm text-gray-400 whitespace-pre-wrap">{run.output}</p> : null}
@@ -662,6 +1096,14 @@ export default function WorkflowsPage() {
                         {run.status === 'failed' ? 'Retry From Failed Step' : 'Resume Run'}
                       </button>
                     ) : null}
+                    {run.status === 'running' && !run.cancel_requested ? (
+                      <button
+                        onClick={() => void cancelWorkflowRun(run.run_id)}
+                        className="rounded-lg border border-error/30 px-3 py-2 text-sm text-error hover:bg-error/10"
+                      >
+                        Cancel Run
+                      </button>
+                    ) : null}
                     <button
                       onClick={() => void loadRunDetail(run.run_id)}
                       className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary"
@@ -671,6 +1113,21 @@ export default function WorkflowsPage() {
                   </div>
                   {runDetails[run.run_id] ? (
                     <div className="mt-3 space-y-2 rounded-lg border border-surface bg-background/40 p-3">
+                      {Object.keys(runDetails[run.run_id].variables ?? {}).length > 0 ? (
+                        <div className="rounded-lg border border-surface px-3 py-2">
+                          <p className="text-sm font-medium">Variables</p>
+                          <div className="mt-2 space-y-1">
+                            {Object.entries(runDetails[run.run_id].variables)
+                              .sort(([left], [right]) => left.localeCompare(right))
+                              .map(([name, value]) => (
+                                <div key={name}>
+                                  <p className="text-xs text-gray-500">{name}</p>
+                                  <p className="text-xs text-gray-300 whitespace-pre-wrap">{value}</p>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      ) : null}
                       {runDetails[run.run_id].steps.map((step) => (
                         <div key={`${step.run_id}-${step.step_index}`} className="rounded-lg border border-surface px-3 py-2">
                           <p className="text-sm font-medium">
@@ -709,8 +1166,19 @@ function daemonClient() {
 function cloneWorkflow(spec: WorkflowSpec): WorkflowSpec {
   return {
     ...spec,
-    steps: spec.steps.map((step) => ({ ...step, worker_preset: step.worker_preset ?? null })),
-    tags: [...spec.tags],
+    steps: spec.steps.map((step) => ({
+      ...step,
+      worker_preset: step.worker_preset ?? null,
+      branches: [...(step.branches ?? [])],
+    })),
+    channels: (spec.channels ?? []).map((binding) => ({ ...binding, target: binding.target ?? null })),
+    webhooks: (spec.webhooks ?? []).map((binding) => ({ ...binding, secret: binding.secret ?? null })),
+    file_watches: (spec.file_watches ?? []).map((binding) => ({
+      ...binding,
+      events: [...(binding.events ?? [])],
+    })),
+    schedules: [...(spec.schedules ?? [])],
+    tags: [...(spec.tags ?? [])],
   };
 }
 
@@ -722,7 +1190,25 @@ function normalizeWorkflow(spec: WorkflowSpec): WorkflowSpec {
     description: spec.description.trim(),
     runtime_profile: emptyToNull(spec.runtime_profile),
     output_contract: emptyToNull(spec.output_contract),
-    tags: spec.tags.map((tag) => tag.trim()).filter(Boolean),
+    channels: (spec.channels ?? []).map((binding) => ({
+      ...binding,
+      kind: binding.kind.trim(),
+      target: emptyToNull(binding.target),
+    })),
+    webhooks: (spec.webhooks ?? []).map((binding) => ({
+      ...binding,
+      id: binding.id.trim(),
+      secret: emptyToNull(binding.secret),
+    })),
+    file_watches: (spec.file_watches ?? [])
+      .map((binding) => ({
+        ...binding,
+        path: binding.path.trim(),
+        events: (binding.events ?? []).map((event) => event.trim()).filter(Boolean),
+      }))
+      .filter((binding) => binding.path),
+    schedules: (spec.schedules ?? []).map((value) => value.trim()).filter(Boolean),
+    tags: (spec.tags ?? []).map((tag) => tag.trim()).filter(Boolean),
     steps: spec.steps
       .map((step, index) => ({
         ...step,
@@ -731,6 +1217,12 @@ function normalizeWorkflow(spec: WorkflowSpec): WorkflowSpec {
         prompt: step.prompt.trim(),
         agent_id: emptyToNull(step.agent_id),
         worker_preset: emptyToNull(step.worker_preset),
+        branches: (step.branches ?? [])
+          .map((branch) => ({
+            contains: branch.contains.trim(),
+            next_step_id: branch.next_step_id.trim(),
+          }))
+          .filter((branch) => branch.contains && branch.next_step_id),
       }))
       .filter((step) => step.prompt),
   };
@@ -745,6 +1237,20 @@ function parseCsv(value: string) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function formatChannelBinding(binding: WorkflowSpec['channels'][number]) {
+  const target = binding.target?.trim() ? binding.target.trim() : '*';
+  return `${binding.kind}:${target}${binding.enabled ? '' : ' (disabled)'}`;
+}
+
+function formatWebhookBinding(binding: WorkflowSpec['webhooks'][number]) {
+  return `${binding.id}${binding.secret ? ' [secret]' : ''}${binding.enabled ? '' : ' (disabled)'}`;
+}
+
+function formatFileWatchBinding(binding: WorkflowSpec['file_watches'][number]) {
+  const events = binding.events.length > 0 ? binding.events.join(',') : 'any';
+  return `${binding.path}${binding.recursive ? ' [recursive]' : ''} [${events}]${binding.enabled ? '' : ' (disabled)'}`;
 }
 
 function emptyToNull(value?: string | null) {
@@ -765,6 +1271,43 @@ function formatError(error: unknown) {
 
 function isDraftSpec(provenance?: WorkflowSpec['provenance']) {
   return provenance?.review_status === 'draft' || Boolean(provenance?.draft_for);
+}
+
+function SpecMetadataPanel({
+  provenance,
+  snapshot,
+}: {
+  provenance?: WorkflowSpec['provenance'];
+  snapshot: WorkflowSpec;
+}) {
+  return (
+    <section className="space-y-3 rounded-xl border border-surface bg-background/30 p-4">
+      <div>
+        <h3 className="font-medium">Spec Metadata</h3>
+        <p className="text-sm text-gray-400">
+          This editor writes the workflow spec the daemon persists as TOML. Provenance and review state stay visible so branch and trigger edits remain auditable.
+        </p>
+      </div>
+      {provenance ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          <MetaValue label="Source" value={provenance.source} />
+          <MetaValue label="Import Source" value={provenance.import_source} />
+          <MetaValue label="Draft For" value={provenance.draft_for} />
+          <MetaValue label="Review Status" value={provenance.review_status} />
+          <MetaValue label="Notes" value={provenance.notes} />
+          <MetaValue label="Reviewed At" value={formatOptionalTimestamp(provenance.reviewed_at)} />
+        </div>
+      ) : (
+        <EmptyState text="No provenance metadata recorded for this workflow." />
+      )}
+      <div>
+        <p className="text-xs uppercase tracking-wide text-gray-500">Current Snapshot</p>
+        <pre className="mt-2 max-h-72 overflow-auto rounded-lg border border-surface bg-surface2 p-3 text-xs text-gray-300">
+          {JSON.stringify(snapshot, null, 2)}
+        </pre>
+      </div>
+    </section>
+  );
 }
 
 function FactoryReviewPanel({ review }: { review: FactoryReview }) {
@@ -854,4 +1397,17 @@ function ErrorBanner({ error, onDismiss }: { error: string | null; onDismiss: ()
       </div>
     </div>
   );
+}
+
+function MetaValue({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="rounded-lg border border-surface px-3 py-2">
+      <p className="text-xs uppercase tracking-wide text-gray-500">{label}</p>
+      <p className="mt-1 text-sm text-gray-300 whitespace-pre-wrap">{value?.trim() ? value : 'unset'}</p>
+    </div>
+  );
+}
+
+function formatOptionalTimestamp(value?: number | null) {
+  return value ? formatTimestamp(value) : null;
 }

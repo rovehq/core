@@ -2,7 +2,13 @@
 
 import { useEffect, useState } from 'react';
 
-import { DEFAULT_DAEMON_PORT } from '@/lib/daemon';
+import {
+  DEFAULT_DAEMON_PORT,
+  PasskeyDescriptor,
+  PasskeyStatus,
+  readStoredToken,
+  RoveDaemonClient,
+} from '@/lib/daemon';
 import Nav from '@/components/Nav';
 import { useRoveStore } from '@/stores/roveStore';
 
@@ -28,6 +34,11 @@ export default function SettingsPage() {
     uninstallService,
   } = useRoveStore();
   const [portInput, setPortInput] = useState(String(DEFAULT_DAEMON_PORT));
+  const [passkeys, setPasskeys] = useState<PasskeyDescriptor[]>([]);
+  const [passkeyStatus, setPasskeyStatus] = useState<PasskeyStatus | null>(null);
+  const [passkeyLabel, setPasskeyLabel] = useState('');
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyError, setPasskeyError] = useState<string | null>(null);
 
   useEffect(() => {
     void initialize();
@@ -37,6 +48,34 @@ export default function SettingsPage() {
   useEffect(() => {
     setPortInput(String(daemonPort ?? DEFAULT_DAEMON_PORT));
   }, [daemonPort]);
+
+  useEffect(() => {
+    if (appState !== 'unlocked') {
+      setPasskeys([]);
+      setPasskeyStatus(null);
+      setPasskeyError(null);
+      return;
+    }
+    void refreshPasskeys();
+  }, [appState, daemonUrl]);
+
+  async function refreshPasskeys() {
+    const client = daemonClient();
+    if (!client.supportsPasskeys()) {
+      setPasskeyStatus({ supported: false, registered: false, credential_count: 0 });
+      setPasskeys([]);
+      return;
+    }
+
+    try {
+      const [status, items] = await Promise.all([client.passkeyStatus(), client.listPasskeys()]);
+      setPasskeyStatus(status);
+      setPasskeys(items);
+      setPasskeyError(null);
+    } catch (nextError) {
+      setPasskeyError(nextError instanceof Error ? nextError.message : String(nextError));
+    }
+  }
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -146,6 +185,101 @@ export default function SettingsPage() {
             </div>
 
             <div>
+              <h3 className="font-medium mb-4">Passkeys</h3>
+              <div className="space-y-4">
+                <div className="p-4 bg-surface2 rounded-lg space-y-3">
+                  <div>
+                    <p className="font-medium">Browser passkey access</p>
+                    <p className="text-sm text-gray-500">
+                      {passkeyStatus?.supported
+                        ? passkeyStatus.registered
+                          ? `${passkeyStatus.credential_count} passkey(s) registered for this UI origin.`
+                          : 'Supported here, but no passkeys are registered yet.'
+                        : 'Not available on this browser/origin. Use the hosted UI on localhost instead of an IP address.'}
+                    </p>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+                    <label className="block">
+                      <span className="mb-2 block text-sm text-gray-400">Label</span>
+                      <input
+                        value={passkeyLabel}
+                        onChange={(event) => setPasskeyLabel(event.target.value)}
+                        className="w-full rounded-lg border border-surface bg-background px-3 py-3 outline-none focus:border-primary"
+                        placeholder="MacBook Touch ID"
+                      />
+                    </label>
+                    <button
+                      onClick={async () => {
+                        setPasskeyBusy(true);
+                        try {
+                          await daemonClient().registerPasskey(passkeyLabel.trim() || null);
+                          setPasskeyLabel('');
+                          await refreshPasskeys();
+                        } catch (nextError) {
+                          setPasskeyError(
+                            nextError instanceof Error ? nextError.message : String(nextError),
+                          );
+                        } finally {
+                          setPasskeyBusy(false);
+                        }
+                      }}
+                      disabled={passkeyBusy || !passkeyStatus?.supported}
+                      className="rounded-lg bg-primary px-4 py-3 text-sm hover:bg-primary/80 disabled:bg-surface disabled:text-gray-500"
+                    >
+                      {passkeyBusy ? 'Registering…' : 'Register Passkey'}
+                    </button>
+                  </div>
+                  {passkeys.length > 0 ? (
+                    <div className="space-y-2">
+                      {passkeys.map((passkey) => (
+                        <div
+                          key={passkey.id}
+                          className="flex items-center justify-between rounded-lg border border-surface p-3"
+                        >
+                          <div>
+                            <p className="font-medium">{passkey.label || 'Unnamed passkey'}</p>
+                            <p className="text-sm text-gray-500">
+                              {passkey.rp_id} · added {new Date(passkey.created_at * 1000).toLocaleString()}
+                            </p>
+                            {passkey.last_used_at ? (
+                              <p className="text-sm text-gray-500">
+                                last used {new Date(passkey.last_used_at * 1000).toLocaleString()}
+                              </p>
+                            ) : null}
+                          </div>
+                          <button
+                            onClick={async () => {
+                              setPasskeyBusy(true);
+                              try {
+                                await daemonClient().deletePasskey(passkey.id);
+                                await refreshPasskeys();
+                              } catch (nextError) {
+                                setPasskeyError(
+                                  nextError instanceof Error ? nextError.message : String(nextError),
+                                );
+                              } finally {
+                                setPasskeyBusy(false);
+                              }
+                            }}
+                            disabled={passkeyBusy}
+                            className="rounded-lg border border-error/30 px-4 py-2 text-sm text-error hover:bg-error/10 disabled:text-gray-500"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {passkeyError ? (
+                    <div className="rounded-lg border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
+                      {passkeyError}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div>
               <h3 className="font-medium mb-4">Daemon Install Modes</h3>
               <div className="space-y-4">
                 {serviceInstall ? (
@@ -237,6 +371,10 @@ export default function SettingsPage() {
       </footer>
     </div>
   );
+}
+
+function daemonClient() {
+  return new RoveDaemonClient(readStoredToken() ?? undefined);
 }
 
 function formatSeconds(value: number | null | undefined) {

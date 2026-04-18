@@ -5,6 +5,7 @@ use crate::cli::database_path::database_path;
 use crate::cli::output::OutputFormat;
 use crate::config::Config;
 use crate::runtime::Manifest;
+use crate::runtime::wasm::installed_plugin_wasm_limit_report;
 use crate::storage::{Database, InstalledPlugin};
 
 pub async fn handle_list(config: &Config, format: OutputFormat) -> Result<()> {
@@ -233,7 +234,7 @@ fn filter_installed_plugins(plugins: &[InstalledPlugin], kind: &str) -> Vec<Inst
 fn plugin_public_kind(plugin: &InstalledPlugin) -> &'static str {
     match plugin.plugin_type.as_str() {
         "Skill" => "skill",
-        "Workspace" => "system",
+        "Workspace" => "driver",
         "Channel" => "channel",
         "Mcp" => "connector",
         "Brain" => "brain",
@@ -269,6 +270,24 @@ fn print_plugin_details(plugin: &InstalledPlugin) {
         println!("runtime_config: {}", config);
     } else {
         println!("runtime_config: (none)");
+    }
+
+    match installed_plugin_wasm_limit_report(plugin) {
+        Ok(Some(limits)) => {
+            println!(
+                "wasm_limits: timeout={}s memory={} MB fuel={}",
+                limits.timeout_secs, limits.max_memory_mb, limits.fuel_limit
+            );
+            if let Some(sidecar_path) = limits.sidecar_path {
+                println!("wasm_limit_sidecar: {}", sidecar_path);
+            } else {
+                println!("wasm_limit_sidecar: (none)");
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            println!("wasm_limits: error ({})", error);
+        }
     }
 
     if let Some(manifest) = manifest {

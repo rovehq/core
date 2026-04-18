@@ -51,6 +51,7 @@ impl TelegramBot {
             allowed_users,
             admin_users: Vec::new(),
             client: Client::builder()
+                .no_proxy()
                 .timeout(Duration::from_secs(60))
                 .build()
                 .unwrap_or_default(),

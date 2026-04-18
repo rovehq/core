@@ -13,6 +13,7 @@ use super::llm::LLMConfig;
 use super::memory::MemoryConfig;
 use super::metadata::{CONFIG_SCHEMA_VERSION, VERSION};
 use super::policy::PolicyConfig;
+use super::profile::{LoadoutsConfig, ProfilesConfig};
 use super::remote::RemoteConfig;
 use super::secrets::SecretsConfig;
 use super::security::SecurityConfig;
@@ -32,7 +33,13 @@ pub struct Config {
     #[serde(default)]
     pub daemon: DaemonConfig,
     #[serde(default)]
+    pub active_profile: Option<String>,
+    #[serde(default)]
     pub core: CoreConfig,
+    #[serde(default)]
+    pub profiles: ProfilesConfig,
+    #[serde(default)]
+    pub loadouts: LoadoutsConfig,
     #[serde(default)]
     pub approvals: ApprovalsConfig,
     #[serde(default)]

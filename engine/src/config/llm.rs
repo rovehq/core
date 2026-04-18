@@ -14,6 +14,9 @@ pub struct CustomProvider {
     pub protocol: String,
     pub base_url: String,
     pub model: String,
+    /// Keychain entry name for the API key. Leave empty for keyless providers
+    /// (e.g. local proxies that don't require authentication).
+    #[serde(default)]
     pub secret_key: String,
 }
 

@@ -53,6 +53,8 @@ export default function RemotePage() {
           <Stat label="Role" value={remoteStatus?.profile.execution_role ?? 'unknown'} />
           <Stat label="Queue" value={`${remoteStatus?.load?.pending_tasks ?? 0} pending / ${remoteStatus?.load?.running_tasks ?? 0} running`} />
           <Stat label="Recent" value={`${remoteStatus?.load?.recent_successes ?? 0} ok / ${remoteStatus?.load?.recent_failures ?? 0} fail`} />
+          <Stat label="CPU" value={formatCpu(remoteStatus?.load?.cpu_load_percent)} />
+          <Stat label="RAM" value={formatRam(remoteStatus?.load?.available_ram_mb)} />
         </section>
 
         <section className="bg-surface rounded-xl p-6 border border-surface2 space-y-4">
@@ -206,8 +208,17 @@ export default function RemotePage() {
                         {node.profile.execution_role} · tags {node.profile.tags.join(', ') || 'none'} · caps {node.profile.capabilities.join(', ') || 'none'}
                       </p>
                       <p className="text-sm text-gray-500">
+                        queue {node.load?.pending_tasks ?? 0} pending / {node.load?.running_tasks ?? 0} running · recent {node.load?.recent_successes ?? 0} ok / {node.load?.recent_failures ?? 0} fail
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        cpu {formatCpu(node.load?.cpu_load_percent)} · ram {formatRam(node.load?.available_ram_mb)} · avg {formatDuration(node.load?.recent_avg_duration_ms)}
+                      </p>
+                      <p className="text-sm text-gray-500">
                         transports {node.transports.map((record) => record.base_url ?? record.address).join(', ') || 'none'}
                       </p>
+                      {node.last_status_error ? (
+                        <p className="text-sm text-error">status {node.last_status_error}</p>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-2">
                       {!node.trusted && (
@@ -244,6 +255,27 @@ function Stat({ label, value }: { label: string; value: string }) {
       <p className="mt-1 font-medium">{value}</p>
     </div>
   );
+}
+
+function formatCpu(value?: number | null) {
+  if (value == null) return 'unknown';
+  return `${value}%`;
+}
+
+function formatRam(value?: number | null) {
+  if (value == null) return 'unknown';
+  if (value >= 1024) {
+    return `${(value / 1024).toFixed(1)} GB free`;
+  }
+  return `${value} MB free`;
+}
+
+function formatDuration(value?: number | null) {
+  if (value == null) return 'unknown';
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}s`;
+  }
+  return `${value}ms`;
 }
 
 function ErrorBanner({ error, onDismiss }: { error: string | null; onDismiss: () => void }) {

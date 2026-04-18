@@ -5,10 +5,12 @@ import { useEffect, useMemo, useState } from 'react';
 
 import Nav from '@/components/Nav';
 import {
+  AgentFactoryResult,
   DaemonError,
   RoveDaemonClient,
   StarterCatalogEntry,
   StarterCatalogKind,
+  WorkflowFactoryResult,
   readStoredToken,
 } from '@/lib/daemon';
 
@@ -32,6 +34,10 @@ export default function StartersPage() {
   const [entries, setEntries] = useState<StarterCatalogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [requirements, setRequirements] = useState<Record<string, string>>({});
+  const [previews, setPreviews] = useState<Record<string, AgentFactoryResult | WorkflowFactoryResult>>({});
+  const [messages, setMessages] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<Record<string, 'preview' | 'create'>>({});
 
   useEffect(() => {
     void refresh();
@@ -49,11 +55,94 @@ export default function StartersPage() {
     setLoading(true);
     setError(null);
     try {
-      setEntries(await daemonClient().listStarters());
+      const nextEntries = await daemonClient().listStarters();
+      setEntries(nextEntries);
+      setRequirements((current) => {
+        const next = { ...current };
+        for (const entry of nextEntries) {
+          if (supportsDraftFactory(entry.kind) && !next[entry.id]) {
+            next[entry.id] = defaultRequirement(entry);
+          }
+        }
+        return next;
+      });
     } catch (nextError) {
       setError(formatError(nextError));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function previewTemplate(entry: StarterCatalogEntry) {
+    const requirement = (requirements[entry.id] ?? defaultRequirement(entry)).trim();
+    if (!requirement) {
+      setMessages((current) => ({ ...current, [entry.id]: 'Requirement is required for preview.' }));
+      return;
+    }
+
+    setBusy((current) => ({ ...current, [entry.id]: 'preview' }));
+    setMessages((current) => ({ ...current, [entry.id]: '' }));
+    try {
+      const client = daemonClient();
+      const preview =
+        entry.kind === 'agent_template'
+          ? await client.previewAgentFactory({
+              requirement,
+              template_id: templateId(entry),
+            })
+          : await client.previewWorkflowFactory({
+              requirement,
+              template_id: templateId(entry),
+            });
+      setPreviews((current) => ({ ...current, [entry.id]: preview }));
+    } catch (nextError) {
+      setMessages((current) => ({ ...current, [entry.id]: formatError(nextError) }));
+    } finally {
+      setBusy((current) => {
+        const next = { ...current };
+        delete next[entry.id];
+        return next;
+      });
+    }
+  }
+
+  async function createDraft(entry: StarterCatalogEntry) {
+    const requirement = (requirements[entry.id] ?? defaultRequirement(entry)).trim();
+    if (!requirement) {
+      setMessages((current) => ({ ...current, [entry.id]: 'Requirement is required to create a draft.' }));
+      return;
+    }
+
+    setBusy((current) => ({ ...current, [entry.id]: 'create' }));
+    setMessages((current) => ({ ...current, [entry.id]: '' }));
+    try {
+      const client = daemonClient();
+      const created =
+        entry.kind === 'agent_template'
+          ? await client.createAgentFactory({
+              requirement,
+              template_id: templateId(entry),
+            })
+          : await client.createWorkflowFactory({
+              requirement,
+              template_id: templateId(entry),
+            });
+      setPreviews((current) => ({ ...current, [entry.id]: created }));
+      setMessages((current) => ({
+        ...current,
+        [entry.id]:
+          entry.kind === 'agent_template'
+            ? `Draft saved as ${created.spec.id}. Open /agents to review and approve it.`
+            : `Draft saved as ${created.spec.id}. Open /workflows to review and approve it.`,
+      }));
+    } catch (nextError) {
+      setMessages((current) => ({ ...current, [entry.id]: formatError(nextError) }));
+    } finally {
+      setBusy((current) => {
+        const next = { ...current };
+        delete next[entry.id];
+        return next;
+      });
     }
   }
 
@@ -119,11 +208,7 @@ export default function StartersPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="text-base font-semibold">{entry.name}</h3>
                           <StatusBadge status={entry.status} />
-                          {entry.official ? (
-                            <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs text-primary">
-                              official
-                            </span>
-                          ) : null}
+                          <TrustBadge official={entry.official} />
                         </div>
                         <p className="text-sm text-gray-400">{entry.description}</p>
                       </div>
@@ -161,18 +246,58 @@ export default function StartersPage() {
                     ) : null}
 
                     <div className="space-y-3 pt-2">
-                      {entry.action_route ? (
-                        <Link
-                          href={entry.action_route}
-                          className="inline-flex rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/80"
-                        >
-                          {entry.action_label}
-                        </Link>
-                      ) : (
-                        <div className="inline-flex rounded-lg border border-surface2 px-4 py-2 text-sm text-gray-200">
-                          {entry.action_label}
+                      <div className="flex flex-wrap gap-3">
+                        {entry.action_route ? (
+                          <Link
+                            href={entry.action_route}
+                            className="inline-flex rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/80"
+                          >
+                            {entry.action_label}
+                          </Link>
+                        ) : (
+                          <div className="inline-flex rounded-lg border border-surface2 px-4 py-2 text-sm text-gray-200">
+                            {entry.action_label}
+                          </div>
+                        )}
+                        {supportsDraftFactory(entry.kind) ? (
+                          <>
+                            <button
+                              onClick={() => void previewTemplate(entry)}
+                              disabled={busy[entry.id] !== undefined}
+                              className="rounded-lg border border-surface2 px-4 py-2 text-sm text-gray-200 hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {busy[entry.id] === 'preview' ? 'Previewing…' : 'Preview draft'}
+                            </button>
+                            <button
+                              onClick={() => void createDraft(entry)}
+                              disabled={busy[entry.id] !== undefined}
+                              className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {busy[entry.id] === 'create' ? 'Saving…' : 'Create draft'}
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
+
+                      {supportsDraftFactory(entry.kind) ? (
+                        <div className="space-y-2 rounded-lg border border-surface2 bg-background/60 px-3 py-3">
+                          <p className="text-xs uppercase tracking-[0.2em] text-gray-500">Customize</p>
+                          <textarea
+                            value={requirements[entry.id] ?? defaultRequirement(entry)}
+                            onChange={(event) =>
+                              setRequirements((current) => ({
+                                ...current,
+                                [entry.id]: event.target.value,
+                              }))
+                            }
+                            rows={3}
+                            className="w-full rounded-lg border border-surface2 bg-background px-3 py-2 text-sm text-gray-100 outline-none focus:border-primary"
+                          />
+                          <p className="text-xs text-gray-500">
+                            This requirement is passed into the built-in factory template to create a disabled draft you can review before approval.
+                          </p>
                         </div>
-                      )}
+                      ) : null}
 
                       {entry.command_hint ? (
                         <div className="rounded-lg border border-surface2 bg-background/60 px-3 py-2">
@@ -181,6 +306,16 @@ export default function StartersPage() {
                             {entry.command_hint}
                           </code>
                         </div>
+                      ) : null}
+
+                      {messages[entry.id] ? (
+                        <div className="rounded-lg border border-surface2 bg-background/60 px-3 py-2 text-sm text-gray-300">
+                          {messages[entry.id]}
+                        </div>
+                      ) : null}
+
+                      {previews[entry.id] ? (
+                        <PreviewPanel entry={entry} preview={previews[entry.id]} />
                       ) : null}
                     </div>
                   </article>
@@ -208,6 +343,79 @@ function StatusBadge({ status }: { status: StarterCatalogEntry['status'] }) {
   );
 }
 
+function TrustBadge({ official }: { official: boolean }) {
+  if (official) {
+    return (
+      <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs text-primary">
+        trusted official
+      </span>
+    );
+  }
+
+  return (
+    <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-200">
+      review required
+    </span>
+  );
+}
+
+function PreviewPanel({
+  entry,
+  preview,
+}: {
+  entry: StarterCatalogEntry;
+  preview: AgentFactoryResult | WorkflowFactoryResult;
+}) {
+  const review = preview.review;
+  const tags = preview.spec.tags.slice(0, 6);
+
+  return (
+    <div className="space-y-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-primary/80">Draft Preview</p>
+          <p className="text-sm font-medium text-gray-100">
+            {preview.spec.name} · {preview.spec.id}
+          </p>
+        </div>
+        <span className="rounded-full border border-surface2 bg-background/50 px-2 py-0.5 text-xs text-gray-300">
+          {review.review_status}
+        </span>
+      </div>
+      <p className="text-sm text-gray-300">{review.summary}</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="rounded-lg border border-surface2 bg-background/60 px-3 py-2 text-sm text-gray-300">
+          {entry.kind === 'agent_template'
+            ? `${(preview as AgentFactoryResult).spec.capabilities.length} capabilities`
+            : `${(preview as WorkflowFactoryResult).spec.steps.length} steps`}
+        </div>
+        <div className="rounded-lg border border-surface2 bg-background/60 px-3 py-2 text-sm text-gray-300">
+          Suggested action: {review.suggested_action}
+        </div>
+      </div>
+      {tags.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {tags.map((tag) => (
+            <span
+              key={`${preview.spec.id}:${tag}`}
+              className="rounded-full border border-surface2 bg-background/50 px-2 py-0.5 text-xs text-gray-300"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {review.warnings.length > 0 ? (
+        <ul className="space-y-1 text-sm text-amber-200">
+          {review.warnings.slice(0, 3).map((warning) => (
+            <li key={`${preview.spec.id}:${warning}`}>- {warning}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function sectionCopy(kind: StarterCatalogKind): string {
   switch (kind) {
     case 'agent_template':
@@ -221,6 +429,18 @@ function sectionCopy(kind: StarterCatalogKind): string {
     case 'capability_pack':
       return 'Curated connector-oriented capability bundles. Trusted one-click install comes next; today these point to the official setup path.';
   }
+}
+
+function supportsDraftFactory(kind: StarterCatalogKind) {
+  return kind === 'agent_template' || kind === 'workflow_template';
+}
+
+function templateId(entry: StarterCatalogEntry) {
+  return entry.id.split(':').slice(1).join(':');
+}
+
+function defaultRequirement(entry: StarterCatalogEntry) {
+  return `Create a ${entry.name} draft for ${entry.description.toLowerCase()}`;
 }
 
 function daemonClient() {

@@ -158,25 +158,16 @@ fn approve_agent(repo: &SpecRepository, id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_agent(repo: &SpecRepository, config: &Config, id: &str, prompt: String) -> Result<()> {
-    if prompt.trim().is_empty() {
-        anyhow::bail!("Agent run requires a non-empty prompt");
-    }
-
+pub fn execution_profile_for_agent(
+    repo: &SpecRepository,
+    id: &str,
+) -> Result<TaskExecutionProfile> {
     let spec = repo.load_agent(id)?;
     if !spec.enabled {
         anyhow::bail!("Agent '{}' is disabled", spec.id);
     }
 
-    let run_id = Uuid::new_v4().to_string();
-    let db = Database::new(&database_path(config))
-        .await
-        .context("Failed to open database for agent run")?;
-    db.agent_runs()
-        .start_agent_run(&run_id, &spec.id, None, None, &prompt)
-        .await?;
-
-    let execution_profile = TaskExecutionProfile {
+    Ok(TaskExecutionProfile {
         agent_id: Some(spec.id.clone()),
         agent_name: Some(spec.name.clone()),
         worker_preset_id: None,
@@ -186,7 +177,24 @@ async fn run_agent(repo: &SpecRepository, config: &Config, id: &str, prompt: Str
         allowed_tools: allowed_tools(&spec),
         output_contract: spec.output_contract.clone(),
         max_iterations: None,
-    };
+    })
+}
+
+async fn run_agent(repo: &SpecRepository, config: &Config, id: &str, prompt: String) -> Result<()> {
+    if prompt.trim().is_empty() {
+        anyhow::bail!("Agent run requires a non-empty prompt");
+    }
+
+    let spec = repo.load_agent(id)?;
+    let execution_profile = execution_profile_for_agent(repo, id)?;
+
+    let run_id = Uuid::new_v4().to_string();
+    let db = Database::new(&database_path(config))
+        .await
+        .context("Failed to open database for agent run")?;
+    db.agent_runs()
+        .start_agent_run(&run_id, &spec.id, None, None, &prompt)
+        .await?;
 
     let result = execute_local_task_request(
         prompt.clone(),
