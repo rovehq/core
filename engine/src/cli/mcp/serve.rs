@@ -60,7 +60,11 @@ pub async fn serve_stdio(config: &Config) -> Result<()> {
     let mut lines = stdin.lines();
     let mut stdout = BufWriter::new(io::stdout());
 
-    while let Some(line) = lines.next_line().await.context("failed to read MCP request")? {
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .context("failed to read MCP request")?
+    {
         if line.trim().is_empty() {
             continue;
         }
@@ -128,7 +132,10 @@ async fn handle_notification(method: &str) {
     }
 }
 
-async fn handle_request(registry: &ToolRegistry, request: JsonRpcRequest) -> std::result::Result<Value, String> {
+async fn handle_request(
+    registry: &ToolRegistry,
+    request: JsonRpcRequest,
+) -> std::result::Result<Value, String> {
     match request.method.as_str() {
         "initialize" => Ok(json!({
             "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -218,7 +225,10 @@ async fn write_response(
         .write_all(b"\n")
         .await
         .context("failed to terminate MCP response")?;
-    stdout.flush().await.context("failed to flush MCP response")?;
+    stdout
+        .flush()
+        .await
+        .context("failed to flush MCP response")?;
     Ok(())
 }
 
@@ -229,8 +239,9 @@ mod tests {
 
     #[tokio::test]
     async fn tools_list_includes_registered_builtin() {
-        let registry = ToolRegistry::empty();
+        let mut registry = ToolRegistry::empty();
         registry.register_builtin_web_fetch().await;
+        registry.register_builtin_web_search().await;
 
         let result = handle_request(
             &registry,
@@ -249,9 +260,10 @@ mod tests {
             .and_then(serde_json::Value::as_array)
             .unwrap();
         assert!(tools.iter().any(|tool| {
-            tool.get("name")
-                .and_then(serde_json::Value::as_str)
-                == Some("web_fetch")
+            tool.get("name").and_then(serde_json::Value::as_str) == Some("web_fetch")
+        }));
+        assert!(tools.iter().any(|tool| {
+            tool.get("name").and_then(serde_json::Value::as_str) == Some("web_search")
         }));
     }
 
@@ -275,6 +287,9 @@ mod tests {
         });
         assert_eq!(descriptor.name, "demo");
         assert_eq!(descriptor.description, "example");
-        assert_eq!(descriptor.input_schema, serde_json::json!({"type":"object"}));
+        assert_eq!(
+            descriptor.input_schema,
+            serde_json::json!({"type":"object"})
+        );
     }
 }

@@ -599,9 +599,7 @@ mod tests {
                 package_path: "echo-skill/0.2.0/plugin-package.json".to_string(),
                 runtime_path: Some("echo-skill/0.2.0/runtime.json".to_string()),
                 artifact_path: Some("echo-skill/0.2.0/echo.wasm".to_string()),
-                artifact_sidecar_path: Some(
-                    "echo-skill/0.2.0/echo.capabilities.json".to_string(),
-                ),
+                artifact_sidecar_path: Some("echo-skill/0.2.0/echo.capabilities.json".to_string()),
                 readme_path: Some("echo-skill/0.2.0/README.md".to_string()),
                 release_path: "echo-skill/0.2.0/release.json".to_string(),
             },
@@ -655,9 +653,7 @@ mod tests {
                 package_path: "echo-skill/0.1.0/plugin-package.json".to_string(),
                 runtime_path: Some("echo-skill/0.1.0/runtime.json".to_string()),
                 artifact_path: Some("echo-skill/0.1.0/echo.wasm".to_string()),
-                artifact_sidecar_path: Some(
-                    "echo-skill/0.1.0/echo.capabilities.json".to_string(),
-                ),
+                artifact_sidecar_path: Some("echo-skill/0.1.0/echo.capabilities.json".to_string()),
                 readme_path: None,
                 release_path: "echo-skill/0.1.0/release.json".to_string(),
             },

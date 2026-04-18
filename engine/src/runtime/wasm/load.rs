@@ -1,8 +1,8 @@
 use extism::{Manifest as ExtismManifest, PluginBuilder, Wasm};
 use extism_manifest::MemoryOptions;
 use sdk::errors::EngineError;
-use serde::Serialize;
 use serde::Deserialize;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -314,7 +314,10 @@ mod tests {
         let report = effective_wasm_limit_report(&PluginEntry::default(), &plugin_path)
             .expect("effective report");
         assert_eq!(report.max_memory_mb, 4);
-        assert_eq!(report.sidecar_path, Some(sidecar_path.display().to_string()));
+        assert_eq!(
+            report.sidecar_path,
+            Some(sidecar_path.display().to_string())
+        );
     }
 
     #[test]

@@ -82,6 +82,7 @@ impl AgentCore {
         if profile.instructions.trim().is_empty()
             && profile.allowed_tools.is_empty()
             && profile.output_contract.is_none()
+            && profile.outcome_contract.is_none()
             && profile.max_iterations.is_none()
             && profile.agent_name.is_none()
             && profile.worker_preset_name.is_none()
@@ -133,6 +134,27 @@ impl AgentCore {
             lines.push(String::new());
             lines.push("Output contract:".to_string());
             lines.push(output_contract.trim().to_string());
+        }
+        if let Some(outcome_contract) = profile
+            .outcome_contract
+            .as_ref()
+            .filter(|value| !value.success_criteria.trim().is_empty())
+        {
+            lines.push(String::new());
+            lines.push("Outcome contract:".to_string());
+            lines.push(format!(
+                "Success criteria: {}",
+                outcome_contract.success_criteria.trim()
+            ));
+            lines.push(format!(
+                "Self-evaluation policy: {} (max retries: {}).",
+                outcome_contract.evaluator_policy.trim(),
+                outcome_contract.max_self_evals
+            ));
+            lines.push(
+                "Before settling on the final answer, verify it satisfies the success criteria exactly."
+                    .to_string(),
+            );
         }
         if let Some(max_iterations) = profile.max_iterations.filter(|value| *value > 0) {
             lines.push(String::new());

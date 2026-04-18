@@ -11,7 +11,10 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::debug;
 
 use crate::config::Config;
-use crate::hooks::{task_source_label, AfterToolCallPayload, BeforeToolCallPayload, HookManager};
+use crate::hooks::{
+    task_source_label, AfterToolCallPayload, BeforeAgentStartPayload, BeforeToolCallPayload,
+    HookManager, MessageReceivedPayload, MessageSendingPayload, TextHookOutcome,
+};
 use sdk::browser::BrowserBackend;
 
 use crate::runtime::{
@@ -52,6 +55,8 @@ pub struct ToolRegistry {
     pub fs: Option<FilesystemTool>,
     pub terminal: Option<TerminalTool>,
     pub vision: Option<VisionTool>,
+    pub web_fetch_enabled: bool,
+    pub web_search_enabled: bool,
     /// Browser backend — `None` when `browser.enabled` is false or no profile is configured.
     /// Accepts any type implementing `BrowserBackend` (e.g. CdpBackend, BrowshBackend).
     pub browser: Option<Arc<Mutex<dyn BrowserBackend>>>,
@@ -72,6 +77,8 @@ impl ToolRegistry {
             fs: None,
             terminal: None,
             vision: None,
+            web_fetch_enabled: false,
+            web_search_enabled: false,
             browser: None,
             wasm_runtime: None,
             wasm_tools: Vec::new(),
@@ -95,6 +102,8 @@ impl ToolRegistry {
             fs: None,
             terminal: None,
             vision: None,
+            web_fetch_enabled: false,
+            web_search_enabled: false,
             browser: None,
             wasm_runtime: wasm,
             wasm_tools: Vec::new(),
@@ -110,6 +119,28 @@ impl ToolRegistry {
 
     pub fn workspace(&self) -> Option<&Path> {
         self.fs.as_ref().map(|fs| fs.workspace())
+    }
+
+    pub(crate) fn search_config(&self) -> &crate::config::SearchConfig {
+        &self.config.search
+    }
+
+    pub async fn before_agent_start(
+        &self,
+        payload: BeforeAgentStartPayload,
+    ) -> Result<TextHookOutcome, EngineError> {
+        self.hooks.before_agent_start(payload).await
+    }
+
+    pub async fn message_received(
+        &self,
+        payload: MessageReceivedPayload,
+    ) -> Result<TextHookOutcome, EngineError> {
+        self.hooks.message_received(payload).await
+    }
+
+    pub async fn message_sending(&self, payload: MessageSendingPayload) {
+        self.hooks.message_sending(payload).await;
     }
 
     pub async fn register(&self, schema: ToolSchema) {
@@ -192,13 +223,26 @@ impl ToolRegistry {
         .await;
     }
 
-    pub async fn register_builtin_web_fetch(&self) {
+    pub async fn register_builtin_web_fetch(&mut self) {
+        self.web_fetch_enabled = true;
         self.register(ToolSchema {
             name: "web_fetch".to_string(),
             description: "Fetch a web page or text resource and return readable text.".to_string(),
             parameters: serde_json::json!({"type":"object","properties":{"url":{"type":"string","description":"HTTP or HTTPS URL to fetch"},"max_chars":{"type":"integer","description":"Optional maximum number of characters to return"}},"required":["url"]}),
             source: ToolSource::Builtin,
             domains: vec!["web".to_string(), "research".to_string(), "read".to_string(), "all".to_string()],
+        })
+        .await;
+    }
+
+    pub async fn register_builtin_web_search(&mut self) {
+        self.web_search_enabled = true;
+        self.register(ToolSchema {
+            name: "web_search".to_string(),
+            description: "Search the web and return compact ranked results without fetching full pages.".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"query":{"type":"string","description":"Search query"},"limit":{"type":"integer","description":"Maximum number of results to return"},"provider":{"type":"string","description":"Optional provider override, e.g. searxng"}},"required":["query"]}),
+            source: ToolSource::Builtin,
+            domains: vec!["web".to_string(), "research".to_string(), "search".to_string(), "all".to_string()],
         })
         .await;
     }
@@ -704,7 +748,8 @@ impl ToolRegistry {
 
     fn tool_operation_name(&self, tool_name: &str, args: &Value) -> &'static str {
         match tool_name {
-            "read_file" | "list_dir" | "file_exists" | "glob_files" | "grep_files" => "read_file",
+            "read_file" | "list_dir" | "file_exists" | "glob_files" | "grep_files"
+            | "web_fetch" | "web_search" => "read_file",
             "write_file" | "append_to_file" | "patch_file" => "write_file",
             "delete_file" => "delete_file",
             "run_command" => args
@@ -733,6 +778,46 @@ impl ToolRegistry {
 
     async fn call_builtin(&self, name: &str, args: Value) -> Result<Value, EngineError> {
         match name {
+            "web_fetch" => {
+                let url = args.get("url").and_then(Value::as_str).unwrap_or_default();
+                if url.is_empty() {
+                    return Err(EngineError::ToolError(
+                        "web_fetch requires a non-empty url".to_string(),
+                    ));
+                }
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err(EngineError::ToolError(
+                        "web_fetch only supports http:// and https:// URLs".to_string(),
+                    ));
+                }
+                let max_chars = args
+                    .get("max_chars")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(20_000) as usize;
+                let result = crate::system::knowledge::fetch_url_text(url, max_chars)
+                    .await
+                    .map_err(|error| EngineError::ToolError(error.to_string()))?;
+                serde_json::to_value(result)
+                    .map_err(|error| EngineError::ToolError(error.to_string()))
+            }
+            "web_search" => {
+                let query = args
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
+                let provider = args.get("provider").and_then(Value::as_str);
+                let result = crate::system::web_search::search_web(
+                    &self.config.search,
+                    query,
+                    limit,
+                    provider,
+                )
+                .await
+                .map_err(|error| EngineError::ToolError(error.to_string()))?;
+                serde_json::to_value(result)
+                    .map_err(|error| EngineError::ToolError(error.to_string()))
+            }
             "read_file" => {
                 let fs = self
                     .fs

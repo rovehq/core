@@ -450,6 +450,7 @@ mod tests {
                 prompt: "Do the thing".to_string(),
                 agent_id: Some("default-assistant".to_string()),
                 worker_preset: Some("executor".to_string()),
+                outcome_contract: None,
                 continue_on_error: false,
                 branches: Vec::new(),
             }],
@@ -479,6 +480,7 @@ mod tests {
                 prompt: "Do the thing".to_string(),
                 agent_id: None,
                 worker_preset: None,
+                outcome_contract: None,
                 continue_on_error: false,
                 branches: vec![WorkflowBranchSpec {
                     contains: "retry".to_string(),

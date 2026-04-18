@@ -89,6 +89,27 @@ impl ToolRegistry {
         .any(|keyword| query_lower.contains(keyword))
     }
 
+    fn should_offer_web(query_lower: &str) -> bool {
+        [
+            "web",
+            "website",
+            "webpage",
+            "url",
+            "http",
+            "https",
+            "search",
+            "find online",
+            "look up",
+            "research",
+            "docs",
+            "documentation",
+            "news",
+            "article",
+        ]
+        .iter()
+        .any(|keyword| query_lower.contains(keyword))
+    }
+
     /// Return WASM tools whose domain tags overlap with keywords in `query`.
     ///
     /// Falls back to all WASM tools when the query matches nothing or
@@ -150,12 +171,15 @@ impl ToolRegistry {
             && (include_all_core_tools || Self::should_offer_terminal(&query_lower));
         let include_vision = self.vision.is_some()
             && (include_all_core_tools || Self::should_offer_vision(&query_lower));
+        let include_web = (self.web_fetch_enabled || self.web_search_enabled)
+            && (include_all_core_tools || Self::should_offer_web(&query_lower));
         let include_browser = self.browser.is_some()
             && (include_all_core_tools || Self::should_offer_browser(&query_lower));
 
         let has_any_tool = include_fs
             || include_terminal
             || include_vision
+            || include_web
             || include_browser
             || !self.wasm_tools.is_empty()
             || !self.mcp_tools.is_empty();
@@ -274,6 +298,33 @@ impl ToolRegistry {
             parts.push("## capture_screen".to_string());
             parts.push("Capture a screenshot and save it to a file.".to_string());
             parts.push(r#"Arguments: {"output_file": "screenshot.png"}"#.to_string());
+        }
+
+        if include_web {
+            if self.web_search_enabled {
+                parts.push(String::new());
+                parts.push("## web_search".to_string());
+                parts.push(
+                    "Search the web and return compact ranked results. Use this to discover relevant pages before deciding whether to fetch one."
+                        .to_string(),
+                );
+                parts.push(
+                    r#"Arguments: {"query": "search terms", "limit": 5, "provider": "searxng"}"#
+                        .to_string(),
+                );
+            }
+
+            if self.web_fetch_enabled {
+                parts.push(String::new());
+                parts.push("## web_fetch".to_string());
+                parts.push(
+                    "Fetch one specific web page or text resource and return readable text. Use this after you already know the URL you need."
+                        .to_string(),
+                );
+                parts.push(
+                    r#"Arguments: {"url": "https://example.com", "max_chars": 20000}"#.to_string(),
+                );
+            }
         }
 
         if include_browser {
@@ -424,6 +475,17 @@ mod tests {
         assert!(prompt.contains("glob_files"), "glob_files should be listed");
         assert!(prompt.contains("grep_files"), "grep_files should be listed");
         assert!(prompt.contains("Available tools"));
+    }
+
+    #[test]
+    fn web_tools_are_included_for_web_queries() {
+        let mut registry = empty_registry();
+        registry.web_fetch_enabled = true;
+        registry.web_search_enabled = true;
+
+        let prompt = registry.system_prompt_for_query("search the web for rust docs");
+        assert!(prompt.contains("## web_search"));
+        assert!(prompt.contains("## web_fetch"));
     }
 
     #[test]

@@ -49,6 +49,7 @@ pub async fn register_selected(
     selection: BuiltinSelection,
 ) -> Result<(), EngineError> {
     registry.register_builtin_web_fetch().await;
+    registry.register_builtin_web_search().await;
     if selection.filesystem {
         registry
             .register_builtin_filesystem(FilesystemTool::new(workspace.clone())?)

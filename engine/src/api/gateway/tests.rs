@@ -38,6 +38,7 @@ async fn test_submit_cli_task_preserves_execution_profile() {
         instructions: "Follow the saved agent profile".to_string(),
         allowed_tools: vec!["read_file".to_string()],
         output_contract: None,
+        outcome_contract: None,
         max_iterations: Some(4),
     };
     let task_id = gateway

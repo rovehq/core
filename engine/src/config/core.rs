@@ -15,6 +15,7 @@ use super::metadata::{CONFIG_SCHEMA_VERSION, VERSION};
 use super::policy::PolicyConfig;
 use super::profile::{LoadoutsConfig, ProfilesConfig};
 use super::remote::RemoteConfig;
+use super::search::SearchConfig;
 use super::secrets::SecretsConfig;
 use super::security::SecurityConfig;
 use super::telegram::TelegramConfig;
@@ -44,6 +45,8 @@ pub struct Config {
     pub approvals: ApprovalsConfig,
     #[serde(default)]
     pub browser: BrowserConfig,
+    #[serde(default)]
+    pub search: SearchConfig,
     #[serde(default)]
     pub llm: LLMConfig,
     #[serde(default)]

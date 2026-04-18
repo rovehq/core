@@ -115,7 +115,10 @@ fn print_header(stdout: &mut io::Stdout, step: usize) -> Result<()> {
     print_line(stdout, "")?;
     print_line(
         stdout,
-        &format!("  {DIM}Step {}/6 • Use ← → or Tab/Shift+Tab to navigate • Ctrl+C to quit{RESET}", step + 1),
+        &format!(
+            "  {DIM}Step {}/6 • Use ← → or Tab/Shift+Tab to navigate • Ctrl+C to quit{RESET}",
+            step + 1
+        ),
     )?;
     print_line(stdout, "")?;
     Ok(())
@@ -124,7 +127,7 @@ fn print_header(stdout: &mut io::Stdout, step: usize) -> Result<()> {
 fn step_workspace(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<NavigationAction> {
     print_line(stdout, &format!("  {BOLD}Workspace Directory{RESET}"))?;
     print_line(stdout, "")?;
-    
+
     match prompt_text_with_nav(stdout, "Workspace directory", &state.workspace)? {
         (Some(value), nav) => {
             state.workspace = value;
@@ -143,16 +146,22 @@ fn step_preset(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<Navig
 
     print_line(stdout, &format!("  {BOLD}Quick Model Setup{RESET}"))?;
     print_line(stdout, "")?;
-    
-    let default_idx = state.preset.as_ref()
-        .and_then(|p| all_presets.iter().position(|preset| preset.label == p.label))
+
+    let default_idx = state
+        .preset
+        .as_ref()
+        .and_then(|p| {
+            all_presets
+                .iter()
+                .position(|preset| preset.label == p.label)
+        })
         .unwrap_or(0);
-    
+
     let preset_idx = select_menu_default(stdout, &labels, default_idx)?;
     print_line(stdout, "")?;
 
     state.preset = Some(all_presets[preset_idx].clone());
-    
+
     // Update state with preset values
     let preset = &all_presets[preset_idx];
     state.provider_name = preset.provider_name.clone();
@@ -164,15 +173,21 @@ fn step_preset(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<Navig
     Ok(NavigationAction::Next)
 }
 
-fn step_provider_details(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<NavigationAction> {
+fn step_provider_details(
+    stdout: &mut io::Stdout,
+    state: &mut WizardState,
+) -> Result<NavigationAction> {
     let preset = state.preset.as_ref().unwrap();
-    
+
     // Skip this step if not custom provider
     if preset.provider_name != "custom" {
         return Ok(NavigationAction::Next);
     }
 
-    print_line(stdout, &format!("  {BOLD}Custom Provider Configuration{RESET}"))?;
+    print_line(
+        stdout,
+        &format!("  {BOLD}Custom Provider Configuration{RESET}"),
+    )?;
     print_line(stdout, "")?;
 
     // Provider name
@@ -192,7 +207,7 @@ fn step_provider_details(stdout: &mut io::Stdout, state: &mut WizardState) -> Re
     ];
     print_line(stdout, &format!("  {BOLD}Endpoint protocol{RESET}"))?;
     print_line(stdout, "")?;
-    
+
     let protocol_idx = match state.protocol.as_str() {
         "gemini" => 1,
         "anthropic" => 2,
@@ -222,7 +237,11 @@ fn step_provider_details(stdout: &mut io::Stdout, state: &mut WizardState) -> Re
     state.protocol = protocol;
 
     // Base URL
-    let current_url = if state.base_url.is_empty() { &default_url } else { &state.base_url };
+    let current_url = if state.base_url.is_empty() {
+        &default_url
+    } else {
+        &state.base_url
+    };
     match prompt_text_with_nav(stdout, "Base URL", current_url)? {
         (Some(value), NavigationAction::Next) => state.base_url = value,
         (_, nav @ NavigationAction::Back) => return Ok(nav),
@@ -231,7 +250,11 @@ fn step_provider_details(stdout: &mut io::Stdout, state: &mut WizardState) -> Re
     }
 
     // Model
-    let current_model = if state.model.is_empty() { &default_model } else { &state.model };
+    let current_model = if state.model.is_empty() {
+        &default_model
+    } else {
+        &state.model
+    };
     match prompt_text_with_nav(stdout, "Model", current_model)? {
         (Some(value), NavigationAction::Next) => state.model = value,
         (_, nav @ NavigationAction::Back) => return Ok(nav),
@@ -277,7 +300,7 @@ fn step_risk_tier(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<Na
     ];
     print_line(stdout, &format!("  {BOLD}Maximum Risk Tier{RESET}"))?;
     print_line(stdout, "")?;
-    
+
     let risk_idx = select_menu_default(stdout, &risk_labels, state.max_risk_tier as usize)?;
     state.max_risk_tier = risk_idx as u8;
     print_line(stdout, "")?;
@@ -305,7 +328,7 @@ fn step_password(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<Nav
             print_line(stdout, "  Passwords did not match. Try again.")?;
             continue;
         }
-        
+
         state.daemon_password = password;
         state.password_confirmed = true;
         print_line(stdout, "")?;
@@ -316,8 +339,12 @@ fn step_password(stdout: &mut io::Stdout, state: &mut WizardState) -> Result<Nav
 }
 
 fn build_result(state: &WizardState) -> SetupResult {
-    let skipped = state.preset.as_ref().map(|p| p.provider_name.is_empty()).unwrap_or(true);
-    
+    let skipped = state
+        .preset
+        .as_ref()
+        .map(|p| p.provider_name.is_empty())
+        .unwrap_or(true);
+
     SetupResult {
         workspace: state.workspace.clone(),
         provider_name: state.provider_name.clone(),

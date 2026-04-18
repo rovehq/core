@@ -2,24 +2,21 @@ use std::io;
 use std::time::Instant;
 
 use anyhow::Result;
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use ratatui::{backend::CrosstermBackend, Terminal};
 
 use tokio::sync::mpsc;
 
-use super::event::{self, AppEvent};
 use super::action::{self, Action};
-use super::widgets;
-use super::ui;
 use super::dispatch;
+use super::event::{self, AppEvent};
 use super::streaming;
+use super::ui;
+use super::widgets;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputMode {
@@ -103,7 +100,10 @@ impl App {
                 if let Some(ref mut p) = self.palette {
                     if !p.drill() {
                         let cmd = p.full_command_for_selected();
-                        let has_sub = p.selected_cmd().map(|c| !c.subcommands.is_empty()).unwrap_or(false);
+                        let has_sub = p
+                            .selected_cmd()
+                            .map(|c| !c.subcommands.is_empty())
+                            .unwrap_or(false);
                         let args_hint = p.selected_cmd().map(|c| c.args_hint).unwrap_or("");
                         if !has_sub && !args_hint.is_empty() {
                             self.input.buffer = format!("/{} ", cmd);
@@ -128,7 +128,10 @@ impl App {
                 if self.palette.is_some() {
                     if let Some(ref p) = self.palette {
                         let cmd = p.full_command_for_selected();
-                        let has_sub = p.selected_cmd().map(|c| !c.subcommands.is_empty()).unwrap_or(false);
+                        let has_sub = p
+                            .selected_cmd()
+                            .map(|c| !c.subcommands.is_empty())
+                            .unwrap_or(false);
                         if has_sub {
                             if let Some(ref mut pm) = self.palette {
                                 pm.drill();
@@ -201,13 +204,20 @@ impl App {
             Action::ClearScreen => {}
             Action::ScrollUp => self.transcript.scroll_up(),
             Action::ScrollDown => self.transcript.scroll_down(),
-            Action::TaskListUp | Action::TaskListDown | Action::TaskListSelect | Action::TaskListClose => {}
+            Action::TaskListUp
+            | Action::TaskListDown
+            | Action::TaskListSelect
+            | Action::TaskListClose => {}
             Action::None => {}
         }
         reqs
     }
 
-    fn apply_task_list_action(&mut self, action: Action, mut reqs: Vec<DispatchReq>) -> Vec<DispatchReq> {
+    fn apply_task_list_action(
+        &mut self,
+        action: Action,
+        mut reqs: Vec<DispatchReq>,
+    ) -> Vec<DispatchReq> {
         match action {
             Action::Quit | Action::TaskListClose => {
                 self.task_list = None;
@@ -227,7 +237,9 @@ impl App {
                     if let Some(task) = tl.tasks.get(tl.selected) {
                         let task_id = task.id.clone();
                         self.task_list = None;
-                        reqs.push(DispatchReq::Command { cmd: format!("replay {}", task_id) });
+                        reqs.push(DispatchReq::Command {
+                            cmd: format!("replay {}", task_id),
+                        });
                     }
                 }
             }
@@ -261,26 +273,21 @@ impl App {
                 }
             }
             DispatchResult::Error { error, .. } => {
-                self.transcript.push(ratatui::text::Line::from(
-                    ratatui::text::Span::styled(
+                self.transcript
+                    .push(ratatui::text::Line::from(ratatui::text::Span::styled(
                         format!("  ✗ {}", error),
                         ratatui::style::Style::default().fg(super::theme::RED),
-                    ),
-                ));
+                    )));
             }
             DispatchResult::TaskList { tasks } => {
                 if tasks.is_empty() {
-                    self.transcript.push(ratatui::text::Line::from(
-                        ratatui::text::Span::styled(
+                    self.transcript
+                        .push(ratatui::text::Line::from(ratatui::text::Span::styled(
                             "  No tasks in history",
                             ratatui::style::Style::default().fg(super::theme::DIM),
-                        ),
-                    ));
+                        )));
                 } else {
-                    self.task_list = Some(TaskListState {
-                        tasks,
-                        selected: 0,
-                    });
+                    self.task_list = Some(TaskListState { tasks, selected: 0 });
                 }
             }
         }
@@ -308,21 +315,23 @@ impl App {
             ("  /help", "  show this help"),
             ("  /quit", "  exit interactive mode"),
             ("", ""),
-            ("  Ctrl+C", "   exit  │  Ctrl+L  clear screen  │  Ctrl+U  clear line"),
+            (
+                "  Ctrl+C",
+                "   exit  │  Ctrl+L  clear screen  │  Ctrl+U  clear line",
+            ),
             ("  ↑ ↓", "   history  │  ← → cursor  │  Tab  complete/drill"),
         ];
         for (key, val) in &lines {
             if key.is_empty() {
                 self.push_echo(val.to_string());
             } else {
-                self.transcript
-                    .push(ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(
-                            key.to_string(),
-                            ratatui::style::Style::default().fg(super::theme::CYAN),
-                        ),
-                        ratatui::text::Span::raw(val.to_string()),
-                    ]));
+                self.transcript.push(ratatui::text::Line::from(vec![
+                    ratatui::text::Span::styled(
+                        key.to_string(),
+                        ratatui::style::Style::default().fg(super::theme::CYAN),
+                    ),
+                    ratatui::text::Span::raw(val.to_string()),
+                ]));
             }
         }
     }
@@ -394,24 +403,30 @@ pub async fn run_tui() -> Result<()> {
 
 async fn run_dispatch(req: DispatchReq) -> DispatchResult {
     match req {
-        DispatchReq::Command { cmd } => {
-            match dispatch::run(&cmd).await {
-                Ok(lines) => DispatchResult::Output { _cmd: cmd, lines },
-                Err(e) => DispatchResult::Error { _cmd: cmd, error: e.to_string() },
-            }
-        }
-        DispatchReq::Task { prompt } => {
-            match streaming::run_task(&prompt).await {
-                Ok(lines) => DispatchResult::TaskOutput { _prompt: prompt, lines },
-                Err(e) => DispatchResult::Error { _cmd: prompt, error: e.to_string() },
-            }
-        }
-        DispatchReq::TaskList => {
-            match fetch_task_list().await {
-                Ok(tasks) => DispatchResult::TaskList { tasks },
-                Err(e) => DispatchResult::Error { _cmd: "replay".into(), error: e.to_string() },
-            }
-        }
+        DispatchReq::Command { cmd } => match dispatch::run(&cmd).await {
+            Ok(lines) => DispatchResult::Output { _cmd: cmd, lines },
+            Err(e) => DispatchResult::Error {
+                _cmd: cmd,
+                error: e.to_string(),
+            },
+        },
+        DispatchReq::Task { prompt } => match streaming::run_task(&prompt).await {
+            Ok(lines) => DispatchResult::TaskOutput {
+                _prompt: prompt,
+                lines,
+            },
+            Err(e) => DispatchResult::Error {
+                _cmd: prompt,
+                error: e.to_string(),
+            },
+        },
+        DispatchReq::TaskList => match fetch_task_list().await {
+            Ok(tasks) => DispatchResult::TaskList { tasks },
+            Err(e) => DispatchResult::Error {
+                _cmd: "replay".into(),
+                error: e.to_string(),
+            },
+        },
     }
 }
 
@@ -427,7 +442,11 @@ async fn fetch_task_list() -> anyhow::Result<Vec<TaskEntry>> {
 
     for line in stdout.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with("Task History") || line.starts_with('#') || line.starts_with("─") {
+        if line.is_empty()
+            || line.starts_with("Task History")
+            || line.starts_with('#')
+            || line.starts_with("─")
+        {
             continue;
         }
         let parts: Vec<&str> = line.splitn(3, char::is_whitespace).collect::<Vec<&str>>();

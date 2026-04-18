@@ -429,6 +429,12 @@ export interface AgentUiSchema {
   accent?: string | null;
 }
 
+export interface OutcomeContract {
+  success_criteria: string;
+  max_self_evals: number;
+  evaluator_policy: string;
+}
+
 export interface AgentSpec {
   schema_version: number;
   id: string;
@@ -445,6 +451,7 @@ export interface AgentSpec {
   node_placement: NodePlacementPolicy;
   schedules: string[];
   output_contract?: string | null;
+  outcome_contract?: OutcomeContract | null;
   ui: AgentUiSchema;
   tags: string[];
   provenance?: SpecProvenance | null;
@@ -456,6 +463,7 @@ export interface WorkflowStepSpec {
   prompt: string;
   agent_id?: string | null;
   worker_preset?: string | null;
+  outcome_contract?: OutcomeContract | null;
   continue_on_error: boolean;
   branches: WorkflowBranchSpec[];
 }

@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, InputMode};
+use super::app::App;
 use super::theme;
 use super::widgets;
 

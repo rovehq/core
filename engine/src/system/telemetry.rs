@@ -89,7 +89,9 @@ fn otlp_timeout_secs() -> u64 {
 }
 
 /// Build an OTLP tracer when `ROVE_OTLP_ENDPOINT` is configured.
-pub fn otlp_tracer_from_env(service_name: &str) -> Result<Option<opentelemetry_sdk::trace::Tracer>> {
+pub fn otlp_tracer_from_env(
+    service_name: &str,
+) -> Result<Option<opentelemetry_sdk::trace::Tracer>> {
     let Some(endpoint) = std::env::var("ROVE_OTLP_ENDPOINT")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -109,7 +111,10 @@ pub fn otlp_tracer_from_env(service_name: &str) -> Result<Option<opentelemetry_s
         .with_batch_exporter(exporter)
         .with_resource(
             Resource::builder_empty()
-                .with_attributes(vec![KeyValue::new("service.name", service_name.to_string())])
+                .with_attributes(vec![KeyValue::new(
+                    "service.name",
+                    service_name.to_string(),
+                )])
                 .build(),
         )
         .build();

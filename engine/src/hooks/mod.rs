@@ -27,6 +27,16 @@ enum HookEvent {
     BeforeToolCall,
     #[serde(rename = "AfterToolCall")]
     AfterToolCall,
+    #[serde(rename = "BeforeAgentStart")]
+    BeforeAgentStart,
+    #[serde(rename = "MessageReceived")]
+    MessageReceived,
+    #[serde(rename = "MessageSending")]
+    MessageSending,
+    #[serde(rename = "SessionStart")]
+    SessionStart,
+    #[serde(rename = "SessionEnd")]
+    SessionEnd,
 }
 
 impl HookEvent {
@@ -34,6 +44,11 @@ impl HookEvent {
         match self {
             HookEvent::BeforeToolCall => "BeforeToolCall",
             HookEvent::AfterToolCall => "AfterToolCall",
+            HookEvent::BeforeAgentStart => "BeforeAgentStart",
+            HookEvent::MessageReceived => "MessageReceived",
+            HookEvent::MessageSending => "MessageSending",
+            HookEvent::SessionStart => "SessionStart",
+            HookEvent::SessionEnd => "SessionEnd",
         }
     }
 }
@@ -85,6 +100,11 @@ struct HookHandle {
 pub struct HookManager {
     before_tool_call: Vec<Arc<HookHandle>>,
     after_tool_call: Vec<Arc<HookHandle>>,
+    before_agent_start: Vec<Arc<HookHandle>>,
+    message_received: Vec<Arc<HookHandle>>,
+    message_sending: Vec<Arc<HookHandle>>,
+    session_start: Vec<Arc<HookHandle>>,
+    session_end: Vec<Arc<HookHandle>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,9 +146,70 @@ pub struct AfterToolCallPayload {
     pub workspace: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct BeforeAgentStartPayload {
+    pub event: &'static str,
+    pub task_id: String,
+    pub input: String,
+    pub task_source: String,
+    pub workspace: String,
+    pub session_id: Option<String>,
+    pub run_mode: String,
+    pub run_isolation: String,
+    pub execution_profile: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageReceivedPayload {
+    pub event: &'static str,
+    pub task_id: String,
+    pub input: String,
+    pub task_source: String,
+    pub workspace: String,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageSendingPayload {
+    pub event: &'static str,
+    pub task_id: String,
+    pub output: String,
+    pub task_source: String,
+    pub workspace: String,
+    pub session_id: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionStartPayload {
+    pub event: &'static str,
+    pub session_id: String,
+    pub client_label: Option<String>,
+    pub origin: Option<String>,
+    pub user_agent: Option<String>,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionEndPayload {
+    pub event: &'static str,
+    pub session_id: String,
+    pub reason: String,
+    pub client_label: Option<String>,
+    pub origin: Option<String>,
+    pub user_agent: Option<String>,
+    pub workspace: String,
+}
+
 #[derive(Debug)]
 pub struct BeforeToolCallOutcome {
     pub args: Value,
+    pub modified_by: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct TextHookOutcome {
+    pub text: String,
     pub modified_by: Vec<String>,
 }
 
@@ -172,7 +253,34 @@ impl HookManager {
                 manager.before_tool_call.push(Arc::clone(&handle));
             }
             if handle.definition.events.contains(&HookEvent::AfterToolCall) {
-                manager.after_tool_call.push(handle);
+                manager.after_tool_call.push(Arc::clone(&handle));
+            }
+            if handle
+                .definition
+                .events
+                .contains(&HookEvent::BeforeAgentStart)
+            {
+                manager.before_agent_start.push(Arc::clone(&handle));
+            }
+            if handle
+                .definition
+                .events
+                .contains(&HookEvent::MessageReceived)
+            {
+                manager.message_received.push(Arc::clone(&handle));
+            }
+            if handle
+                .definition
+                .events
+                .contains(&HookEvent::MessageSending)
+            {
+                manager.message_sending.push(Arc::clone(&handle));
+            }
+            if handle.definition.events.contains(&HookEvent::SessionStart) {
+                manager.session_start.push(Arc::clone(&handle));
+            }
+            if handle.definition.events.contains(&HookEvent::SessionEnd) {
+                manager.session_end.push(handle);
             }
         }
         manager
@@ -180,6 +288,21 @@ impl HookManager {
             .sort_by(|left, right| left.definition.name.cmp(&right.definition.name));
         manager
             .after_tool_call
+            .sort_by(|left, right| left.definition.name.cmp(&right.definition.name));
+        manager
+            .before_agent_start
+            .sort_by(|left, right| left.definition.name.cmp(&right.definition.name));
+        manager
+            .message_received
+            .sort_by(|left, right| left.definition.name.cmp(&right.definition.name));
+        manager
+            .message_sending
+            .sort_by(|left, right| left.definition.name.cmp(&right.definition.name));
+        manager
+            .session_start
+            .sort_by(|left, right| left.definition.name.cmp(&right.definition.name));
+        manager
+            .session_end
             .sort_by(|left, right| left.definition.name.cmp(&right.definition.name));
         manager
     }
@@ -221,22 +344,39 @@ impl HookManager {
     }
 
     pub async fn after_tool_call(&self, payload: AfterToolCallPayload) {
-        let mut jobs = JoinSet::new();
-        for hook in &self.after_tool_call {
-            let hook = Arc::clone(hook);
-            let payload = payload.clone();
-            jobs.spawn(async move {
-                if let Err(error) = hook.run_after_tool_call(payload).await {
-                    warn!(
-                        hook = %hook.definition.name,
-                        error = %error,
-                        "AfterToolCall hook failed"
-                    );
-                }
-            });
-        }
+        self.run_read_only_hooks(&self.after_tool_call, payload, "AfterToolCall hook failed")
+            .await;
+    }
 
-        while jobs.join_next().await.is_some() {}
+    pub async fn before_agent_start(
+        &self,
+        payload: BeforeAgentStartPayload,
+    ) -> Result<TextHookOutcome, EngineError> {
+        self.run_mutating_text_hooks(&self.before_agent_start, payload, "input")
+            .await
+    }
+
+    pub async fn message_received(
+        &self,
+        payload: MessageReceivedPayload,
+    ) -> Result<TextHookOutcome, EngineError> {
+        self.run_mutating_text_hooks(&self.message_received, payload, "input")
+            .await
+    }
+
+    pub async fn message_sending(&self, payload: MessageSendingPayload) {
+        self.run_read_only_hooks(&self.message_sending, payload, "MessageSending hook failed")
+            .await;
+    }
+
+    pub async fn session_start(&self, payload: SessionStartPayload) {
+        self.run_read_only_hooks(&self.session_start, payload, "SessionStart hook failed")
+            .await;
+    }
+
+    pub async fn session_end(&self, payload: SessionEndPayload) {
+        self.run_read_only_hooks(&self.session_end, payload, "SessionEnd hook failed")
+            .await;
     }
 
     pub async fn status(&self) -> HookStatus {
@@ -245,6 +385,11 @@ impl HookManager {
             .before_tool_call
             .iter()
             .chain(self.after_tool_call.iter())
+            .chain(self.before_agent_start.iter())
+            .chain(self.message_received.iter())
+            .chain(self.message_sending.iter())
+            .chain(self.session_start.iter())
+            .chain(self.session_end.iter())
         {
             if hooks
                 .iter()
@@ -263,12 +408,75 @@ impl HookManager {
             .before_tool_call
             .iter()
             .chain(self.after_tool_call.iter())
+            .chain(self.before_agent_start.iter())
+            .chain(self.message_received.iter())
+            .chain(self.message_sending.iter())
+            .chain(self.session_start.iter())
+            .chain(self.session_end.iter())
         {
             if handle.definition.name == name {
                 return Some(handle.summary().await);
             }
         }
         None
+    }
+
+    async fn run_mutating_text_hooks<T: Serialize + Clone>(
+        &self,
+        hooks: &[Arc<HookHandle>],
+        payload: T,
+        field_name: &str,
+    ) -> Result<TextHookOutcome, EngineError> {
+        let mut text = extract_text_field(&payload, field_name).unwrap_or_default();
+        let mut modified_by = Vec::new();
+
+        for hook in hooks {
+            let next_payload = rewrite_text_field(&payload, field_name, &text);
+            match hook.run_before_text_hook(&next_payload, field_name).await {
+                Ok(BeforeHookResult::Continue) => {}
+                Ok(BeforeHookResult::Modify(updated)) => {
+                    text = value_to_text(updated, field_name)
+                        .map_err(|error| EngineError::ToolError(error.to_string()))?;
+                    modified_by.push(hook.definition.name.clone());
+                }
+                Ok(BeforeHookResult::Block(reason)) => {
+                    return Err(EngineError::ToolError(format!(
+                        "hook '{}' blocked lifecycle event: {}",
+                        hook.definition.name, reason
+                    )));
+                }
+                Err(error) => {
+                    warn!(
+                        hook = %hook.definition.name,
+                        error = %error,
+                        "Lifecycle mutating hook failed"
+                    );
+                }
+            }
+        }
+
+        Ok(TextHookOutcome { text, modified_by })
+    }
+
+    async fn run_read_only_hooks<T: Serialize + Clone + Send + Sync + 'static>(
+        &self,
+        hooks: &[Arc<HookHandle>],
+        payload: T,
+        error_message: &str,
+    ) {
+        let mut jobs = JoinSet::new();
+        for hook in hooks {
+            let hook = Arc::clone(hook);
+            let payload = payload.clone();
+            let error_message = error_message.to_string();
+            jobs.spawn(async move {
+                if let Err(error) = hook.run_read_only_hook(payload).await {
+                    warn!(hook = %hook.definition.name, error = %error, "{error_message}");
+                }
+            });
+        }
+
+        while jobs.join_next().await.is_some() {}
     }
 }
 
@@ -335,7 +543,39 @@ impl HookHandle {
         }
     }
 
-    async fn run_after_tool_call(&self, payload: AfterToolCallPayload) -> anyhow::Result<()> {
+    async fn run_before_text_hook<T: Serialize>(
+        &self,
+        payload: &T,
+        field_name: &str,
+    ) -> anyhow::Result<BeforeHookResult> {
+        let output = self.run_json_hook(payload).await?;
+        if !output.success {
+            return Ok(BeforeHookResult::Block(output.reason()));
+        }
+
+        let Some(response) = output.response else {
+            return Ok(BeforeHookResult::Continue);
+        };
+
+        match response.action.as_deref() {
+            Some("modify") => {
+                let data = response
+                    .data
+                    .ok_or_else(|| anyhow::anyhow!("hook returned modify without data"))?;
+                let text = value_to_text(data, field_name)?;
+                Ok(BeforeHookResult::Modify(Value::String(text)))
+            }
+            Some("block") => Ok(BeforeHookResult::Block(
+                response
+                    .reason
+                    .unwrap_or_else(|| "blocked by hook".to_string()),
+            )),
+            Some("continue") | None => Ok(BeforeHookResult::Continue),
+            Some(other) => Err(anyhow::anyhow!("unsupported hook action '{}'", other)),
+        }
+    }
+
+    async fn run_read_only_hook<T: Serialize + Sync>(&self, payload: T) -> anyhow::Result<()> {
         let output = self.run_json_hook(&payload).await?;
         if !output.success {
             return Err(anyhow::anyhow!(output.reason()));
@@ -590,6 +830,43 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
+fn extract_text_field<T: Serialize>(payload: &T, field_name: &str) -> Option<String> {
+    serde_json::to_value(payload)
+        .ok()
+        .and_then(|value| value.get(field_name).cloned())
+        .and_then(|value| value.as_str().map(|value| value.to_string()))
+}
+
+fn rewrite_text_field<T: Serialize>(payload: &T, field_name: &str, text: &str) -> Value {
+    let mut value = serde_json::to_value(payload).unwrap_or(Value::Null);
+    if let Value::Object(ref mut object) = value {
+        object.insert(field_name.to_string(), Value::String(text.to_string()));
+    }
+    value
+}
+
+fn value_to_text(value: Value, field_name: &str) -> anyhow::Result<String> {
+    match value {
+        Value::String(text) => Ok(text),
+        Value::Object(mut object) => match object.remove(field_name) {
+            Some(Value::String(text)) => Ok(text),
+            Some(other) => Err(anyhow::anyhow!(
+                "hook returned non-string '{}' field: {}",
+                field_name,
+                other
+            )),
+            None => Err(anyhow::anyhow!(
+                "hook returned modify payload without '{}' field",
+                field_name
+            )),
+        },
+        other => Err(anyhow::anyhow!(
+            "hook returned unsupported modify payload: {}",
+            other
+        )),
+    }
+}
+
 pub fn task_source_label(source: &TaskSource) -> String {
     match source {
         TaskSource::Cli => "cli".to_string(),
@@ -628,6 +905,17 @@ mod tests {
             args: serde_json::json!({ "command": "echo hello" }),
             task_source: "cli".to_string(),
             workspace: "/tmp/workspace".to_string(),
+        }
+    }
+
+    fn sample_message_received_payload() -> MessageReceivedPayload {
+        MessageReceivedPayload {
+            event: "MessageReceived",
+            task_id: "task-1".to_string(),
+            input: "original input".to_string(),
+            task_source: "cli".to_string(),
+            workspace: "/tmp/workspace".to_string(),
+            session_id: Some("session-1".to_string()),
         }
     }
 
@@ -694,6 +982,82 @@ command = "./handler.sh"
     }
 
     #[tokio::test]
+    async fn message_received_can_modify_input() {
+        let temp = TempDir::new().expect("tempdir");
+        let hooks_root = temp.path().join(".rove").join("hooks");
+        write_hook(
+            &hooks_root,
+            "rewrite-message",
+            r#"
+name = "rewrite-message"
+events = ["MessageReceived"]
+command = "./handler.sh"
+"#,
+            "#!/bin/sh\nprintf '{\"action\":\"modify\",\"data\":{\"input\":\"rewritten input\"}}'\n",
+        );
+
+        let config = Config {
+            core: crate::config::CoreConfig {
+                workspace: temp.path().to_path_buf(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let manager = HookManager::discover(&config);
+        let result = manager
+            .message_received(sample_message_received_payload())
+            .await
+            .expect("message received result");
+        assert_eq!(result.text, "rewritten input");
+        assert_eq!(result.modified_by, vec!["rewrite-message".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn session_start_runs_read_only_hook() {
+        let temp = TempDir::new().expect("tempdir");
+        let hooks_root = temp.path().join(".rove").join("hooks");
+        let output_path = temp.path().join("session-start.json");
+        write_hook(
+            &hooks_root,
+            "session-start-audit",
+            &format!(
+                r#"
+name = "session-start-audit"
+events = ["SessionStart"]
+command = "./handler.sh"
+"#
+            ),
+            &format!(
+                "#!/bin/sh\ncat > \"{}\"\nprintf '{{\"action\":\"continue\"}}'\n",
+                output_path.display()
+            ),
+        );
+
+        let config = Config {
+            core: crate::config::CoreConfig {
+                workspace: temp.path().to_path_buf(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let manager = HookManager::discover(&config);
+        manager
+            .session_start(SessionStartPayload {
+                event: "SessionStart",
+                session_id: "session-1".to_string(),
+                client_label: Some("webui".to_string()),
+                origin: Some("http://localhost:3000".to_string()),
+                user_agent: Some("test-agent".to_string()),
+                workspace: temp.path().display().to_string(),
+            })
+            .await;
+
+        let payload = std::fs::read_to_string(&output_path).expect("session-start payload");
+        assert!(payload.contains("\"event\":\"SessionStart\""));
+        assert!(payload.contains("\"session_id\":\"session-1\""));
+    }
+
+    #[tokio::test]
     async fn failing_hook_trips_circuit_breaker() {
         let temp = TempDir::new().expect("tempdir");
         let hooks_root = temp.path().join(".rove").join("hooks");
@@ -734,7 +1098,7 @@ command = "./handler.sh"
             r#"
 name = "audit"
 description = "Audit tool calls"
-events = ["BeforeToolCall", "AfterToolCall"]
+events = ["BeforeToolCall", "AfterToolCall", "MessageSending", "SessionEnd"]
 command = "./handler.sh"
 timeout = 7
 "#,
@@ -755,7 +1119,12 @@ timeout = 7
         assert_eq!(status.hooks[0].name, "audit");
         assert_eq!(
             status.hooks[0].events,
-            vec!["BeforeToolCall".to_string(), "AfterToolCall".to_string()]
+            vec![
+                "BeforeToolCall".to_string(),
+                "AfterToolCall".to_string(),
+                "MessageSending".to_string(),
+                "SessionEnd".to_string(),
+            ]
         );
         assert_eq!(status.hooks[0].timeout_secs, 7);
 

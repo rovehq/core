@@ -3,8 +3,8 @@ use std::fs;
 use anyhow::Result;
 use tokio::time::{sleep, Duration};
 
-use crate::cli::database_path::database_path;
 use crate::cli::commands::LogsAction;
+use crate::cli::database_path::database_path;
 use crate::config::Config;
 use crate::storage::{AgentActionQuery, Database};
 use crate::system::logs;

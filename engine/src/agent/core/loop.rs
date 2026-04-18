@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -9,12 +10,22 @@ use tracing::Instrument;
 use tracing::{debug, error, warn};
 
 use crate::gateway::Task;
-use crate::llm::{LLMResponse, ToolCall};
+use crate::llm::{LLMResponse, Message, ToolCall};
 use crate::risk_assessor::Operation;
 use crate::security::secrets::scrub_text;
 use sdk::errors::EngineError;
+use sdk::OutcomeContract;
 
 use super::{AgentCore, TaskResult, LLM_TIMEOUT_SECS, MAX_RESULT_SIZE};
+
+#[derive(Debug, Deserialize)]
+struct OutcomeEvaluation {
+    decision: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    retry_guidance: Option<String>,
+}
 
 impl AgentCore {
     pub(super) async fn execute_task_loop(
@@ -93,6 +104,7 @@ impl AgentCore {
         };
         let confirm_after = self.config.agent.confirm_after as usize;
         let mut iteration = 0;
+        let mut self_eval_retries = 0usize;
 
         while iteration < max_iterations {
             iteration += 1;
@@ -181,6 +193,156 @@ impl AgentCore {
                     )
                     .await?;
 
+                    let outcome_contract = self
+                        .current_execution_profile
+                        .as_ref()
+                        .and_then(|profile| profile.outcome_contract.as_ref())
+                        .filter(|contract| !contract.success_criteria.trim().is_empty())
+                        .cloned();
+
+                    if let Some(contract) = outcome_contract.as_ref() {
+                        let eval_attempt = self_eval_retries + 1;
+                        self.insert_evaluation_started_event(
+                            task_id,
+                            &answer.content,
+                            iteration,
+                            eval_attempt,
+                            &context.domain_str,
+                        )
+                        .await?;
+
+                        let evaluation = match self
+                            .evaluate_outcome_contract(
+                                task_id,
+                                iteration + eval_attempt * 1000,
+                                &task.input,
+                                &answer.content,
+                                contract,
+                            )
+                            .await
+                        {
+                            Ok(evaluation) => evaluation,
+                            Err(error) => {
+                                let message = format!(
+                                    "Outcome evaluation failed to run: {}",
+                                    scrub_text(&error.to_string())
+                                );
+                                self.insert_evaluation_result_event(
+                                    task_id,
+                                    "fail",
+                                    &message,
+                                    iteration,
+                                    eval_attempt,
+                                    &context.domain_str,
+                                )
+                                .await?;
+                                return Err(error);
+                            }
+                        };
+
+                        let decision = evaluation.decision.trim().to_ascii_lowercase();
+                        let reason = if evaluation.reason.trim().is_empty() {
+                            format!(
+                                "Evaluator policy '{}' returned '{}'",
+                                contract.evaluator_policy, decision
+                            )
+                        } else {
+                            evaluation.reason.trim().to_string()
+                        };
+
+                        match decision.as_str() {
+                            "pass" => {
+                                self.insert_evaluation_result_event(
+                                    task_id,
+                                    "pass",
+                                    &reason,
+                                    iteration,
+                                    eval_attempt,
+                                    &context.domain_str,
+                                )
+                                .await?;
+                            }
+                            "retry" if self_eval_retries < contract.max_self_evals as usize => {
+                                self.insert_evaluation_result_event(
+                                    task_id,
+                                    "retry",
+                                    &reason,
+                                    iteration,
+                                    eval_attempt,
+                                    &context.domain_str,
+                                )
+                                .await?;
+                                let retry_guidance = evaluation
+                                    .retry_guidance
+                                    .as_deref()
+                                    .filter(|value| !value.trim().is_empty())
+                                    .unwrap_or(&reason);
+                                self.insert_evaluation_retry_event(
+                                    task_id,
+                                    retry_guidance,
+                                    iteration,
+                                    eval_attempt,
+                                    &context.domain_str,
+                                )
+                                .await?;
+                                self_eval_retries += 1;
+                                self.memory.add_message(Message::assistant(answer.content));
+                                self.memory
+                                    .add_message(Message::user(Self::outcome_retry_prompt(
+                                        contract,
+                                        &reason,
+                                        retry_guidance,
+                                    )));
+                                continue;
+                            }
+                            "retry" => {
+                                let exhausted = format!(
+                                    "{} Retry budget exhausted after {} self-evaluation retry attempt(s).",
+                                    reason,
+                                    contract.max_self_evals
+                                );
+                                self.insert_evaluation_result_event(
+                                    task_id,
+                                    "fail",
+                                    &exhausted,
+                                    iteration,
+                                    eval_attempt,
+                                    &context.domain_str,
+                                )
+                                .await?;
+                                anyhow::bail!("Outcome evaluation failed: {}", exhausted);
+                            }
+                            "fail" => {
+                                self.insert_evaluation_result_event(
+                                    task_id,
+                                    "fail",
+                                    &reason,
+                                    iteration,
+                                    eval_attempt,
+                                    &context.domain_str,
+                                )
+                                .await?;
+                                anyhow::bail!("Outcome evaluation failed: {}", reason);
+                            }
+                            other => {
+                                let invalid = format!(
+                                    "Outcome evaluator returned unsupported decision '{}'",
+                                    other
+                                );
+                                self.insert_evaluation_result_event(
+                                    task_id,
+                                    "fail",
+                                    &invalid,
+                                    iteration,
+                                    eval_attempt,
+                                    &context.domain_str,
+                                )
+                                .await?;
+                                anyhow::bail!(invalid);
+                            }
+                        }
+                    }
+
                     return Ok(TaskResult::success(
                         task_id.to_string(),
                         answer.content,
@@ -244,16 +406,23 @@ impl AgentCore {
         task_id: &uuid::Uuid,
         iteration: usize,
     ) -> Result<(LLMResponse, String)> {
+        self.call_llm_with_messages(task_id, iteration, self.memory.messages())
+            .await
+    }
+
+    async fn call_llm_with_messages(
+        &self,
+        task_id: &uuid::Uuid,
+        iteration: usize,
+        messages: &[Message],
+    ) -> Result<(LLMResponse, String)> {
         let llm_result = match self.current_trace.as_ref() {
             Some(trace) => {
                 let span = crate::telemetry::llm_span(trace, task_id, iteration);
                 timeout(
                     Duration::from_secs(LLM_TIMEOUT_SECS),
                     self.router
-                        .call_with_sensitivity(
-                            self.memory.messages(),
-                            Some(self.current_task_sensitive),
-                        )
+                        .call_with_sensitivity(messages, Some(self.current_task_sensitive))
                         .instrument(span),
                 )
                 .await
@@ -261,10 +430,8 @@ impl AgentCore {
             None => {
                 timeout(
                     Duration::from_secs(LLM_TIMEOUT_SECS),
-                    self.router.call_with_sensitivity(
-                        self.memory.messages(),
-                        Some(self.current_task_sensitive),
-                    ),
+                    self.router
+                        .call_with_sensitivity(messages, Some(self.current_task_sensitive)),
                 )
                 .await
             }
@@ -332,5 +499,65 @@ impl AgentCore {
         }
 
         Ok(())
+    }
+
+    async fn evaluate_outcome_contract(
+        &self,
+        task_id: &uuid::Uuid,
+        iteration: usize,
+        task_input: &str,
+        answer: &str,
+        contract: &OutcomeContract,
+    ) -> Result<OutcomeEvaluation> {
+        let mut prompt = format!(
+            "Task input:\n{}\n\nCandidate answer:\n{}\n\nSuccess criteria:\n{}\n\nEvaluator policy:\n{}\n",
+            scrub_text(task_input),
+            scrub_text(answer),
+            contract.success_criteria.trim(),
+            contract.evaluator_policy.trim()
+        );
+        if let Some(output_contract) = self
+            .current_execution_profile
+            .as_ref()
+            .and_then(|profile| profile.output_contract.as_deref())
+            .filter(|value| !value.trim().is_empty())
+        {
+            prompt.push_str("\nOutput contract:\n");
+            prompt.push_str(output_contract.trim());
+            prompt.push('\n');
+        }
+
+        let messages = vec![
+            Message::system(
+                "You are Rove's bounded outcome evaluator. Decide whether the candidate answer satisfies the success criteria. Return strict JSON only with keys decision, reason, and optional retry_guidance. Allowed decision values: pass, retry, fail. Use retry only when one more revision could realistically satisfy the criteria. Never call tools.",
+            ),
+            Message::user(prompt),
+        ];
+        let (response, _provider) = self
+            .call_llm_with_messages(task_id, iteration, &messages)
+            .await?;
+        match response {
+            LLMResponse::FinalAnswer(answer) => {
+                serde_json::from_str::<OutcomeEvaluation>(&answer.content)
+                    .context("Failed to parse outcome evaluation JSON")
+            }
+            LLMResponse::ToolCall(tool_call) => anyhow::bail!(
+                "Outcome evaluator attempted tool call '{}', which is not allowed",
+                tool_call.name
+            ),
+        }
+    }
+
+    fn outcome_retry_prompt(
+        contract: &OutcomeContract,
+        reason: &str,
+        retry_guidance: &str,
+    ) -> String {
+        format!(
+            "Self-evaluation requested a revision.\nSuccess criteria:\n{}\n\nWhy the prior answer did not pass:\n{}\n\nRevision guidance:\n{}\n\nReturn a corrected final answer that satisfies the success criteria exactly.",
+            contract.success_criteria.trim(),
+            reason.trim(),
+            retry_guidance.trim()
+        )
     }
 }

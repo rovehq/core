@@ -5,10 +5,10 @@
 ///
 /// Requirements: 12.2, 12.4, 12.5, 12.7, 12.10
 use anyhow::{Context, Result};
+use sdk::{TaskExecutionProfile, TaskSource};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use std::time::{SystemTime, UNIX_EPOCH};
-use sdk::{TaskExecutionProfile, TaskSource};
 
 /// Task status enum
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,8 +195,8 @@ impl TaskRepository {
         let source = source
             .map(TaskSource::as_str)
             .unwrap_or_else(|| "cli".to_string());
-        let (agent_id, agent_name, worker_preset_id, worker_preset_name) =
-            execution_profile.map_or((None, None, None, None), |profile| {
+        let (agent_id, agent_name, worker_preset_id, worker_preset_name) = execution_profile
+            .map_or((None, None, None, None), |profile| {
                 (
                     profile.agent_id.clone(),
                     profile.agent_name.clone(),
@@ -317,9 +317,7 @@ impl TaskRepository {
         .await
         .context("Failed to fetch task")?;
 
-        Ok(row.map(|r| {
-            map_task_row(r)
-        }))
+        Ok(row.map(|r| map_task_row(r)))
     }
 
     /// Get recent tasks (last N tasks)
@@ -415,7 +413,10 @@ impl TaskRepository {
         })
     }
 
-    pub async fn list_agent_actions(&self, query: &AgentActionQuery) -> Result<Vec<AgentActionRecord>> {
+    pub async fn list_agent_actions(
+        &self,
+        query: &AgentActionQuery,
+    ) -> Result<Vec<AgentActionRecord>> {
         let limit = if query.limit <= 0 { 100 } else { query.limit };
         let offset = query.offset.max(0);
         let rows = sqlx::query(
@@ -819,6 +820,7 @@ mod tests {
             instructions: "Be precise".to_string(),
             allowed_tools: vec!["read_file".to_string()],
             output_contract: None,
+            outcome_contract: None,
             max_iterations: Some(4),
         }
     }
@@ -834,7 +836,12 @@ mod tests {
         let profile = test_profile("agent.release", "Release Agent");
 
         let created = repo
-            .create_task_with_metadata(&task_id, "ship release", Some(&TaskSource::WebUI), Some(&profile))
+            .create_task_with_metadata(
+                &task_id,
+                "ship release",
+                Some(&TaskSource::WebUI),
+                Some(&profile),
+            )
             .await
             .unwrap();
 
@@ -842,7 +849,10 @@ mod tests {
         assert_eq!(created.agent_id.as_deref(), Some("agent.release"));
         assert_eq!(created.agent_name.as_deref(), Some("Release Agent"));
         assert_eq!(created.worker_preset_id.as_deref(), Some("worker.research"));
-        assert_eq!(created.worker_preset_name.as_deref(), Some("Research Worker"));
+        assert_eq!(
+            created.worker_preset_name.as_deref(),
+            Some("Research Worker")
+        );
 
         let persisted = repo.get_task(&task_id).await.unwrap().unwrap();
         assert_eq!(persisted.source, "webui");
@@ -939,7 +949,10 @@ mod tests {
         assert_eq!(running_for_alpha.len(), 1);
         assert_eq!(running_for_alpha[0].id, alpha_id);
         assert_eq!(running_for_alpha[0].status, TaskStatus::Running);
-        assert_eq!(running_for_alpha[0].agent_id.as_deref(), Some("agent.alpha"));
+        assert_eq!(
+            running_for_alpha[0].agent_id.as_deref(),
+            Some("agent.alpha")
+        );
 
         let completed_for_beta = repo
             .list_tasks(&TaskListQuery {
@@ -955,7 +968,10 @@ mod tests {
         assert_eq!(completed_for_beta.len(), 1);
         assert_eq!(completed_for_beta[0].id, beta_id);
         assert_eq!(completed_for_beta[0].source, "remote:node-b");
-        assert_eq!(completed_for_beta[0].provider_used.as_deref(), Some("localbrain"));
+        assert_eq!(
+            completed_for_beta[0].provider_used.as_deref(),
+            Some("localbrain")
+        );
     }
 
     #[tokio::test]

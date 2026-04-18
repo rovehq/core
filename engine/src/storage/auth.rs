@@ -357,10 +357,7 @@ impl AuthRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn create_passkey_challenge(
-        &self,
-        challenge: &AuthPasskeyChallenge,
-    ) -> Result<()> {
+    pub async fn create_passkey_challenge(&self, challenge: &AuthPasskeyChallenge) -> Result<()> {
         self.delete_expired_passkey_challenges().await?;
         sqlx::query(
             "INSERT INTO auth_passkey_challenges (

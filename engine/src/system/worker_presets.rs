@@ -113,6 +113,7 @@ pub fn execution_profile_for_preset(id: &str) -> Result<TaskExecutionProfile> {
         instructions: preset.instructions.clone(),
         allowed_tools: preset.allowed_tools.clone(),
         output_contract: preset.output_contract.clone(),
+        outcome_contract: None,
         max_iterations: preset.max_iterations,
     })
 }

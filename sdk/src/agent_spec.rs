@@ -144,6 +144,25 @@ pub struct AgentUiSchema {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutcomeContract {
+    pub success_criteria: String,
+    #[serde(default = "default_outcome_max_self_evals")]
+    pub max_self_evals: u32,
+    #[serde(default = "default_evaluator_policy")]
+    pub evaluator_policy: String,
+}
+
+impl Default for OutcomeContract {
+    fn default() -> Self {
+        Self {
+            success_criteria: String::new(),
+            max_self_evals: default_outcome_max_self_evals(),
+            evaluator_policy: default_evaluator_policy(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSpec {
     #[serde(default = "default_agent_spec_schema_version")]
     pub schema_version: u32,
@@ -171,6 +190,8 @@ pub struct AgentSpec {
     pub schedules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_contract: Option<OutcomeContract>,
     #[serde(default)]
     pub ui: AgentUiSchema,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -197,6 +218,7 @@ impl Default for AgentSpec {
             node_placement: NodePlacementPolicy::default(),
             schedules: Vec::new(),
             output_contract: None,
+            outcome_contract: None,
             ui: AgentUiSchema::default(),
             tags: Vec::new(),
             provenance: None,
@@ -282,6 +304,8 @@ pub struct WorkflowStepSpec {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_contract: Option<OutcomeContract>,
     #[serde(default)]
     pub continue_on_error: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -356,6 +380,8 @@ pub struct TaskExecutionProfile {
     pub allowed_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_contract: Option<OutcomeContract>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_iterations: Option<u32>,
 }
@@ -449,6 +475,14 @@ fn default_true() -> bool {
 
 fn default_memory_policy() -> String {
     "default".to_string()
+}
+
+fn default_outcome_max_self_evals() -> u32 {
+    1
+}
+
+fn default_evaluator_policy() -> String {
+    "self_check".to_string()
 }
 
 fn default_agent_spec_schema_version() -> u32 {

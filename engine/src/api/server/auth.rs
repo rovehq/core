@@ -27,6 +27,7 @@ use webauthn_rs::prelude::{
 
 use super::AppState;
 use crate::config::Config;
+use crate::hooks::{HookManager, SessionEndPayload, SessionStartPayload};
 use crate::remote::RemoteManager;
 use crate::security::{
     configure_password_for_config, password_protection_state, verify_password,
@@ -190,7 +191,10 @@ impl AuthManager {
 
     pub async fn list_passkeys(&self) -> Result<Vec<PasskeyDescriptor>> {
         let records = self.db.auth().list_passkeys().await?;
-        Ok(records.into_iter().map(Self::to_passkey_descriptor).collect())
+        Ok(records
+            .into_iter()
+            .map(Self::to_passkey_descriptor)
+            .collect())
     }
 
     pub async fn delete_passkey(&self, token: &str, id: &str) -> Result<bool> {
@@ -318,7 +322,10 @@ impl AuthManager {
         })
     }
 
-    pub async fn start_passkey_login(&self, headers: &HeaderMap) -> Result<PasskeyChallengeResponse> {
+    pub async fn start_passkey_login(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<PasskeyChallengeResponse> {
         let context = self.passkey_context(headers)?;
         let passkeys = self.load_passkeys_for_rp(&context.rp_id).await?;
         if passkeys.is_empty() {
@@ -328,7 +335,9 @@ impl AuthManager {
             .iter()
             .map(|(_, passkey)| passkey.clone())
             .collect::<Vec<_>>();
-        let (options, state) = context.webauthn.start_passkey_authentication(&credentials)?;
+        let (options, state) = context
+            .webauthn
+            .start_passkey_authentication(&credentials)?;
         let challenge = self.new_passkey_challenge(
             "login",
             None,
@@ -357,8 +366,7 @@ impl AuthManager {
             .context("Passkey login challenge expired or was not found")?;
         self.assert_public_challenge_matches(&challenge, &context)?;
         let authentication: PasskeyAuthentication = serde_json::from_str(&challenge.state_json)?;
-        let credential: PublicKeyCredential =
-            serde_json::from_value(payload.credential.clone())?;
+        let credential: PublicKeyCredential = serde_json::from_value(payload.credential.clone())?;
         let result = context
             .webauthn
             .finish_passkey_authentication(&credential, &authentication)?;
@@ -391,7 +399,9 @@ impl AuthManager {
             .iter()
             .map(|(_, passkey)| passkey.clone())
             .collect::<Vec<_>>();
-        let (options, state) = context.webauthn.start_passkey_authentication(&credentials)?;
+        let (options, state) = context
+            .webauthn
+            .start_passkey_authentication(&credentials)?;
         let challenge = self.new_passkey_challenge(
             "reauth",
             Some(validated.session.session_id),
@@ -423,8 +433,7 @@ impl AuthManager {
             .context("Passkey reauthentication challenge expired or was not found")?;
         self.assert_challenge_matches(&challenge, &validated.session.session_id, &context)?;
         let authentication: PasskeyAuthentication = serde_json::from_str(&challenge.state_json)?;
-        let credential: PublicKeyCredential =
-            serde_json::from_value(payload.credential.clone())?;
+        let credential: PublicKeyCredential = serde_json::from_value(payload.credential.clone())?;
         let result = context
             .webauthn
             .finish_passkey_authentication(&credential, &authentication)?;
@@ -449,7 +458,23 @@ impl AuthManager {
     }
 
     pub async fn lock(&self, token: &str) -> Result<()> {
-        self.db.auth().revoke_session(token).await
+        let session = self.db.auth().get_session(token).await?;
+        self.db.auth().revoke_session(token).await?;
+        if let Some(session) = session {
+            let config = Config::load_or_create()?;
+            HookManager::discover(&config)
+                .session_end(SessionEndPayload {
+                    event: "SessionEnd",
+                    session_id: session.session_id,
+                    reason: "lock".to_string(),
+                    client_label: session.client_label,
+                    origin: session.origin,
+                    user_agent: session.user_agent,
+                    workspace: config.core.workspace.display().to_string(),
+                })
+                .await;
+        }
+        Ok(())
     }
 
     pub async fn status_for_token(&self, token: &str) -> Result<AuthStatus> {
@@ -479,6 +504,21 @@ impl AuthManager {
             || session.absolute_expires_at <= now
         {
             let _ = self.db.auth().revoke_session(token).await;
+            HookManager::discover(&config)
+                .session_end(SessionEndPayload {
+                    event: "SessionEnd",
+                    session_id: session.session_id.clone(),
+                    reason: if session.revoked_at.is_some() {
+                        "revoked".to_string()
+                    } else {
+                        "expired".to_string()
+                    },
+                    client_label: session.client_label.clone(),
+                    origin: session.origin.clone(),
+                    user_agent: session.user_agent.clone(),
+                    workspace: config.core.workspace.display().to_string(),
+                })
+                .await;
             bail!("Session expired");
         }
 
@@ -565,6 +605,17 @@ impl AuthManager {
                 user_agent,
             )
             .await?;
+
+        HookManager::discover(&config)
+            .session_start(SessionStartPayload {
+                event: "SessionStart",
+                session_id: session.session_id.clone(),
+                client_label: session.client_label.clone(),
+                origin: session.origin.clone(),
+                user_agent: session.user_agent.clone(),
+                workspace: config.core.workspace.display().to_string(),
+            })
+            .await;
 
         Ok(SessionInfo {
             access_token: session.session_id,

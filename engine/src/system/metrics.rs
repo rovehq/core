@@ -104,7 +104,10 @@ pub fn render_prometheus(snapshot: &MetricsSnapshot) -> String {
         &format!("rove_task_error_rate {:.6}", snapshot.task_error_rate),
         "# HELP rove_task_latency_avg_ms Average completed task latency in milliseconds.",
         "# TYPE rove_task_latency_avg_ms gauge",
-        &format!("rove_task_latency_avg_ms {:.3}", snapshot.task_latency_avg_ms),
+        &format!(
+            "rove_task_latency_avg_ms {:.3}",
+            snapshot.task_latency_avg_ms
+        ),
         "# HELP rove_active_sessions Current non-revoked, non-expired daemon sessions.",
         "# TYPE rove_active_sessions gauge",
         &format!("rove_active_sessions {}", snapshot.active_sessions),
@@ -138,16 +141,29 @@ mod tests {
         repo.complete_task(&completed_id, "localbrain", 1200)
             .await
             .unwrap();
-        repo.insert_agent_event(&completed_id, "tool_call", r#"{"tool_name":"read_file"}"#, 1, None)
-            .await
-            .unwrap();
+        repo.insert_agent_event(
+            &completed_id,
+            "tool_call",
+            r#"{"tool_name":"read_file"}"#,
+            1,
+            None,
+        )
+        .await
+        .unwrap();
 
         let failed_id = uuid::Uuid::new_v4();
         repo.create_task(&failed_id, "failed").await.unwrap();
         repo.fail_task(&failed_id).await.unwrap();
 
         db.auth()
-            .create_session("session-1", 60, 120, Some("webui"), Some("local"), Some("ua"))
+            .create_session(
+                "session-1",
+                60,
+                120,
+                Some("webui"),
+                Some("local"),
+                Some("ua"),
+            )
             .await
             .unwrap();
 

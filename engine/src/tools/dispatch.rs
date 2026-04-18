@@ -23,6 +23,7 @@ impl ToolRegistry {
 
         match name {
             "web_fetch" => self.dispatch_web_fetch(&args).await,
+            "web_search" => self.dispatch_web_search(&args).await,
             "read_file" => self.dispatch_read_file(&args).await,
             "write_file" => self.dispatch_write_file(&args).await,
             "patch_file" => self.dispatch_patch_file(&args).await,
@@ -99,6 +100,34 @@ impl ToolRegistry {
                 "status": result.status,
                 "content_type": result.content_type,
                 "content": result.content,
+            })
+            .to_string(),
+            Err(error) => format!("ERROR: {}", error),
+        }
+    }
+
+    async fn dispatch_web_search(&self, args: &serde_json::Value) -> String {
+        let query = args
+            .get("query")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if query.trim().is_empty() {
+            return "ERROR: web_search requires a non-empty query".to_string();
+        }
+
+        let limit = args
+            .get("limit")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(5) as usize;
+        let provider = args.get("provider").and_then(|value| value.as_str());
+
+        match crate::system::web_search::search_web(self.search_config(), query, limit, provider)
+            .await
+        {
+            Ok(result) => serde_json::json!({
+                "query": result.query,
+                "provider": result.provider,
+                "results": result.results,
             })
             .to_string(),
             Err(error) => format!("ERROR: {}", error),

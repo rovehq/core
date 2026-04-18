@@ -38,8 +38,8 @@ pub use agent_handle::{AgentHandle, AgentHandleImpl};
 pub use agent_spec::{
     AgentFactoryResult, AgentRunRecord, AgentSpec, AgentTemplate, AgentUiSchema, CapabilityRef,
     ChannelBinding, FactoryFieldChange, FactoryReview, FileWatchBinding, NodePlacementPolicy,
-    SpecProvenance, SpecRunStatus, TaskExecutionProfile, WebhookBinding, WorkerPreset,
-    WorkflowBranchSpec, WorkflowFactoryResult, WorkflowRunDetail, WorkflowRunRecord,
+    OutcomeContract, SpecProvenance, SpecRunStatus, TaskExecutionProfile, WebhookBinding,
+    WorkerPreset, WorkflowBranchSpec, WorkflowFactoryResult, WorkflowRunDetail, WorkflowRunRecord,
     WorkflowRunStepRecord, WorkflowSpec, WorkflowStepSpec,
 };
 pub use brain::{
@@ -63,11 +63,11 @@ pub use control::{
     PasskeyRegistrationStartRequest, PasskeyStatus, PolicyScope, RemoteDiscoveryCandidate,
     RemoteEnvelope, RemoteExecutionPlan, RemoteTransportRecord, RunContextId, RunIsolation,
     RunMode, ServiceKind, SessionInfo, StarterCatalogEntry, StarterCatalogKind,
-    StarterCatalogStatus, VoiceAssetStatus, VoiceDeviceKind, VoiceDeviceRecord,
-    VoiceEngineInput, VoiceEngineInstallRequest, VoiceEngineKind, VoiceEngineReadiness,
-    VoiceEngineRecord, VoiceEngineSelectionRequest, VoiceInputTestRequest,
-    VoiceOutputTestRequest, VoicePolicyControls, VoiceRuntimeStatus, VoiceSurfaceStatus,
-    VoiceSurfaceUpdate, VoiceTestResult, ZeroTierStatus,
+    StarterCatalogStatus, VoiceAssetStatus, VoiceDeviceKind, VoiceDeviceRecord, VoiceEngineInput,
+    VoiceEngineInstallRequest, VoiceEngineKind, VoiceEngineReadiness, VoiceEngineRecord,
+    VoiceEngineSelectionRequest, VoiceInputTestRequest, VoiceOutputTestRequest,
+    VoicePolicyControls, VoiceRuntimeStatus, VoiceSurfaceStatus, VoiceSurfaceUpdate,
+    VoiceTestResult, ZeroTierStatus,
 };
 pub use core_tool::{CoreContext, CoreTool};
 pub use crypto_handle::{CryptoHandle, CryptoHandleImpl};

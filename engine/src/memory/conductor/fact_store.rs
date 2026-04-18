@@ -82,11 +82,13 @@ pub async fn upsert_fact(
     .execute(pool)
     .await?;
 
-    let action = if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM memory_versions WHERE entity_kind = 'fact' AND entity_id = ?")
-        .bind(&canonical_key)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0)
+    let action = if sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM memory_versions WHERE entity_kind = 'fact' AND entity_id = ?",
+    )
+    .bind(&canonical_key)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
         == 0
     {
         MemoryMutationAction::Create

@@ -176,6 +176,7 @@ pub fn execution_profile_for_agent(
         instructions: spec.instructions.clone(),
         allowed_tools: allowed_tools(&spec),
         output_contract: spec.output_contract.clone(),
+        outcome_contract: spec.outcome_contract.clone(),
         max_iterations: None,
     })
 }

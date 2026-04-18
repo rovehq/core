@@ -93,6 +93,10 @@ impl AgentCore {
         }
     }
 
+    fn evaluation_step(iteration: usize, attempt: usize) -> i64 {
+        (iteration * 100 + attempt.max(1)) as i64
+    }
+
     pub(super) async fn insert_user_event(
         &self,
         task_id: &Uuid,
@@ -174,13 +178,7 @@ impl AgentCore {
         let step_num = Self::tool_step(iteration);
         let event_id = self
             .task_repo
-            .insert_agent_event(
-                task_id,
-                "tool_call",
-                &payload,
-                step_num,
-                Some(domain_str),
-            )
+            .insert_agent_event(task_id, "tool_call", &payload, step_num, Some(domain_str))
             .await
             .context("Failed to persist tool call to agent_events")?;
         self.publish_stream_event(
@@ -214,13 +212,7 @@ impl AgentCore {
         let step_num = Self::observation_step(iteration);
         let event_id = self
             .task_repo
-            .insert_agent_event(
-                task_id,
-                "observation",
-                &payload,
-                step_num,
-                Some(domain_str),
-            )
+            .insert_agent_event(task_id, "observation", &payload, step_num, Some(domain_str))
             .await
             .context("Failed to persist tool result to agent_events")?;
         self.publish_stream_event(
@@ -254,13 +246,7 @@ impl AgentCore {
         let step_num = Self::tool_step(iteration);
         let event_id = self
             .task_repo
-            .insert_agent_event(
-                task_id,
-                "answer",
-                &payload,
-                step_num,
-                Some(domain_str),
-            )
+            .insert_agent_event(task_id, "answer", &payload, step_num, Some(domain_str))
             .await
             .context("Failed to persist final answer to agent_events")?;
         self.publish_stream_event(
@@ -312,6 +298,143 @@ impl AgentCore {
                 } else {
                     Some(domain_str.to_string())
                 },
+                created_at: Self::event_timestamp(),
+            },
+        )
+        .await;
+        Ok(())
+    }
+
+    pub(super) async fn insert_evaluation_started_event(
+        &self,
+        task_id: &Uuid,
+        answer: &str,
+        iteration: usize,
+        attempt: usize,
+        domain_str: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "answer": scrub_text(answer),
+            "attempt": attempt
+        })
+        .to_string();
+        let step_num = Self::evaluation_step(iteration, attempt);
+        let event_id = self
+            .task_repo
+            .insert_agent_event(
+                task_id,
+                "evaluation_started",
+                &payload,
+                step_num,
+                Some(domain_str),
+            )
+            .await
+            .context("Failed to persist evaluation start to agent_events")?;
+        self.publish_stream_event(
+            task_id,
+            TaskStreamEvent {
+                id: event_id,
+                task_id: task_id.to_string(),
+                phase: "evaluation_start".to_string(),
+                summary: "Outcome evaluation started".to_string(),
+                detail: Some(scrub_text(answer)),
+                raw_event_type: Some("evaluation_started".to_string()),
+                tool_name: None,
+                status: Some("running".to_string()),
+                step_num,
+                domain: Some(domain_str.to_string()),
+                created_at: Self::event_timestamp(),
+            },
+        )
+        .await;
+        Ok(())
+    }
+
+    pub(super) async fn insert_evaluation_result_event(
+        &self,
+        task_id: &Uuid,
+        decision: &str,
+        reason: &str,
+        iteration: usize,
+        attempt: usize,
+        domain_str: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "decision": decision,
+            "reason": scrub_text(reason),
+            "attempt": attempt
+        })
+        .to_string();
+        let step_num = Self::evaluation_step(iteration, attempt);
+        let event_id = self
+            .task_repo
+            .insert_agent_event(
+                task_id,
+                "evaluation_result",
+                &payload,
+                step_num,
+                Some(domain_str),
+            )
+            .await
+            .context("Failed to persist evaluation result to agent_events")?;
+        self.publish_stream_event(
+            task_id,
+            TaskStreamEvent {
+                id: event_id,
+                task_id: task_id.to_string(),
+                phase: "evaluation_result".to_string(),
+                summary: format!("Outcome evaluation: {}", decision),
+                detail: Some(scrub_text(reason)),
+                raw_event_type: Some("evaluation_result".to_string()),
+                tool_name: None,
+                status: Some(decision.to_string()),
+                step_num,
+                domain: Some(domain_str.to_string()),
+                created_at: Self::event_timestamp(),
+            },
+        )
+        .await;
+        Ok(())
+    }
+
+    pub(super) async fn insert_evaluation_retry_event(
+        &self,
+        task_id: &Uuid,
+        guidance: &str,
+        iteration: usize,
+        attempt: usize,
+        domain_str: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "guidance": scrub_text(guidance),
+            "attempt": attempt
+        })
+        .to_string();
+        let step_num = Self::evaluation_step(iteration, attempt);
+        let event_id = self
+            .task_repo
+            .insert_agent_event(
+                task_id,
+                "evaluation_retry",
+                &payload,
+                step_num,
+                Some(domain_str),
+            )
+            .await
+            .context("Failed to persist evaluation retry to agent_events")?;
+        self.publish_stream_event(
+            task_id,
+            TaskStreamEvent {
+                id: event_id,
+                task_id: task_id.to_string(),
+                phase: "evaluation_retry".to_string(),
+                summary: "Outcome evaluation requested retry".to_string(),
+                detail: Some(scrub_text(guidance)),
+                raw_event_type: Some("evaluation_retry".to_string()),
+                tool_name: None,
+                status: Some("retry".to_string()),
+                step_num,
+                domain: Some(domain_str.to_string()),
                 created_at: Self::event_timestamp(),
             },
         )

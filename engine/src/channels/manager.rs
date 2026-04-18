@@ -447,6 +447,7 @@ impl ChannelManager {
                     instructions: agent_spec.instructions.clone(),
                     allowed_tools: allowed_tools(&agent_spec),
                     output_contract: agent_spec.output_contract.clone(),
+                    outcome_contract: agent_spec.outcome_contract.clone(),
                     max_iterations: None,
                 };
                 bot = bot

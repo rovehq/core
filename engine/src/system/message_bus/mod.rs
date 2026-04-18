@@ -10,10 +10,10 @@
 //! - 1.3: Engine SHALL prevent direct communication between Core_Tools and Plugins
 //! - 29.4: Engine SHALL use bounded channels to prevent unbounded memory growth
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use serde::{Deserialize, Serialize};
 
 /// Channel buffer size for bounded channels
 const CHANNEL_BUFFER_SIZE: usize = 100;

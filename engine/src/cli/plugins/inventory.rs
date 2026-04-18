@@ -4,8 +4,8 @@ use serde_json::json;
 use crate::cli::database_path::database_path;
 use crate::cli::output::OutputFormat;
 use crate::config::Config;
-use crate::runtime::Manifest;
 use crate::runtime::wasm::installed_plugin_wasm_limit_report;
+use crate::runtime::Manifest;
 use crate::storage::{Database, InstalledPlugin};
 
 pub async fn handle_list(config: &Config, format: OutputFormat) -> Result<()> {

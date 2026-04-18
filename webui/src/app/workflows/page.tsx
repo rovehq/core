@@ -32,6 +32,7 @@ const EMPTY_WORKFLOW: WorkflowSpec = {
       name: 'Step 1',
       prompt: '',
       worker_preset: null,
+      outcome_contract: null,
       continue_on_error: false,
       branches: [],
     },
@@ -767,6 +768,7 @@ export default function WorkflowsPage() {
                         name: `Step ${current.steps.length + 1}`,
                         prompt: '',
                         worker_preset: null,
+                        outcome_contract: null,
                         continue_on_error: false,
                         branches: [],
                       },
@@ -1169,6 +1171,7 @@ function cloneWorkflow(spec: WorkflowSpec): WorkflowSpec {
     steps: spec.steps.map((step) => ({
       ...step,
       worker_preset: step.worker_preset ?? null,
+      outcome_contract: step.outcome_contract ? { ...step.outcome_contract } : null,
       branches: [...(step.branches ?? [])],
     })),
     channels: (spec.channels ?? []).map((binding) => ({ ...binding, target: binding.target ?? null })),
@@ -1217,6 +1220,14 @@ function normalizeWorkflow(spec: WorkflowSpec): WorkflowSpec {
         prompt: step.prompt.trim(),
         agent_id: emptyToNull(step.agent_id),
         worker_preset: emptyToNull(step.worker_preset),
+        outcome_contract:
+          step.outcome_contract?.success_criteria.trim()
+            ? {
+                success_criteria: step.outcome_contract.success_criteria.trim(),
+                max_self_evals: Math.max(0, step.outcome_contract.max_self_evals ?? 0),
+                evaluator_policy: step.outcome_contract.evaluator_policy.trim() || 'self_check',
+              }
+            : null,
         branches: (step.branches ?? [])
           .map((branch) => ({
             contains: branch.contains.trim(),

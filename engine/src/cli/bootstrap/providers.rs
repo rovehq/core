@@ -110,8 +110,7 @@ pub async fn build_for_execution_role(
     for provider in &config.llm.custom_providers {
         // Keyless providers (e.g. local proxies) have an empty secret_key — always load them.
         // Key-gated providers are only skipped if the key is explicitly configured AND missing.
-        if !provider.secret_key.is_empty()
-            && !secret_manager.has_secret(&provider.secret_key).await
+        if !provider.secret_key.is_empty() && !secret_manager.has_secret(&provider.secret_key).await
         {
             tracing::warn!(
                 "Skipping custom provider '{}': secret '{}' not found in keychain. \

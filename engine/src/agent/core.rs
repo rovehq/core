@@ -27,6 +27,7 @@ use crate::builtin_tools::ToolRegistry;
 use crate::conductor::MemorySystem;
 use crate::db::tasks::{TaskRepository, TaskStatus};
 use crate::gateway::{Task, WorkspaceLocks};
+use crate::hooks::{BeforeAgentStartPayload, MessageReceivedPayload, MessageSendingPayload};
 use crate::llm::router::LLMRouter;
 use crate::llm::ToolCall;
 use crate::message_bus::{Event as BusEvent, MessageBus};
@@ -127,9 +128,13 @@ impl AgentCore {
     }
 
     /// Process a task through the agent loop.
-    pub async fn process_task(&mut self, task: Task) -> Result<TaskResult> {
+    pub async fn process_task(&mut self, mut task: Task) -> Result<TaskResult> {
         self.prune_finished_background_jobs();
 
+        task.input = self.apply_message_received_hooks(&task).await?;
+        task.input = self.apply_before_agent_start_hooks(&task).await?;
+
+        let task_for_hooks = task.clone();
         let task_id = task.id;
         let task_id_str = task_id.to_string();
         let task_input = task.input.clone();
@@ -181,6 +186,8 @@ impl AgentCore {
 
         let final_result = match result {
             Ok(task_result) => {
+                self.emit_message_sending_hook(&task_for_hooks, &task_result.answer, "completed")
+                    .await;
                 self.task_repo
                     .complete_task(
                         &task_id,
@@ -255,11 +262,15 @@ impl AgentCore {
     /// Execute a coordinator-provided direct tool plan without entering the LLM loop.
     pub async fn process_planned_task(
         &mut self,
-        task: Task,
+        mut task: Task,
         plan: RemoteExecutionPlan,
     ) -> Result<TaskResult> {
         self.prune_finished_background_jobs();
 
+        task.input = self.apply_message_received_hooks(&task).await?;
+        task.input = self.apply_before_agent_start_hooks(&task).await?;
+
+        let task_for_hooks = task.clone();
         let task_id = task.id;
         let task_id_str = task_id.to_string();
         let task_input = task.input.clone();
@@ -309,6 +320,8 @@ impl AgentCore {
 
         let final_result = match result {
             Ok(task_result) => {
+                self.emit_message_sending_hook(&task_for_hooks, &task_result.answer, "completed")
+                    .await;
                 self.task_repo
                     .complete_task(
                         &task_id,
@@ -548,6 +561,56 @@ impl AgentCore {
 
     fn prune_finished_background_jobs(&mut self) {
         self.background_jobs.retain(|job| !job.is_finished());
+    }
+
+    async fn apply_message_received_hooks(&self, task: &Task) -> Result<String> {
+        Ok(self
+            .tools
+            .message_received(MessageReceivedPayload {
+                event: "MessageReceived",
+                task_id: task.id.to_string(),
+                input: task.input.clone(),
+                task_source: crate::hooks::task_source_label(&task.source),
+                workspace: self.config.core.workspace.display().to_string(),
+                session_id: task.session_id.map(|value| value.to_string()),
+            })
+            .await?
+            .text)
+    }
+
+    async fn apply_before_agent_start_hooks(&self, task: &Task) -> Result<String> {
+        Ok(self
+            .tools
+            .before_agent_start(BeforeAgentStartPayload {
+                event: "BeforeAgentStart",
+                task_id: task.id.to_string(),
+                input: task.input.clone(),
+                task_source: crate::hooks::task_source_label(&task.source),
+                workspace: self.config.core.workspace.display().to_string(),
+                session_id: task.session_id.map(|value| value.to_string()),
+                run_mode: format!("{:?}", task.run_mode).to_ascii_lowercase(),
+                run_isolation: format!("{:?}", task.run_isolation).to_ascii_lowercase(),
+                execution_profile: task
+                    .execution_profile
+                    .as_ref()
+                    .and_then(|profile| serde_json::to_value(profile).ok()),
+            })
+            .await?
+            .text)
+    }
+
+    async fn emit_message_sending_hook(&self, task: &Task, output: &str, status: &str) {
+        self.tools
+            .message_sending(MessageSendingPayload {
+                event: "MessageSending",
+                task_id: task.id.to_string(),
+                output: output.to_string(),
+                task_source: crate::hooks::task_source_label(&task.source),
+                workspace: self.config.core.workspace.display().to_string(),
+                session_id: task.session_id.map(|value| value.to_string()),
+                status: status.to_string(),
+            })
+            .await;
     }
 }
 

@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use super::{ApprovalMode, DaemonProfile, SecretBackend};
+use super::{ApprovalMode, DaemonProfile, SearchProviderKind, SecretBackend};
 
 /// Default webui bind address
 pub fn default_webui_bind_addr() -> String {
@@ -82,6 +82,18 @@ pub fn default_data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".rove")
         .join("data")
+}
+
+pub fn default_search_provider() -> SearchProviderKind {
+    SearchProviderKind::Searxng
+}
+
+pub fn default_searxng_base_url() -> String {
+    "http://127.0.0.1:8080".to_string()
+}
+
+pub fn default_search_timeout_secs() -> u64 {
+    15
 }
 
 /// Default sensitivity threshold

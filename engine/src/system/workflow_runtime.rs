@@ -261,6 +261,10 @@ fn execution_profile_for_step(
             instructions: spec.instructions.clone(),
             allowed_tools: allowed_tools(&spec),
             output_contract: spec.output_contract.clone(),
+            outcome_contract: step
+                .outcome_contract
+                .clone()
+                .or_else(|| spec.outcome_contract.clone()),
             max_iterations: None,
         }));
     }
@@ -370,6 +374,7 @@ mod tests {
                     prompt: "inspect".to_string(),
                     agent_id: None,
                     worker_preset: None,
+                    outcome_contract: None,
                     continue_on_error: false,
                     branches: vec![WorkflowBranchSpec {
                         contains: "retry".to_string(),
@@ -382,6 +387,7 @@ mod tests {
                     prompt: "verify".to_string(),
                     agent_id: None,
                     worker_preset: None,
+                    outcome_contract: None,
                     continue_on_error: false,
                     branches: Vec::new(),
                 },
@@ -391,6 +397,7 @@ mod tests {
                     prompt: "fix".to_string(),
                     agent_id: None,
                     worker_preset: None,
+                    outcome_contract: None,
                     continue_on_error: false,
                     branches: Vec::new(),
                 },

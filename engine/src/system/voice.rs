@@ -337,9 +337,10 @@ impl VoiceManager {
                 })
             }
             VoiceEngineKind::LocalWhisper => {
-                let engine_config = configured_engine(&self.config.voice, engine).ok_or_else(|| {
-                    anyhow!("Voice engine '{}' is not installed", engine.as_str())
-                })?;
+                let engine_config =
+                    configured_engine(&self.config.voice, engine).ok_or_else(|| {
+                        anyhow!("Voice engine '{}' is not installed", engine.as_str())
+                    })?;
                 let audio_path = request.audio_path.ok_or_else(|| {
                     anyhow!(
                         "Self-hosted Whisper requires --audio-path (or audio_path in the API request)"
@@ -390,9 +391,10 @@ impl VoiceManager {
                 engine.as_str()
             )),
             VoiceEngineKind::LocalPiper => {
-                let engine_config = configured_engine(&self.config.voice, engine).ok_or_else(|| {
-                    anyhow!("Voice engine '{}' is not installed", engine.as_str())
-                })?;
+                let engine_config =
+                    configured_engine(&self.config.voice, engine).ok_or_else(|| {
+                        anyhow!("Voice engine '{}' is not installed", engine.as_str())
+                    })?;
                 let message =
                     speak_with_local_piper(engine_config, &request.text, request.voice.as_deref())?;
                 Ok(VoiceTestResult {
@@ -928,7 +930,9 @@ fn transcribe_with_local_whisper(engine: &VoiceEngineConfig, audio_path: &str) -
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.is_empty() {
-        Err(anyhow!("Whisper CLI completed without producing a transcript"))
+        Err(anyhow!(
+            "Whisper CLI completed without producing a transcript"
+        ))
     } else {
         Ok(stdout)
     }
@@ -980,7 +984,10 @@ fn speak_with_local_piper(
     play_audio_file(&wav_path)?;
     Ok(format!(
         "Spoken through Piper using model '{}'",
-        model.file_name().and_then(|value| value.to_str()).unwrap_or("configured model")
+        model
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("configured model")
     ))
 }
 
@@ -1039,7 +1046,11 @@ fn resolve_engine_asset_path(
                 .filter(|path| {
                     path.extension()
                         .and_then(|value| value.to_str())
-                        .map(|ext| extensions.iter().any(|expected| ext.eq_ignore_ascii_case(expected)))
+                        .map(|ext| {
+                            extensions
+                                .iter()
+                                .any(|expected| ext.eq_ignore_ascii_case(expected))
+                        })
                         .unwrap_or(false)
                 })
                 .collect::<Vec<_>>();
@@ -1106,7 +1117,9 @@ fn play_audio_file(path: &Path) -> Result<()> {
                 Err(error) => return Err(error.into()),
             }
         }
-        return Err(anyhow!("No supported audio playback command found (aplay/paplay)"));
+        return Err(anyhow!(
+            "No supported audio playback command found (aplay/paplay)"
+        ));
     }
 
     #[cfg(target_os = "windows")]

@@ -33,6 +33,7 @@ const EMPTY_AGENT: AgentSpec = {
     require_executor: false,
   },
   schedules: [],
+  outcome_contract: null,
   ui: {},
   tags: [],
 };
@@ -431,6 +432,111 @@ export default function AgentsPage() {
               placeholder="Optional structured output contract"
             />
           </Field>
+
+          <section className="space-y-3 rounded-xl border border-surface bg-background/30 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="font-medium">Outcome Contract</h3>
+                <p className="text-sm text-gray-400">
+                  Add bounded self-evaluation after the first answer. The agent will retry only up to the configured budget.
+                </p>
+              </div>
+              <button
+                onClick={() =>
+                  setForm((current) => ({
+                    ...current,
+                    outcome_contract: current.outcome_contract ?? {
+                      success_criteria: '',
+                      max_self_evals: 1,
+                      evaluator_policy: 'self_check',
+                    },
+                  }))
+                }
+                className="rounded-lg border border-surface px-3 py-2 text-sm hover:border-primary"
+              >
+                {form.outcome_contract ? 'Configured' : 'Enable'}
+              </button>
+            </div>
+
+            {form.outcome_contract ? (
+              <div className="space-y-4">
+                <Field label="Success Criteria">
+                  <textarea
+                    value={form.outcome_contract.success_criteria}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        outcome_contract: {
+                          ...(current.outcome_contract ?? {
+                            success_criteria: '',
+                            max_self_evals: 1,
+                            evaluator_policy: 'self_check',
+                          }),
+                          success_criteria: event.target.value,
+                        },
+                      }))
+                    }
+                    className="min-h-24 w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                    placeholder="State what must be true for the answer to count as complete."
+                  />
+                </Field>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Evaluator Policy">
+                    <select
+                      value={form.outcome_contract.evaluator_policy}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          outcome_contract: {
+                            ...(current.outcome_contract ?? {
+                              success_criteria: '',
+                              max_self_evals: 1,
+                              evaluator_policy: 'self_check',
+                            }),
+                            evaluator_policy: event.target.value,
+                          },
+                        }))
+                      }
+                      className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                    >
+                      <option value="self_check">self_check</option>
+                      <option value="verifier_strict">verifier_strict</option>
+                    </select>
+                  </Field>
+                  <Field label="Max Self-Evals">
+                    <input
+                      type="number"
+                      min={0}
+                      max={8}
+                      value={form.outcome_contract.max_self_evals}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          outcome_contract: {
+                            ...(current.outcome_contract ?? {
+                              success_criteria: '',
+                              max_self_evals: 1,
+                              evaluator_policy: 'self_check',
+                            }),
+                            max_self_evals: Math.max(0, Number.parseInt(event.target.value || '0', 10) || 0),
+                          },
+                        }))
+                      }
+                      className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                    />
+                  </Field>
+                </div>
+                <button
+                  onClick={() => setForm((current) => ({ ...current, outcome_contract: null }))}
+                  className="rounded-lg border border-error/30 px-3 py-2 text-sm text-error hover:bg-error/10"
+                >
+                  Remove Outcome Contract
+                </button>
+              </div>
+            ) : (
+              <EmptyState text="No outcome contract configured. The agent will stay single-pass." />
+            )}
+          </section>
 
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Tags">
@@ -839,6 +945,7 @@ function cloneAgent(spec: AgentSpec): AgentSpec {
     schedules: [...spec.schedules],
     tags: [...spec.tags],
     ui: { ...spec.ui },
+    outcome_contract: spec.outcome_contract ? { ...spec.outcome_contract } : null,
   };
 }
 
@@ -854,6 +961,14 @@ function normalizeAgent(spec: AgentSpec): AgentSpec {
     approval_mode: emptyToNull(spec.approval_mode),
     runtime_profile: emptyToNull(spec.runtime_profile),
     output_contract: emptyToNull(spec.output_contract),
+    outcome_contract:
+      spec.outcome_contract?.success_criteria.trim()
+        ? {
+            success_criteria: spec.outcome_contract.success_criteria.trim(),
+            max_self_evals: Math.max(0, spec.outcome_contract.max_self_evals ?? 0),
+            evaluator_policy: spec.outcome_contract.evaluator_policy.trim() || 'self_check',
+          }
+        : null,
     channels: spec.channels
       .map((binding) => ({
         ...binding,
