@@ -121,7 +121,7 @@ impl WorkingMemory {
     ///
     /// This is a rough estimate based on character count. Different tokenizers
     /// will produce different results, but this provides a reasonable approximation.
-    fn estimate_tokens(message: &Message) -> usize {
+    pub fn estimate_tokens(message: &Message) -> usize {
         // Count characters in content
         let content_chars = message.content.len();
 
@@ -148,6 +148,3 @@ impl Default for WorkingMemory {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests;

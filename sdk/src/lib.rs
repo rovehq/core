@@ -36,11 +36,11 @@ pub mod brain;
 // Re-export commonly used types
 pub use agent_handle::{AgentHandle, AgentHandleImpl};
 pub use agent_spec::{
-    AgentFactoryResult, AgentRunRecord, AgentSpec, AgentTemplate, AgentUiSchema, CapabilityRef,
-    ChannelBinding, FactoryFieldChange, FactoryReview, FileWatchBinding, NodePlacementPolicy,
-    OutcomeContract, SpecProvenance, SpecRunStatus, TaskExecutionProfile, WebhookBinding,
-    WorkerPreset, WorkflowBranchSpec, WorkflowFactoryResult, WorkflowRunDetail, WorkflowRunRecord,
-    WorkflowRunStepRecord, WorkflowSpec, WorkflowStepSpec,
+    AgentFactoryResult, AgentRunRecord, AgentSpec, AgentTemplate, AgentUiSchema, CallableAgentSpec,
+    CapabilityRef, ChannelBinding, FactoryFieldChange, FactoryReview, FileWatchBinding,
+    NodePlacementPolicy, OutcomeContract, SpecProvenance, SpecRunStatus, TaskExecutionProfile,
+    WebhookBinding, WorkerPreset, WorkflowBranchSpec, WorkflowFactoryResult, WorkflowRunDetail,
+    WorkflowRunRecord, WorkflowRunStepRecord, WorkflowSpec, WorkflowStepSpec,
 };
 pub use brain::{
     Brain, BrainResponse, Complexity, DispatchResult, Message, Route, TaskDomain, ToolSchema,
@@ -58,8 +58,9 @@ pub use control::{
     BrowserProfileMode, BrowserProfileReadiness, BrowserProfileRecord, BrowserSurfaceStatus,
     BrowserSurfaceUpdate, CatalogExtensionRecord, CatalogVersionRecord, DaemonCapabilities,
     DaemonHello, ExtensionKind, ExtensionProvenance, ExtensionTrustBadge, ExtensionUpdateRecord,
-    NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile, NodeSummary,
-    PasskeyChallengeResponse, PasskeyDescriptor, PasskeyFinishRequest,
+    ManagedAgentEnvironment, ManagedAgentSession, ManagedAgentSessionEvent,
+    ManagedAgentSessionStatus, NodeExecutionRole, NodeIdentity, NodeLoadSnapshot, NodeProfile,
+    NodeSummary, PasskeyChallengeResponse, PasskeyDescriptor, PasskeyFinishRequest,
     PasskeyRegistrationStartRequest, PasskeyStatus, PolicyScope, RemoteDiscoveryCandidate,
     RemoteEnvelope, RemoteExecutionPlan, RemoteTransportRecord, RunContextId, RunIsolation,
     RunMode, ServiceKind, SessionInfo, StarterCatalogEntry, StarterCatalogKind,

@@ -1,11 +1,9 @@
 //! Telegram channel integration.
 
-mod api;
-mod approvals;
-mod polling;
-#[cfg(test)]
-mod tests;
-mod types;
+pub mod api;
+pub mod approvals;
+pub mod polling;
+pub mod types;
 
 use reqwest::Client;
 use std::sync::Arc;
@@ -22,15 +20,15 @@ pub type TaskHandler = Arc<RwLock<AgentCore>>;
 
 #[derive(Clone)]
 pub struct TelegramBot {
-    token: String,
-    allowed_users: Vec<i64>,
-    admin_users: Vec<i64>,
+    pub token: String,
+    pub allowed_users: Vec<i64>,
+    pub admin_users: Vec<i64>,
     client: Client,
     api_base_url: String,
-    agent: Option<TaskHandler>,
+    pub agent: Option<TaskHandler>,
     execution_profile: Option<sdk::TaskExecutionProfile>,
     rate_limits: Arc<Mutex<TelegramRateLimits>>,
-    confirmation_chat_id: Option<i64>,
+    pub confirmation_chat_id: Option<i64>,
     secret_manager: Arc<SecretManager>,
     db: Option<Arc<Database>>,
 }

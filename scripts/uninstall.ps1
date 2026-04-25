@@ -3,9 +3,20 @@
 # Usage: irm https://roveai.co/uninstall.ps1 | iex
 # ─────────────────────────────────────────────
 
+param(
+    [ValidateSet("stable", "dev")]
+    [string]$Channel = "stable"
+)
+
 $ErrorActionPreference = "Stop"
 
-$Binary = "rove"
+if ($Channel -eq "dev") {
+    $Binary = "rove-dev"
+    $PluginDir = Join-Path $env:USERPROFILE ".rove-dev"
+} else {
+    $Binary = "rove"
+    $PluginDir = Join-Path $env:USERPROFILE ".rove"
+}
 
 Write-Host ""
 Write-Host "  ╭──────────────────────────╮" -ForegroundColor Red
@@ -94,7 +105,6 @@ if (Test-Path $CacheDir) {
 
 # ── Remove plugins ──
 
-$PluginDir = Join-Path $env:USERPROFILE ".rove"
 if (Test-Path $PluginDir) {
     Write-Host "  Removing plugins $PluginDir..." -NoNewline
     Remove-Item -Path $PluginDir -Recurse -Force

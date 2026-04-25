@@ -22,8 +22,16 @@ use super::registry::{
     verify_signed_registry_json,
 };
 
-const PUBLIC_EXTENSION_CATALOG_URL: &str = "https://registry.roveai.co/extensions";
+const PUBLIC_EXTENSION_CATALOG_BASE: &str = "https://registry.roveai.co";
 const CATALOG_REFRESH_INTERVAL_SECS: i64 = 15 * 60;
+
+fn public_catalog_url_for_channel(channel: crate::config::channel::Channel) -> String {
+    format!(
+        "{}/{}/extensions",
+        PUBLIC_EXTENSION_CATALOG_BASE,
+        channel.as_str()
+    )
+}
 
 #[derive(Debug, Deserialize)]
 struct RegistryReleaseMetadata {
@@ -31,10 +39,20 @@ struct RegistryReleaseMetadata {
 }
 
 pub(crate) fn public_catalog_registry() -> String {
-    std::env::var("ROVE_PUBLIC_EXTENSION_CATALOG")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| PUBLIC_EXTENSION_CATALOG_URL.to_string())
+    // `ROVE_PUBLIC_EXTENSION_CATALOG` override still wins for local testing /
+    // mirrors. Otherwise the URL is driven by `extensions.channel` in the
+    // loaded config (defaults to stable).
+    if let Ok(value) = std::env::var("ROVE_PUBLIC_EXTENSION_CATALOG") {
+        if !value.trim().is_empty() {
+            return value;
+        }
+    }
+
+    let channel = Config::load_or_create()
+        .map(|config| config.extensions.resolved_channel())
+        .unwrap_or(crate::config::channel::Channel::Stable);
+
+    public_catalog_url_for_channel(channel)
 }
 
 pub(crate) async fn list_catalog(

@@ -1,6 +1,7 @@
-use super::{LLMError, LLMProvider, LLMResponse, Message};
+use super::{emit_stream_chunk, streaming_active, LLMError, LLMProvider, LLMResponse, Message, MessageRole};
 use crate::secrets::SecretCache;
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -20,6 +21,11 @@ pub struct CustomLLMProvider {
     pub model: String,
     /// Keychain entry name, or empty string / None for keyless providers
     pub api_key_name: Option<String>,
+    /// When true, overrides localhost detection and treats this provider as cloud-capable.
+    pub force_cloud: bool,
+    /// When true, system messages are merged into the first user message instead of
+    /// being sent as a system role. Needed for models whose chat template forbids system role.
+    pub no_system_prompt: bool,
     secret_cache: Arc<SecretCache>,
     client: reqwest::Client,
 }
@@ -31,6 +37,8 @@ impl CustomLLMProvider {
         base_url: String,
         model: String,
         api_key_name: Option<String>,
+        force_cloud: bool,
+        no_system_prompt: bool,
         secret_cache: Arc<SecretCache>,
     ) -> Self {
         Self {
@@ -39,9 +47,38 @@ impl CustomLLMProvider {
             base_url,
             model,
             api_key_name,
+            force_cloud,
+            no_system_prompt,
             secret_cache,
             client: reqwest::Client::new(),
         }
+    }
+
+    fn flatten_messages<'a>(&self, messages: &'a [Message]) -> Vec<std::borrow::Cow<'a, Message>> {
+        if !self.no_system_prompt {
+            return messages.iter().map(std::borrow::Cow::Borrowed).collect();
+        }
+        let mut system_prefix = String::new();
+        let mut out: Vec<std::borrow::Cow<'_, Message>> = Vec::new();
+        for msg in messages {
+            if msg.role == MessageRole::System {
+                if !system_prefix.is_empty() {
+                    system_prefix.push('\n');
+                }
+                system_prefix.push_str(&msg.content);
+            } else if !system_prefix.is_empty() && msg.role == MessageRole::User && out.is_empty() {
+                let merged = Message {
+                    role: MessageRole::User,
+                    content: format!("{}\n\n{}", system_prefix, msg.content),
+                    tool_call_id: msg.tool_call_id.clone(),
+                };
+                system_prefix.clear();
+                out.push(std::borrow::Cow::Owned(merged));
+            } else {
+                out.push(std::borrow::Cow::Borrowed(msg));
+            }
+        }
+        out
     }
 
     async fn get_api_key(&self) -> Option<String> {
@@ -58,8 +95,10 @@ impl CustomLLMProvider {
 
     async fn generate_openai(&self, messages: &[Message]) -> super::Result<LLMResponse> {
         let url = format!("{}/chat/completions", self.base_url);
+        let stream = streaming_active();
 
-        let api_messages: Vec<_> = messages
+        let flattened = self.flatten_messages(messages);
+        let api_messages: Vec<_> = flattened
             .iter()
             .map(|msg| {
                 json!({
@@ -69,10 +108,13 @@ impl CustomLLMProvider {
             })
             .collect();
 
-        let payload = json!({
+        let mut payload = json!({
             "model": self.model,
             "messages": api_messages,
         });
+        if stream {
+            payload["stream"] = json!(true);
+        }
 
         let api_key = self.get_api_key().await;
 
@@ -99,6 +141,50 @@ impl CustomLLMProvider {
                 429 => LLMError::RateLimitExceeded,
                 _ => LLMError::InvalidRequest(text),
             });
+        }
+
+        if stream {
+            // SSE streaming: accumulate text, emit each chunk to the global sink.
+            let mut body = response.bytes_stream();
+            let mut accumulated = String::new();
+            let mut buf = String::new();
+
+            while let Some(chunk) = body.next().await {
+                let bytes = chunk.map_err(|e| LLMError::NetworkError(e.to_string()))?;
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+
+                // SSE lines end with "\n"; process complete lines.
+                while let Some(newline_pos) = buf.find('\n') {
+                    let line = buf[..newline_pos].trim().to_string();
+                    buf = buf[newline_pos + 1..].to_string();
+
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if data == "[DONE]" {
+                            break;
+                        }
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+                            if let Some(text) = val
+                                .get("choices")
+                                .and_then(|c| c.as_array())
+                                .and_then(|c| c.first())
+                                .and_then(|c| c.get("delta"))
+                                .and_then(|d| d.get("content"))
+                                .and_then(|t| t.as_str())
+                            {
+                                emit_stream_chunk(text);
+                                accumulated.push_str(text);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(tool_call) = super::parse_tool_calls(&accumulated) {
+                return Ok(LLMResponse::ToolCall(tool_call));
+            }
+            return Ok(LLMResponse::FinalAnswer(super::FinalAnswer::new(
+                accumulated,
+            )));
         }
 
         let data: serde_json::Value = response
@@ -206,7 +292,9 @@ impl LLMProvider for CustomLLMProvider {
     }
 
     fn is_local(&self) -> bool {
-        // Treat localhost/127.0.0.1 endpoints as local
+        if self.force_cloud {
+            return false;
+        }
         self.base_url.contains("localhost") || self.base_url.contains("127.0.0.1")
     }
 

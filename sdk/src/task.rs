@@ -8,6 +8,8 @@ pub enum TaskSource {
     Channel(String),
     WebUI,
     Remote(String),
+    /// Task dispatched by a parent agent to a callable child agent.
+    Subagent(String),
 }
 
 impl TaskSource {
@@ -19,6 +21,7 @@ impl TaskSource {
             Self::Channel(kind) => format!("channel:{kind}"),
             Self::WebUI => "webui".to_string(),
             Self::Remote(device_id) => format!("remote:{device_id}"),
+            Self::Subagent(parent_id) => format!("subagent:{parent_id}"),
         }
     }
 
@@ -32,6 +35,8 @@ impl TaskSource {
             Self::Telegram(user_id.to_string())
         } else if let Some(kind) = s.strip_prefix("channel:") {
             Self::Channel(kind.to_string())
+        } else if let Some(parent_id) = s.strip_prefix("subagent:") {
+            Self::Subagent(parent_id.to_string())
         } else if let Some(device_id) = s.strip_prefix("remote:") {
             Self::Remote(device_id.to_string())
         } else {
@@ -49,6 +54,14 @@ mod tests {
         let source = TaskSource::Channel("discord".to_string());
         let persisted = source.as_str();
         assert_eq!(persisted, "channel:discord");
+        assert_eq!(TaskSource::parse_str(&persisted), source);
+    }
+
+    #[test]
+    fn subagent_task_source_roundtrips() {
+        let source = TaskSource::Subagent("agent-abc123".to_string());
+        let persisted = source.as_str();
+        assert_eq!(persisted, "subagent:agent-abc123");
         assert_eq!(TaskSource::parse_str(&persisted), source);
     }
 }

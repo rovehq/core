@@ -3,8 +3,8 @@ use std::sync::Arc;
 use sdk::{TaskExecutionProfile, TaskSource};
 use tempfile::TempDir;
 
-use super::{recover_crashed_tasks, Gateway, GatewayConfig, WorkspaceLocks};
-use crate::db::{Database, PendingTaskStatus};
+use rove_engine::api::gateway::{recover_crashed_tasks, Gateway, GatewayConfig, WorkspaceLocks};
+use rove_engine::db::{Database, PendingTaskStatus};
 
 #[tokio::test]
 async fn test_submit_cli_task() {
@@ -32,11 +32,13 @@ async fn test_submit_cli_task_preserves_execution_profile() {
     let profile = TaskExecutionProfile {
         agent_id: Some("agent.ops".to_string()),
         agent_name: Some("Ops Agent".to_string()),
+        thread_id: None,
         worker_preset_id: None,
         worker_preset_name: None,
         purpose: Some("Run ops tasks".to_string()),
         instructions: "Follow the saved agent profile".to_string(),
         allowed_tools: vec!["read_file".to_string()],
+        callable_agents: Vec::new(),
         output_contract: None,
         outcome_contract: None,
         max_iterations: Some(4),

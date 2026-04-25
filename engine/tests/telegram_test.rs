@@ -1,7 +1,7 @@
-use super::approvals::{park_approval, resolve_approval};
-use super::types::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramRateLimits};
-use super::TelegramBot;
-use crate::secrets::SecretManager;
+use rove_engine::channels::telegram::approvals::{park_approval, resolve_approval};
+use rove_engine::channels::telegram::types::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramRateLimits};
+use rove_engine::channels::telegram::TelegramBot;
+use rove_engine::secrets::SecretManager;
 
 #[test]
 fn test_telegram_bot_creation() {

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +14,7 @@ use crate::hooks::{
     task_source_label, AfterToolCallPayload, BeforeAgentStartPayload, BeforeToolCallPayload,
     HookManager, MessageReceivedPayload, MessageSendingPayload, TextHookOutcome,
 };
+use sdk::brain::Brain;
 use sdk::browser::BrowserBackend;
 
 use crate::runtime::{
@@ -50,6 +50,19 @@ pub struct ToolSchema {
     pub domains: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum BrainBackendSource {
+    Plugin,
+}
+
+impl BrainBackendSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Plugin => "plugin",
+        }
+    }
+}
+
 /// Registry of available tools across all execution surfaces.
 pub struct ToolRegistry {
     pub fs: Option<FilesystemTool>,
@@ -60,6 +73,9 @@ pub struct ToolRegistry {
     /// Browser backend — `None` when `browser.enabled` is false or no profile is configured.
     /// Accepts any type implementing `BrowserBackend` (e.g. CdpBackend, BrowshBackend).
     pub browser: Option<Arc<Mutex<dyn BrowserBackend>>>,
+    /// Brain backend registered by an installed brain plugin.
+    brain: Option<Arc<dyn Brain>>,
+    brain_source: Option<BrainBackendSource>,
     pub wasm_runtime: Option<Arc<Mutex<WasmRuntime>>>,
     pub wasm_tools: Vec<WasmToolInfo>,
     pub mcp_spawner: Option<Arc<McpSpawner>>,
@@ -73,6 +89,10 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     pub fn empty() -> Self {
+        Self::empty_with_config(Arc::new(Config::default()))
+    }
+
+    pub fn empty_with_config(config: Arc<Config>) -> Self {
         Self {
             fs: None,
             terminal: None,
@@ -80,6 +100,8 @@ impl ToolRegistry {
             web_fetch_enabled: false,
             web_search_enabled: false,
             browser: None,
+            brain: None,
+            brain_source: None,
             wasm_runtime: None,
             wasm_tools: Vec::new(),
             mcp_spawner: None,
@@ -87,7 +109,7 @@ impl ToolRegistry {
             native_runtime: None,
             tools: Arc::new(RwLock::new(HashMap::new())),
             risk_assessor: RiskAssessor::new(),
-            config: Arc::new(Config::default()),
+            config,
             hooks: Arc::new(HookManager::disabled()),
         }
     }
@@ -105,6 +127,8 @@ impl ToolRegistry {
             web_fetch_enabled: false,
             web_search_enabled: false,
             browser: None,
+            brain: None,
+            brain_source: None,
             wasm_runtime: wasm,
             wasm_tools: Vec::new(),
             mcp_spawner: mcp,
@@ -340,6 +364,26 @@ impl ToolRegistry {
             domains,
         })
         .await;
+    }
+
+    pub fn register_plugin_brain_backend(&mut self, brain: Arc<dyn Brain>) {
+        self.brain = Some(brain);
+        self.brain_source = Some(BrainBackendSource::Plugin);
+    }
+
+    pub fn plugin_brain(&self) -> Option<Arc<dyn Brain>> {
+        self.brain.clone()
+    }
+
+    pub fn brain_runtime_status(&self) -> serde_json::Value {
+        match &self.brain {
+            Some(brain) => serde_json::json!({
+                "active": true,
+                "backend_name": brain.name(),
+                "source": self.brain_source.map(|s| s.as_str()),
+            }),
+            None => serde_json::json!({ "active": false }),
+        }
     }
 
     pub fn register_mcp_spawner(&mut self, spawner: Arc<McpSpawner>) {
@@ -1106,12 +1150,14 @@ impl ToolRegistry {
 }
 
 fn should_use_daemon_approval(source: &TaskSource) -> bool {
-    !matches!(source, TaskSource::Cli) || !std::io::stdin().is_terminal()
+    // CLI tasks always use the terminal/stdout path so the user sees the prompt.
+    // Non-terminal stdin (piped) auto-approves on EOF — still visible on stdout.
+    !matches!(source, TaskSource::Cli)
 }
 
 fn operation_source_from_task_source(source: &TaskSource) -> OperationSource {
     match source {
-        TaskSource::Cli => OperationSource::Local,
+        TaskSource::Cli | TaskSource::Subagent(_) => OperationSource::Local,
         TaskSource::Telegram(_)
         | TaskSource::Channel(_)
         | TaskSource::WebUI

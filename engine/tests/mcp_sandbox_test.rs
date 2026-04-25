@@ -1,4 +1,4 @@
-use super::{McpSandbox, SandboxProfile};
+use rove_engine::runtime::mcp::{McpSandbox, SandboxProfile};
 
 #[test]
 fn test_default_profile() {

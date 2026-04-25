@@ -184,7 +184,25 @@ fn service_descriptor(mode: ServiceInstallMode) -> Result<ServiceDescriptor> {
     Ok(ServiceDescriptor { label, path })
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn service_descriptor(mode: ServiceInstallMode) -> Result<ServiceDescriptor> {
+    let label = format!("co.roveai.daemon-{}", mode.as_str());
+    let path = match mode {
+        ServiceInstallMode::Login => dirs::config_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine the Roaming AppData directory"))?
+            .join("Rove")
+            .join(format!("{}.cmd", label)),
+        ServiceInstallMode::Boot => {
+            let program_data = std::env::var("ProgramData")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(r"C:\ProgramData"));
+            program_data.join("Rove").join(format!("{}.cmd", label))
+        }
+    };
+    Ok(ServiceDescriptor { label, path })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn service_descriptor(_mode: ServiceInstallMode) -> Result<ServiceDescriptor> {
     bail!("Service installation is not implemented on this platform yet")
 }
@@ -266,6 +284,23 @@ WantedBy=default.target
         );
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        let stdout = logs_dir.join("daemon.stdout.log").display().to_string();
+        let stderr = logs_dir.join("daemon.stderr.log").display().to_string();
+        // Wrapper cmd is the install marker; actual activation uses sc.exe / schtasks.
+        return format!(
+            "@echo off\r\nrem Rove daemon wrapper ({mode}) — label {label}\r\n\"{binary}\" daemon --port {port} --profile {profile} 1>>\"{stdout}\" 2>>\"{stderr}\"\r\n",
+            mode = _mode.as_str(),
+            label = label,
+            binary = binary,
+            port = port,
+            profile = profile.as_str(),
+            stdout = stdout,
+            stderr = stderr,
+        );
+    }
+
     #[allow(unreachable_code)]
     String::new()
 }
@@ -333,12 +368,101 @@ fn deactivate_service(mode: ServiceInstallMode, descriptor: &ServiceDescriptor) 
     Ok(())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn activate_service(mode: ServiceInstallMode, descriptor: &ServiceDescriptor) -> Result<()> {
+    let wrapper = descriptor.path.display().to_string();
+    match mode {
+        ServiceInstallMode::Boot => {
+            // SCM service; auto-start at boot, restart on failure.
+            run_command("sc.exe", &["stop", &descriptor.label], true)?;
+            run_command("sc.exe", &["delete", &descriptor.label], true)?;
+            let bin_path = format!("cmd.exe /c \"{}\"", wrapper);
+            run_command(
+                "sc.exe",
+                &[
+                    "create",
+                    &descriptor.label,
+                    "binPath=",
+                    &bin_path,
+                    "start=",
+                    "auto",
+                    "DisplayName=",
+                    "Rove Daemon",
+                ],
+                false,
+            )?;
+            run_command(
+                "sc.exe",
+                &[
+                    "failure",
+                    &descriptor.label,
+                    "reset=",
+                    "60",
+                    "actions=",
+                    "restart/2000/restart/2000/restart/2000",
+                ],
+                true,
+            )?;
+            run_command("sc.exe", &["start", &descriptor.label], false)?;
+        }
+        ServiceInstallMode::Login => {
+            // Per-user Task Scheduler job at logon.
+            run_command(
+                "schtasks.exe",
+                &["/Delete", "/TN", &descriptor.label, "/F"],
+                true,
+            )?;
+            run_command(
+                "schtasks.exe",
+                &[
+                    "/Create",
+                    "/TN",
+                    &descriptor.label,
+                    "/TR",
+                    &wrapper,
+                    "/SC",
+                    "ONLOGON",
+                    "/RL",
+                    "LIMITED",
+                    "/F",
+                ],
+                false,
+            )?;
+            run_command("schtasks.exe", &["/Run", "/TN", &descriptor.label], true)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn deactivate_service(mode: ServiceInstallMode, descriptor: &ServiceDescriptor) -> Result<()> {
+    match mode {
+        ServiceInstallMode::Boot => {
+            run_command("sc.exe", &["stop", &descriptor.label], true)?;
+            run_command("sc.exe", &["delete", &descriptor.label], true)?;
+        }
+        ServiceInstallMode::Login => {
+            run_command(
+                "schtasks.exe",
+                &["/End", "/TN", &descriptor.label],
+                true,
+            )?;
+            run_command(
+                "schtasks.exe",
+                &["/Delete", "/TN", &descriptor.label, "/F"],
+                true,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn activate_service(_mode: ServiceInstallMode, _descriptor: &ServiceDescriptor) -> Result<()> {
     bail!("Service installation is not implemented on this platform yet")
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn deactivate_service(_mode: ServiceInstallMode, _descriptor: &ServiceDescriptor) -> Result<()> {
     bail!("Service installation is not implemented on this platform yet")
 }

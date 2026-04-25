@@ -10,11 +10,11 @@ use uuid::Uuid;
 use crate::security::secrets::scrub_text;
 use crate::storage::{StepType as StorageStepType, TaskRepository};
 
-use super::graph::{DagGraph, DagNodeState, DagWave};
+use super::graph::{ApexGraph, ApexNodeState, ApexWave};
 use super::types::{ConductorPlan, PlanStep, StepRole, StepType};
 
 #[derive(Debug, Clone)]
-pub struct DagNodeExecution {
+pub struct ApexNodeExecution {
     pub step_id: String,
     pub output: String,
     pub route: Route,
@@ -23,20 +23,20 @@ pub struct DagNodeExecution {
 }
 
 #[derive(Debug, Clone)]
-pub struct DagRunReport {
-    pub graph: DagGraph,
-    pub results: HashMap<String, DagNodeExecution>,
+pub struct ApexRunReport {
+    pub graph: ApexGraph,
+    pub results: HashMap<String, ApexNodeExecution>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct DagSchedulingPolicy {
+pub struct ApexSchedulingPolicy {
     pub max_parallel_total: usize,
     pub max_parallel_researchers: usize,
     pub max_parallel_verifiers: usize,
     pub max_parallel_executors: usize,
 }
 
-impl Default for DagSchedulingPolicy {
+impl Default for ApexSchedulingPolicy {
     fn default() -> Self {
         Self {
             max_parallel_total: 3,
@@ -47,40 +47,40 @@ impl Default for DagSchedulingPolicy {
     }
 }
 
-impl DagRunReport {
+impl ApexRunReport {
     pub fn has_failures(&self) -> bool {
         self.graph.has_failures()
     }
 }
 
 #[async_trait]
-pub trait DagNodeExecutor: Send + Sync {
+pub trait ApexNodeExecutor: Send + Sync {
     async fn execute_node(
         &self,
         step: &PlanStep,
         dependency_context: &str,
         route: Route,
-    ) -> Result<DagNodeExecution>;
+    ) -> Result<ApexNodeExecution>;
 }
 
 #[derive(Clone)]
-struct DagPersistence {
+struct ApexPersistence {
     task_id: Uuid,
     task_repo: Arc<TaskRepository>,
     domain: String,
 }
 
 #[derive(Default)]
-pub struct DagRunner {
-    persistence: Option<DagPersistence>,
-    scheduling: DagSchedulingPolicy,
+pub struct ApexRunner {
+    persistence: Option<ApexPersistence>,
+    scheduling: ApexSchedulingPolicy,
 }
 
-impl DagRunner {
+impl ApexRunner {
     pub fn new() -> Self {
         Self {
             persistence: None,
-            scheduling: DagSchedulingPolicy::default(),
+            scheduling: ApexSchedulingPolicy::default(),
         }
     }
 
@@ -90,28 +90,28 @@ impl DagRunner {
         domain: impl Into<String>,
     ) -> Self {
         Self {
-            persistence: Some(DagPersistence {
+            persistence: Some(ApexPersistence {
                 task_id,
                 task_repo,
                 domain: domain.into(),
             }),
-            scheduling: DagSchedulingPolicy::default(),
+            scheduling: ApexSchedulingPolicy::default(),
         }
     }
 
-    pub fn with_scheduling_policy(mut self, scheduling: DagSchedulingPolicy) -> Self {
+    pub fn with_scheduling_policy(mut self, scheduling: ApexSchedulingPolicy) -> Self {
         self.scheduling = scheduling;
         self
     }
 
     pub async fn run<E>(
         &self,
-        mut graph: DagGraph,
+        mut graph: ApexGraph,
         plan: &ConductorPlan,
         executor: &E,
-    ) -> Result<DagRunReport>
+    ) -> Result<ApexRunReport>
     where
-        E: DagNodeExecutor,
+        E: ApexNodeExecutor,
     {
         let mut results = HashMap::new();
         let mut next_step_order = 1_i64;
@@ -123,7 +123,7 @@ impl DagRunner {
             let ready = graph.ready_node_ids();
             if ready.is_empty() {
                 return Err(anyhow!(
-                    "DAG execution stalled: no ready nodes remain for plan {}",
+                    "APEX execution stalled: no ready nodes remain for plan {}",
                     plan.id
                 ));
             }
@@ -235,7 +235,7 @@ impl DagRunner {
 
         graph.completed_at = Some(unix_timestamp());
 
-        Ok(DagRunReport { graph, results })
+        Ok(ApexRunReport { graph, results })
     }
 
     fn validate_plan(&self, plan: &ConductorPlan) -> Result<()> {
@@ -311,7 +311,7 @@ impl DagRunner {
         Ok(selected)
     }
 
-    async fn persist_wave_started(&self, wave: &DagWave, next_event_step: &mut i64) -> Result<()> {
+    async fn persist_wave_started(&self, wave: &ApexWave, next_event_step: &mut i64) -> Result<()> {
         let Some(persistence) = &self.persistence else {
             return Ok(());
         };
@@ -333,7 +333,7 @@ impl DagRunner {
                 Some(&persistence.domain),
             )
             .await
-            .context("Failed to persist DAG wave start event")?;
+            .context("Failed to persist APEX wave start event")?;
 
         Ok(())
     }
@@ -369,7 +369,7 @@ impl DagRunner {
                 &content,
             )
             .await
-            .context("Failed to persist DAG task step start")?;
+            .context("Failed to persist APEX task step start")?;
 
         persistence
             .task_repo
@@ -381,7 +381,7 @@ impl DagRunner {
                 Some(&persistence.domain),
             )
             .await
-            .context("Failed to persist DAG step start event")?;
+            .context("Failed to persist APEX step start event")?;
 
         Ok(())
     }
@@ -390,7 +390,7 @@ impl DagRunner {
         &self,
         step: &PlanStep,
         wave_index: u32,
-        execution: &DagNodeExecution,
+        execution: &ApexNodeExecution,
         next_step_order: &mut i64,
         next_event_step: &mut i64,
     ) -> Result<()> {
@@ -418,7 +418,7 @@ impl DagRunner {
                 &content,
             )
             .await
-            .context("Failed to persist DAG task step success")?;
+            .context("Failed to persist APEX task step success")?;
 
         persistence
             .task_repo
@@ -430,7 +430,7 @@ impl DagRunner {
                 Some(&persistence.domain),
             )
             .await
-            .context("Failed to persist DAG step success event")?;
+            .context("Failed to persist APEX step success event")?;
 
         Ok(())
     }
@@ -467,7 +467,7 @@ impl DagRunner {
                 &content,
             )
             .await
-            .context("Failed to persist DAG task step failure")?;
+            .context("Failed to persist APEX task step failure")?;
 
         persistence
             .task_repo
@@ -479,7 +479,7 @@ impl DagRunner {
                 Some(&persistence.domain),
             )
             .await
-            .context("Failed to persist DAG step failure event")?;
+            .context("Failed to persist APEX step failure event")?;
 
         Ok(())
     }
@@ -513,7 +513,7 @@ impl DagRunner {
                 &content,
             )
             .await
-            .context("Failed to persist blocked DAG task step")?;
+            .context("Failed to persist blocked APEX task step")?;
 
         persistence
             .task_repo
@@ -525,7 +525,7 @@ impl DagRunner {
                 Some(&persistence.domain),
             )
             .await
-            .context("Failed to persist blocked DAG step event")?;
+            .context("Failed to persist blocked APEX step event")?;
 
         Ok(())
     }
@@ -538,7 +538,7 @@ struct PendingNodeExecution {
     wave_index: u32,
 }
 
-fn dependency_context(graph: &DagGraph, step: &PlanStep) -> String {
+fn dependency_context(graph: &ApexGraph, step: &PlanStep) -> String {
     step.dependencies
         .iter()
         .filter_map(|dependency| graph.node(dependency))
@@ -559,11 +559,11 @@ fn plan_step<'a>(plan: &'a ConductorPlan, step_id: &str) -> Result<&'a PlanStep>
         .ok_or_else(|| anyhow!("Step not found in plan: {}", step_id))
 }
 
-fn blocked_node_ids(graph: &DagGraph) -> HashSet<String> {
+fn blocked_node_ids(graph: &ApexGraph) -> HashSet<String> {
     graph
         .nodes
         .iter()
-        .filter(|node| node.state == DagNodeState::Blocked)
+        .filter(|node| node.state == ApexNodeState::Blocked)
         .map(|node| node.step_id.clone())
         .collect()
 }
@@ -571,7 +571,7 @@ fn blocked_node_ids(graph: &DagGraph) -> HashSet<String> {
 fn storage_step_type(step_type: &StepType) -> StorageStepType {
     match step_type {
         // task_steps still enforces the legacy message/tool enum in SQLite.
-        // DAG-specific state lives in the JSON payload and agent_events until the
+        // APEX-specific state lives in the JSON payload and agent_events until the
         // task_steps schema is widened in a dedicated storage migration.
         StepType::Research | StepType::Execute | StepType::Verify => {
             StorageStepType::AssistantMessage
@@ -617,23 +617,23 @@ mod tests {
     use std::collections::HashSet;
     use tempfile::TempDir;
 
-    struct MockDagExecutor {
+    struct MockApexExecutor {
         failing: HashSet<String>,
     }
 
     #[async_trait]
-    impl DagNodeExecutor for MockDagExecutor {
+    impl ApexNodeExecutor for MockApexExecutor {
         async fn execute_node(
             &self,
             step: &PlanStep,
             dependency_context: &str,
             route: Route,
-        ) -> Result<DagNodeExecution> {
+        ) -> Result<ApexNodeExecution> {
             if self.failing.contains(&step.id) {
                 return Err(anyhow!("{} failed", step.id));
             }
 
-            Ok(DagNodeExecution {
+            Ok(ApexNodeExecution {
                 step_id: step.id.clone(),
                 output: format!("{} :: {}", step.description, dependency_context),
                 route,
@@ -691,7 +691,7 @@ mod tests {
     #[tokio::test]
     async fn runner_executes_parallel_wave_then_dependent_step() {
         let plan = sample_plan();
-        let graph = DagGraph::from_plan(
+        let graph = ApexGraph::from_plan(
             "task-1",
             &plan,
             TaskDomain::Code,
@@ -699,12 +699,12 @@ mod tests {
             false,
             Route::Local,
         );
-        let runner = DagRunner::new();
+        let runner = ApexRunner::new();
         let report = runner
             .run(
                 graph,
                 &plan,
-                &MockDagExecutor {
+                &MockApexExecutor {
                     failing: HashSet::new(),
                 },
             )
@@ -734,10 +734,10 @@ mod tests {
         let database = Database::new(&db_path).await.unwrap();
         let repo = Arc::new(database.tasks());
         let task_id = Uuid::new_v4();
-        repo.create_task(&task_id, "run dag").await.unwrap();
+        repo.create_task(&task_id, "run apex").await.unwrap();
 
         let plan = sample_plan();
-        let graph = DagGraph::from_plan(
+        let graph = ApexGraph::from_plan(
             task_id.to_string(),
             &plan,
             TaskDomain::Code,
@@ -745,13 +745,13 @@ mod tests {
             false,
             Route::Local,
         );
-        let runner = DagRunner::with_persistence(repo.clone(), task_id, "code");
+        let runner = ApexRunner::with_persistence(repo.clone(), task_id, "code");
 
         let report = runner
             .run(
                 graph,
                 &plan,
-                &MockDagExecutor {
+                &MockApexExecutor {
                     failing: HashSet::new(),
                 },
             )
@@ -775,7 +775,7 @@ mod tests {
     #[tokio::test]
     async fn runner_blocks_dependents_after_failure() {
         let plan = sample_plan();
-        let graph = DagGraph::from_plan(
+        let graph = ApexGraph::from_plan(
             "task-1",
             &plan,
             TaskDomain::Code,
@@ -783,13 +783,13 @@ mod tests {
             false,
             Route::Cloud,
         );
-        let runner = DagRunner::new();
+        let runner = ApexRunner::new();
 
         let report = runner
             .run(
                 graph,
                 &plan,
-                &MockDagExecutor {
+                &MockApexExecutor {
                     failing: HashSet::from(["step_1".to_string()]),
                 },
             )
@@ -799,11 +799,11 @@ mod tests {
         assert!(report.has_failures());
         assert_eq!(
             report.graph.node("step_1").map(|node| node.state.clone()),
-            Some(DagNodeState::Failed)
+            Some(ApexNodeState::Failed)
         );
         assert_eq!(
             report.graph.node("step_3").map(|node| node.state.clone()),
-            Some(DagNodeState::Blocked)
+            Some(ApexNodeState::Blocked)
         );
     }
 
@@ -852,7 +852,7 @@ mod tests {
             created_at: 100,
         };
 
-        let graph = DagGraph::from_plan(
+        let graph = ApexGraph::from_plan(
             "task-2",
             &plan,
             TaskDomain::Code,
@@ -860,7 +860,7 @@ mod tests {
             false,
             Route::Local,
         );
-        let runner = DagRunner::new().with_scheduling_policy(DagSchedulingPolicy {
+        let runner = ApexRunner::new().with_scheduling_policy(ApexSchedulingPolicy {
             max_parallel_total: 2,
             max_parallel_researchers: 1,
             max_parallel_verifiers: 1,
@@ -870,7 +870,7 @@ mod tests {
             .run(
                 graph,
                 &plan,
-                &MockDagExecutor {
+                &MockApexExecutor {
                     failing: HashSet::new(),
                 },
             )

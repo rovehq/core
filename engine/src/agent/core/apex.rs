@@ -9,9 +9,11 @@ use uuid::Uuid;
 use crate::agent::{SubagentResult, SubagentRunner};
 use crate::builtin_tools::registry::{ToolSchema, ToolSource};
 use crate::conductor::{
-    DagNodeExecution, DagNodeExecutor, DagRoutingPolicy, DagRunReport, DagRunner,
-    DagSchedulingPolicy, HybridExecutor, PlanStep, StepRole,
+    ApexNodeExecution, ApexNodeExecutor, ApexRoutingPolicy, ApexRunReport, ApexRunner,
+    ApexSchedulingPolicy, HybridExecutor, PlanStep, StepRole,
 };
+use crate::config::agent::ExecutionPolicy;
+use crate::memory::conductor::hybrid::{should_compress, PlanMode};
 use crate::gateway::Task;
 use crate::llm::{Message, MessageRole};
 use crate::remote::{RemoteManager, RemoteSendResult, RemoteTaskEvent};
@@ -22,7 +24,7 @@ use super::orchestration::OrchestrationDecision;
 use super::prompt::TaskContext;
 use super::{AgentCore, TaskResult};
 
-struct AgentDagExecutor {
+struct AgentApexExecutor {
     router: Arc<crate::llm::router::LLMRouter>,
     task_repo: Arc<crate::storage::TaskRepository>,
     tools: Arc<crate::builtin_tools::ToolRegistry>,
@@ -38,13 +40,13 @@ struct AgentDagExecutor {
 }
 
 #[async_trait]
-impl DagNodeExecutor for AgentDagExecutor {
+impl ApexNodeExecutor for AgentApexExecutor {
     async fn execute_node(
         &self,
         step: &PlanStep,
         dependency_context: &str,
         route: Route,
-    ) -> Result<DagNodeExecution> {
+    ) -> Result<ApexNodeExecution> {
         if let Some(remote_execution) = self
             .try_remote_execute(step, dependency_context, route)
             .await?
@@ -79,7 +81,7 @@ impl DagNodeExecutor for AgentDagExecutor {
             .await
             .context("subagent join failed")?
         {
-            SubagentResult::Completed(output) => Ok(DagNodeExecution {
+            SubagentResult::Completed(output) => Ok(ApexNodeExecution {
                 step_id: step.id.clone(),
                 output: output.output,
                 route: output
@@ -106,7 +108,7 @@ impl DagNodeExecutor for AgentDagExecutor {
     }
 }
 
-impl AgentDagExecutor {
+impl AgentApexExecutor {
     async fn subagent_spec_for_step(&self, step: &PlanStep) -> SubagentSpec {
         let tools_allowed = tools_allowed_for_step(step, self.domain, &self.tools).await;
         let preset_id = worker_preset_for_step_role(&step.role);
@@ -115,7 +117,7 @@ impl AgentDagExecutor {
             step.description.clone(),
             tools_allowed,
         )
-        .expect("built-in DAG step role must map to a built-in worker preset");
+        .expect("built-in APEX step role must map to a built-in worker preset");
 
         match self.complexity {
             Complexity::Simple => {}
@@ -131,7 +133,7 @@ impl AgentDagExecutor {
         step: &PlanStep,
         dependency_context: &str,
         route: Route,
-    ) -> Result<Option<DagNodeExecution>> {
+    ) -> Result<Option<ApexNodeExecution>> {
         if !self.config.ws_client.enabled || matches!(self.source, TaskSource::Remote(_)) {
             return Ok(None);
         }
@@ -154,7 +156,7 @@ impl AgentDagExecutor {
                 debug!(
                     step_id = %step.id,
                     error = %scrub_text(&error.to_string()),
-                    "Remote delegation unavailable for DAG step; falling back to local execution"
+                    "Remote delegation unavailable for APEX step; falling back to local execution"
                 );
                 return Ok(None);
             }
@@ -172,7 +174,7 @@ impl AgentDagExecutor {
             Some(provider) => provider_route(provider),
         };
 
-        Ok(Some(DagNodeExecution {
+        Ok(Some(ApexNodeExecution {
             step_id: step.id.clone(),
             output,
             route: resolved_route,
@@ -246,7 +248,7 @@ impl AgentDagExecutor {
 }
 
 impl AgentCore {
-    pub(super) async fn execute_dag_task(
+    pub async fn execute_apex_task(
         &self,
         task_id: &Uuid,
         task: &Task,
@@ -255,13 +257,26 @@ impl AgentCore {
         start_time: Instant,
     ) -> Result<TaskResult> {
         let planner = HybridExecutor::new(self.router.clone(), self.router.local_brain());
-        let planning_context = self.dag_planning_context(task, orchestration);
+        let memory_block = self.apex_memory_block();
+        let plan_mode = match self.config.agent.execution_policy {
+            ExecutionPolicy::Auto => PlanMode::Auto,
+            ExecutionPolicy::Local => PlanMode::Local,
+            ExecutionPolicy::Cloud => PlanMode::Cloud,
+        };
+        let planning_context = if should_compress(context.complexity, plan_mode) {
+            let compact = planner
+                .compress_context_locally(&task.input, &memory_block)
+                .await;
+            self.apex_envelope(task, orchestration, compact.as_deref().unwrap_or(&memory_block))
+        } else {
+            self.apex_envelope(task, orchestration, &memory_block)
+        };
         let plan = planner
             .plan_with_cloud(&task.input, &planning_context)
             .await
-            .context("Failed to build DAG plan for complex task")?;
+            .context("Failed to build APEX plan for complex task")?;
 
-        let mut graph = crate::conductor::DagGraph::from_plan(
+        let mut graph = crate::conductor::ApexGraph::from_plan(
             task_id.to_string(),
             &plan,
             context.domain,
@@ -269,15 +284,15 @@ impl AgentCore {
             context.sensitive,
             context.route,
         );
-        DagRoutingPolicy::new(self.router.local_brain().is_some()).assign_routes(&mut graph, &plan);
+        ApexRoutingPolicy::new(self.router.local_brain().is_some()).assign_routes(&mut graph, &plan);
 
-        let runner = DagRunner::with_persistence(
+        let runner = ApexRunner::with_persistence(
             self.task_repo.clone(),
             *task_id,
             context.domain_str.clone(),
         )
         .with_scheduling_policy(scheduling_policy_for(context, orchestration));
-        let executor = AgentDagExecutor {
+        let executor = AgentApexExecutor {
             router: self.router.clone(),
             task_repo: self.task_repo.clone(),
             tools: self.tools.clone(),
@@ -294,13 +309,13 @@ impl AgentCore {
         let report = runner
             .run(graph, &plan, &executor)
             .await
-            .context("Failed to execute DAG task")?;
+            .context("Failed to execute APEX task")?;
 
         if report.has_failures() {
-            return Err(anyhow!(dag_failure_summary(&plan, &report)));
+            return Err(anyhow!(apex_failure_summary(&plan, &report)));
         }
 
-        let answer = final_dag_answer(&plan, &report)?;
+        let answer = final_apex_answer(&plan, &report)?;
         let provider_used = summarize_routes(&report);
         let answer_payload = serde_json::json!({ "answer": scrub_text(&answer) }).to_string();
         self.task_repo
@@ -312,7 +327,7 @@ impl AgentCore {
                 Some(&context.domain_str),
             )
             .await
-            .context("Failed to persist DAG final answer")?;
+            .context("Failed to persist APEX final answer")?;
 
         Ok(TaskResult::success(
             task_id.to_string(),
@@ -325,7 +340,18 @@ impl AgentCore {
         ))
     }
 
-    fn dag_planning_context(&self, task: &Task, orchestration: &OrchestrationDecision) -> String {
+    /// Returns the scrubbed memory messages block (the variable, compressible part).
+    fn apex_memory_block(&self) -> String {
+        self.memory
+            .messages()
+            .iter()
+            .map(|msg| format!("[{}] {}", message_role(msg), scrub_text(&msg.content)))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// Assembles the final planning envelope: fixed header lines + memory block.
+    fn apex_envelope(&self, task: &Task, orchestration: &OrchestrationDecision, mem: &str) -> String {
         let mut lines = Vec::new();
         if let Some(workspace) = &task.workspace {
             lines.push(format!("Workspace: {}", workspace.display()));
@@ -334,22 +360,16 @@ impl AgentCore {
             "Orchestration strategy: {}",
             orchestration.summary()
         ));
-
-        for message in self.memory.messages() {
-            lines.push(format!(
-                "[{}] {}",
-                message_role(message),
-                scrub_text(&message.content)
-            ));
+        if !mem.is_empty() {
+            lines.push(mem.to_string());
         }
-
         lines.join("\n\n")
     }
 }
 
-fn final_dag_answer(
+fn final_apex_answer(
     plan: &crate::conductor::ConductorPlan,
-    report: &DagRunReport,
+    report: &ApexRunReport,
 ) -> Result<String> {
     let mut ordered_steps = plan.steps.iter().collect::<Vec<_>>();
     ordered_steps.sort_by_key(|step| step.order);
@@ -368,10 +388,10 @@ fn final_dag_answer(
         }
     }
 
-    Err(anyhow!("DAG execution produced no successful step output"))
+    Err(anyhow!("APEX execution produced no successful step output"))
 }
 
-fn summarize_routes(report: &DagRunReport) -> String {
+fn summarize_routes(report: &ApexRunReport) -> String {
     let mut labels = report
         .results
         .values()
@@ -384,16 +404,16 @@ fn summarize_routes(report: &DagRunReport) -> String {
     labels.sort_unstable();
     labels.dedup();
 
-    format!("dag[{}]", labels.join(","))
+    format!("apex[{}]", labels.join(","))
 }
 
-fn dag_failure_summary(plan: &crate::conductor::ConductorPlan, report: &DagRunReport) -> String {
+fn apex_failure_summary(plan: &crate::conductor::ConductorPlan, report: &ApexRunReport) -> String {
     let mut failures = Vec::new();
 
     for node in &report.graph.nodes {
         if !matches!(
             node.state,
-            crate::conductor::DagNodeState::Failed | crate::conductor::DagNodeState::Blocked
+            crate::conductor::ApexNodeState::Failed | crate::conductor::ApexNodeState::Blocked
         ) {
             continue;
         }
@@ -409,9 +429,9 @@ fn dag_failure_summary(plan: &crate::conductor::ConductorPlan, report: &DagRunRe
     }
 
     if failures.is_empty() {
-        "DAG execution failed".to_string()
+        "APEX execution failed".to_string()
     } else {
-        format!("DAG execution failed: {}", failures.join("; "))
+        format!("APEX execution failed: {}", failures.join("; "))
     }
 }
 
@@ -520,21 +540,21 @@ fn worker_preset_for_step_role(role: &StepRole) -> &'static str {
 fn scheduling_policy_for(
     context: &TaskContext,
     orchestration: &OrchestrationDecision,
-) -> DagSchedulingPolicy {
+) -> ApexSchedulingPolicy {
     let mut policy = match (context.domain, context.complexity) {
-        (TaskDomain::Browser | TaskDomain::Data, Complexity::Complex) => DagSchedulingPolicy {
+        (TaskDomain::Browser | TaskDomain::Data, Complexity::Complex) => ApexSchedulingPolicy {
             max_parallel_total: 4,
             max_parallel_researchers: 3,
             max_parallel_verifiers: 2,
             max_parallel_executors: 1,
         },
-        (_, Complexity::Complex) => DagSchedulingPolicy {
+        (_, Complexity::Complex) => ApexSchedulingPolicy {
             max_parallel_total: 3,
             max_parallel_researchers: 2,
             max_parallel_verifiers: 2,
             max_parallel_executors: 1,
         },
-        _ => DagSchedulingPolicy {
+        _ => ApexSchedulingPolicy {
             max_parallel_total: 2,
             max_parallel_researchers: 1,
             max_parallel_verifiers: 1,
@@ -671,13 +691,13 @@ mod tests {
         config: Config,
         parent_task_id: Uuid,
         domain: TaskDomain,
-    ) -> (Arc<TaskRepository>, AgentDagExecutor) {
+    ) -> (Arc<TaskRepository>, AgentApexExecutor) {
         let db_path = temp.path().join(format!("{}.db", parent_task_id));
         let db = Database::new(&db_path).await.expect("database");
         let pool = db.pool().clone();
         let task_repo = Arc::new(TaskRepository::new(pool));
         task_repo
-            .create_task(&parent_task_id, "remote dag parent")
+            .create_task(&parent_task_id, "remote apex parent")
             .await
             .expect("create parent task");
 
@@ -693,7 +713,7 @@ mod tests {
             custom_providers: vec![],
         });
         let router = Arc::new(LLMRouter::new(vec![], llm_config));
-        let executor = AgentDagExecutor {
+        let executor = AgentApexExecutor {
             router,
             task_repo: task_repo.clone(),
             tools: Arc::new(ToolRegistry::empty()),
@@ -769,10 +789,10 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v1/remote/execute"))
+            .and(path("/v1/remote/execute"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
-                "task_id": "remote-dag-step",
+                "task_id": "remote-apex-step",
                 "status": "completed",
                 "answer": "remote executor answer",
                 "provider": "executor-plan",
@@ -824,7 +844,7 @@ mod tests {
         let execute_request = requests
             .iter()
             .find(|request| {
-                request.method.as_str() == "POST" && request.url.path() == "/api/v1/remote/execute"
+                request.method.as_str() == "POST" && request.url.path() == "/v1/remote/execute"
             })
             .expect("remote execute request");
         let request_body: serde_json::Value =
@@ -864,7 +884,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v1/remote/execute"))
+            .and(path("/v1/remote/execute"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
                 "task_id": "remote-research-step",
@@ -916,7 +936,7 @@ mod tests {
         let execute_request = requests
             .iter()
             .find(|request| {
-                request.method.as_str() == "POST" && request.url.path() == "/api/v1/remote/execute"
+                request.method.as_str() == "POST" && request.url.path() == "/v1/remote/execute"
             })
             .expect("remote execute request");
         let request_body: serde_json::Value =
@@ -941,7 +961,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v1/remote/execute"))
+            .and(path("/v1/remote/execute"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
                 "task_id": "remote-verify-step",
@@ -993,7 +1013,7 @@ mod tests {
         let execute_request = requests
             .iter()
             .find(|request| {
-                request.method.as_str() == "POST" && request.url.path() == "/api/v1/remote/execute"
+                request.method.as_str() == "POST" && request.url.path() == "/v1/remote/execute"
             })
             .expect("remote execute request");
         let request_body: serde_json::Value =

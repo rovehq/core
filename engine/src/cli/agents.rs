@@ -170,11 +170,13 @@ pub fn execution_profile_for_agent(
     Ok(TaskExecutionProfile {
         agent_id: Some(spec.id.clone()),
         agent_name: Some(spec.name.clone()),
+        thread_id: None,
         worker_preset_id: None,
         worker_preset_name: None,
         purpose: Some(spec.purpose.clone()),
         instructions: spec.instructions.clone(),
         allowed_tools: allowed_tools(&spec),
+        callable_agents: spec.callable_agents.clone(),
         output_contract: spec.output_contract.clone(),
         outcome_contract: spec.outcome_contract.clone(),
         max_iterations: None,

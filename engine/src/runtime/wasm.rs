@@ -5,8 +5,6 @@ mod host;
 mod inspect;
 mod load;
 mod restart;
-#[cfg(test)]
-mod tests;
 
 pub(crate) use load::installed_plugin_wasm_limit_report;
 

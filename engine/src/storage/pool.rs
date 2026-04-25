@@ -8,8 +8,9 @@ use tracing::{debug, info};
 
 use super::{
     AgentRunRepository, AuthRepository, ExtensionCatalogRepository, InstalledPluginRepository,
-    KnowledgeRepository, MemoryAuditRepository, PendingTaskRepository, PluginRepository,
-    RemoteDiscoveryRepository, ScheduleRepository, TaskRepository, TelegramAuditRepository,
+    KnowledgeRepository, ManagedAgentRepository, MemoryAuditRepository, PendingTaskRepository,
+    PluginRepository, RemoteDiscoveryRepository, ScheduleRepository, TaskRepository,
+    TelegramAuditRepository, ThreadRepository,
 };
 
 /// Database connection pool.
@@ -20,7 +21,7 @@ pub struct Database {
 impl Database {
     /// Create a new database connection backed by SQLite WAL mode.
     pub async fn new(db_path: &Path) -> Result<Self> {
-        info!("Initializing database at: {}", db_path.display());
+        debug!("Initializing database at: {}", db_path.display());
 
         if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -50,7 +51,7 @@ impl Database {
     }
 
     async fn run_schema(&self) -> Result<()> {
-        info!("Running database schema");
+        debug!("Running database schema");
 
         // Pre-schema compatibility patches: run BEFORE base.sql so that any
         // index or constraint in base.sql that references a newly-added column
@@ -101,8 +102,60 @@ impl Database {
         self.ensure_memory_audit_tables()
             .await
             .context("Failed to apply memory audit schema patch")?;
+        self.ensure_agent_threads_table()
+            .await
+            .context("Failed to apply agent_threads schema patch")?;
+        self.ensure_managed_agent_sessions_table()
+            .await
+            .context("Failed to apply managed agent sessions schema patch")?;
+        self.ensure_knowledge_provenance_columns()
+            .await
+            .context("Failed to apply knowledge provenance schema patch")?;
+        self.ensure_knowledge_jobs_table()
+            .await
+            .context("Failed to apply knowledge_jobs schema patch")?;
 
-        info!("Database schema loaded successfully");
+        debug!("Database schema loaded successfully");
+        Ok(())
+    }
+
+    async fn ensure_knowledge_provenance_columns(&self) -> Result<()> {
+        if !self.table_exists("knowledge_documents").await? {
+            return Ok(());
+        }
+        let columns = self.table_columns("knowledge_documents").await?;
+        for (col, sql_type) in [("ingested_by", "TEXT"), ("ingest_job_id", "TEXT")] {
+            if !columns.iter().any(|c| c == col) {
+                sqlx::query(&format!(
+                    "ALTER TABLE knowledge_documents ADD COLUMN {col} {sql_type}"
+                ))
+                .execute(&self.pool)
+                .await
+                .with_context(|| {
+                    format!("Failed to add knowledge_documents.{col} column")
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn ensure_knowledge_jobs_table(&self) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS knowledge_jobs (
+                id          TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'running',
+                source      TEXT NOT NULL,
+                total       INTEGER NOT NULL DEFAULT 0,
+                processed   INTEGER NOT NULL DEFAULT 0,
+                errors_json TEXT NOT NULL DEFAULT '[]',
+                started_at  INTEGER NOT NULL,
+                finished_at INTEGER
+            )",
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create knowledge_jobs table")?;
         Ok(())
     }
 
@@ -116,6 +169,7 @@ impl Database {
             ("source", "TEXT", " NOT NULL DEFAULT 'cli'"),
             ("agent_id", "TEXT", ""),
             ("agent_name", "TEXT", ""),
+            ("thread_id", "TEXT", ""),
             ("worker_preset_id", "TEXT", ""),
             ("worker_preset_name", "TEXT", ""),
         ] {
@@ -133,6 +187,10 @@ impl Database {
             .execute(&self.pool)
             .await
             .context("Failed to create task agent history index")?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_thread_created_at ON tasks(thread_id, created_at DESC)")
+            .execute(&self.pool)
+            .await
+            .context("Failed to create task thread history index")?;
 
         Ok(())
     }
@@ -519,6 +577,120 @@ impl Database {
         Ok(())
     }
 
+    async fn ensure_agent_threads_table(&self) -> Result<()> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS agent_threads (
+                id                  TEXT PRIMARY KEY,
+                parent_agent_id     TEXT NOT NULL,
+                callable_agent_id   TEXT NOT NULL,
+                callable_agent_name TEXT NOT NULL,
+                status              TEXT NOT NULL CHECK(status IN ('active', 'idle', 'completed')),
+                task_count          INTEGER NOT NULL DEFAULT 0,
+                created_at          INTEGER NOT NULL,
+                last_active_at      INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create agent_threads table")?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_agent_threads_parent
+               ON agent_threads(parent_agent_id, last_active_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create agent_threads parent index")?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_agent_threads_callable
+               ON agent_threads(parent_agent_id, callable_agent_id)"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create agent_threads callable index")?;
+
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS agent_thread_events (
+                id          TEXT PRIMARY KEY,
+                thread_id   TEXT NOT NULL,
+                event_type  TEXT NOT NULL,
+                task_id     TEXT,
+                payload     TEXT NOT NULL,
+                created_at  INTEGER NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES agent_threads(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create agent_thread_events table")?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_thread_events_thread
+               ON agent_thread_events(thread_id, created_at ASC)"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create agent_thread_events index")?;
+
+        Ok(())
+    }
+
+    async fn ensure_managed_agent_sessions_table(&self) -> Result<()> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS managed_agent_sessions (
+                id                TEXT PRIMARY KEY,
+                agent_id          TEXT NOT NULL,
+                environment_id    TEXT NOT NULL,
+                profile_name      TEXT NOT NULL,
+                loadout_name      TEXT NOT NULL,
+                primary_thread_id TEXT NOT NULL,
+                status            TEXT NOT NULL CHECK(status IN ('ready', 'running', 'idle', 'failed')),
+                last_task_id      TEXT,
+                created_at        INTEGER NOT NULL,
+                last_active_at    INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create managed_agent_sessions table")?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_managed_agent_sessions_agent
+               ON managed_agent_sessions(agent_id, last_active_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create managed_agent_sessions agent index")?;
+
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS managed_agent_session_events (
+                position     INTEGER PRIMARY KEY AUTOINCREMENT,
+                id           TEXT NOT NULL UNIQUE,
+                session_id   TEXT NOT NULL,
+                event_type   TEXT NOT NULL,
+                task_id      TEXT,
+                thread_id    TEXT,
+                payload_json TEXT NOT NULL,
+                created_at   INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES managed_agent_sessions(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create managed_agent_session_events table")?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_managed_agent_session_events_session
+               ON managed_agent_session_events(session_id, position ASC)"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create managed_agent_session_events session index")?;
+
+        Ok(())
+    }
+
     async fn table_exists(&self, table: &str) -> Result<bool> {
         let row =
             sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
@@ -574,6 +746,14 @@ impl Database {
 
     pub fn tasks(&self) -> TaskRepository {
         TaskRepository::new(self.pool.clone())
+    }
+
+    pub fn threads(&self) -> ThreadRepository {
+        ThreadRepository::new(self.pool.clone())
+    }
+
+    pub fn managed_agents(&self) -> ManagedAgentRepository {
+        ManagedAgentRepository::new(self.pool.clone())
     }
 
     pub fn agent_runs(&self) -> AgentRunRepository {
@@ -662,6 +842,10 @@ mod tests {
         assert!(tables.contains(&"agent_runs".to_string()));
         assert!(tables.contains(&"workflow_runs".to_string()));
         assert!(tables.contains(&"workflow_run_steps".to_string()));
+        assert!(tables.contains(&"agent_threads".to_string()));
+        assert!(tables.contains(&"agent_thread_events".to_string()));
+        assert!(tables.contains(&"managed_agent_sessions".to_string()));
+        assert!(tables.contains(&"managed_agent_session_events".to_string()));
 
         db.close().await.unwrap();
     }

@@ -87,9 +87,9 @@ impl AgentCore {
         )
         .await?;
 
-        if orchestration.use_dag() {
+        if orchestration.use_apex() {
             return self
-                .execute_dag_task(task_id, &task, &context, &orchestration, start_time)
+                .execute_apex_task(task_id, &task, &context, &orchestration, start_time)
                 .await;
         }
 

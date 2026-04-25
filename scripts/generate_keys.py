@@ -1,201 +1,231 @@
 #!/usr/bin/env python3
 """
-Rove SECURE Key Generator
-Generates Ed25519 keypairs entirely in memory.
-Saves the Private Keys directly to macOS Keychain.
-Outputs in .env format ready for Infisical import.
+Rove key generator — two-key contract.
+
+Generates Ed25519 keypairs in memory. Saves private keys to macOS Keychain.
+Prints .env-format output ready for Infisical / GitHub Actions secret import.
+
+Keys (both required):
+
+  1. OFFICIAL   — signs engine releases, core-tools, official/reviewed plugins
+                  & drivers, brains, revoked.json, community-manifest wrapper.
+                  Embedded in engine binary as ROVE_TEAM_OFFICIAL_PUBLIC_KEY.
+
+  2. COMMUNITY  — signs community-tier plugin manifests on PR merge only.
+                  Embedded in engine binary as ROVE_TEAM_COMMUNITY_PUBLIC_KEY.
+                  Separate blast radius from OFFICIAL.
+
+Both keys are embedded in every engine build (stable + dev). Rove is still
+pre-stable; dev channel is the only release target today. The stable channel
+reuses the same embedded keys — channel split is about distribution cadence
+and home dir (.rove-dev vs .rove), not key identity.
+
+Usage:
+    python3 scripts/generate_keys.py
+    python3 scripts/generate_keys.py --env dev   # default
+    python3 scripts/generate_keys.py --env prod
 """
 
+from __future__ import annotations
+
+import argparse
 import subprocess
 import sys
+from dataclasses import dataclass
+from typing import List
 
-# ─── Key definitions with usage context ──────────────────────────────────────
 
-KEYS = [
-    {
-        "id": "signing",
-        "name": "Manifest Signing Key",
-        "required": True,
-        "infisical_private": "ROVE_SIGNING_PRIVATE_KEY",
-        "infisical_public": "ROVE_SIGNING_PUBLIC_KEY",
-        "description": (
-            "Signs registry/manifest.json, revoked.json, and all plugin manifests.\n"
-            "  Private → Infisical + GitHub Actions (all repos)\n"
-            "  Public  → Compiled into engine binary via build.rs (ROVE_TEAM_PUBLIC_KEY)"
+@dataclass
+class KeyDef:
+    id: str
+    name: str
+    private_var: str
+    public_var: str
+    description: str
+    used_by: List[str]
+
+
+KEYS: List[KeyDef] = [
+    KeyDef(
+        id="official",
+        name="Official Signing Key",
+        private_var="ROVE_TEAM_OFFICIAL_PRIVATE_KEY",
+        public_var="ROVE_TEAM_OFFICIAL_PUBLIC_KEY",
+        description=(
+            "Signs engine releases, core-tools (telegram / ui-server), "
+            "official & reviewed plugins, drivers, brains, revoked.json, "
+            "and the community-manifest wrapper.\n"
+            "  Private → GitHub Secret on orvislab/rove, orvislab/rove-registry, orvislab/rove-plugins\n"
+            "  Public  → compiled into engine via build.rs"
         ),
-        "used_by": [
-            "core/.github/workflows/ci.yml        → signs manifests before R2 upload",
-            "registry/.github/workflows/ci.yml    → signs manifest.json + revoked.json",
-            "plugins/.github/workflows/ci.yml     → signs plugin hashes",
-            "engine/build.rs                       → embeds public key into binary",
+        used_by=[
+            "core/.github/workflows/ci.yml        → signs engine + core-tools, embeds public key",
+            "registry/.github/workflows/ci.yml    → signs per-channel per-artifact manifests",
+            "plugins/.github/workflows/ci.yml     → signs official plugin manifests",
         ],
-    },
-    {
-        "id": "core",
-        "name": "Core Tool Signing Key",
-        "required": False,
-        "infisical_private": "ROVE_CORE_TOOL_PRIVATE_KEY",
-        "infisical_public": "ROVE_CORE_TOOL_PUBLIC_KEY",
-        "description": (
-            "Signs native cdylib core tools (telegram, screenshot, etc).\n"
-            "  Used when core tools are distributed separately from engine."
+    ),
+    KeyDef(
+        id="community",
+        name="Community Signing Key",
+        private_var="ROVE_TEAM_COMMUNITY_PRIVATE_KEY",
+        public_var="ROVE_TEAM_COMMUNITY_PUBLIC_KEY",
+        description=(
+            "Signs community-tier WASM plugin manifests on PR merge.\n"
+            "  Authors hold no keys. Reviewer merge triggers CI sign step.\n"
+            "  Private → GitHub Secret on orvislab/rove-community-plugins only\n"
+            "  Public  → compiled into engine via build.rs"
         ),
-        "used_by": [
-            "core/.github/workflows/ci.yml → signs core tool binaries",
+        used_by=[
+            "community-plugins/.github/workflows/ci.yml → signs community WASM manifests",
+            "engine/build.rs                             → embeds public key into binary",
         ],
-    },
-    {
-        "id": "community",
-        "name": "Community Plugin Key",
-        "required": False,
-        "infisical_private": "ROVE_COMMUNITY_PRIVATE_KEY",
-        "infisical_public": "ROVE_COMMUNITY_PUBLIC_KEY",
-        "description": (
-            "Signs community-submitted WASM plugins.\n"
-            "  Separate from official key to limit blast radius."
-        ),
-        "used_by": [
-            "community-plugins/.github/workflows/ci.yml → signs community .wasm files",
-        ],
-    },
+    ),
 ]
-
-# ─── R2 / Infisical credentials (not generated, just listed) ────────────────
 
 R2_SECRETS = [
-    {"name": "R2_ACCESS_KEY_ID",     "source": "Cloudflare Dashboard → R2 → API Tokens"},
-    {"name": "R2_SECRET_ACCESS_KEY", "source": "Cloudflare Dashboard → R2 → API Tokens"},
-    {"name": "R2_API_URL",           "source": "https://<account-id>.r2.cloudflarestorage.com"},
-    {"name": "R2_BUCKET_NAME",       "source": "rove-registry"},
+    ("R2_ACCESS_KEY_ID", "Cloudflare Dashboard → R2 → API Tokens"),
+    ("R2_SECRET_ACCESS_KEY", "Cloudflare Dashboard → R2 → API Tokens"),
+    ("R2_API_URL", "https://<account-id>.r2.cloudflarestorage.com"),
+    ("R2_BUCKET_NAME", "rove-registry"),
+    ("REGISTRY_PAT", "GitHub PAT with write access to orvislab/rove-registry"),
 ]
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def run_cmd(cmd, input_data=None):
+def run_cmd(cmd: List[str], input_data: str | None = None) -> str:
     process = subprocess.run(cmd, input=input_data, capture_output=True, text=True)
     if process.returncode != 0:
-        print(f"Error running command: {' '.join(cmd)}")
-        print(process.stderr)
+        print(f"Error running: {' '.join(cmd)}", file=sys.stderr)
+        print(process.stderr, file=sys.stderr)
         sys.exit(1)
     return process.stdout
 
-def generate_ed25519():
-    priv_key = run_cmd(["openssl", "genpkey", "-algorithm", "ed25519"])
-    pub_key = run_cmd(["openssl", "pkey", "-pubout"], input_data=priv_key)
-    return priv_key.strip(), pub_key.strip()
 
-def save_to_keychain(service: str, account: str, secret: str):
-    cmd = ["security", "add-generic-password", "-s", service, "-a", account, "-w", secret, "-U"]
-    run_cmd(cmd)
+def generate_ed25519() -> tuple[str, str]:
+    priv = run_cmd(["openssl", "genpkey", "-algorithm", "ed25519"])
+    pub = run_cmd(["openssl", "pkey", "-pubout"], input_data=priv)
+    return priv.strip(), pub.strip()
 
-def clean_pem(value: str) -> str:
-    lines = [line for line in value.split('\n') if not line.startswith("-----")]
-    return "".join(lines).strip()
 
-# ─── Main ────────────────────────────────────────────────────────────────────
+def save_to_keychain(service: str, account: str, secret: str) -> None:
+    run_cmd([
+        "security", "add-generic-password",
+        "-s", service, "-a", account, "-w", secret, "-U",
+    ])
 
-def main():
+
+def strip_pem(value: str) -> str:
+    return "".join(
+        line for line in value.splitlines() if not line.startswith("-----")
+    ).strip()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Rove key generator (two-key contract).")
+    parser.add_argument(
+        "--env",
+        choices=["dev", "prod"],
+        default="dev",
+        help="Environment tag used for keychain service name (default: dev). "
+             "Rove is pre-stable; keep dev unless cutting a real production keyset.",
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Skip prompts and generate both keys.",
+    )
+    args = parser.parse_args()
+
+    env = args.env
+
     print()
     print("╔══════════════════════════════════════════════════════╗")
-    print("║         Rove Key & Secrets Generator                ║")
+    print("║           Rove Key Generator (2-key)                ║")
     print("╚══════════════════════════════════════════════════════╝")
     print()
-    print("Keys are generated in memory → saved to macOS Keychain")
-    print("→ printed in .env format for Infisical import.")
+    print(f"  Environment tag: {env.upper()}")
+    print("  Keys generated in memory → macOS Keychain → printed as .env")
     print()
 
-    # ── Show what's needed ───────────────────────
     print("━" * 60)
-    print("  KEYS REQUIRED FOR CI/CD PIPELINE")
+    print("  KEYS")
     print("━" * 60)
     for k in KEYS:
-        tag = "★ REQUIRED" if k["required"] else "  optional"
-        print(f"\n  {tag}  {k['name']}")
-        print(f"          {k['description']}")
-        print(f"          Infisical secrets:")
-        print(f"            Private → {k['infisical_private']}")
-        print(f"            Public  → {k['infisical_public']}")
-        print(f"          Used by:")
-        for u in k["used_by"]:
-            print(f"            • {u}")
+        print(f"\n  ★  {k.name}")
+        print(f"      {k.description}")
+        print(f"      Secrets:")
+        print(f"        Private → {k.private_var}")
+        print(f"        Public  → {k.public_var}")
+        print(f"      Used by:")
+        for u in k.used_by:
+            print(f"        • {u}")
 
     print(f"\n{'━' * 60}")
-    print("  R2 CREDENTIALS (not generated here — get from Cloudflare)")
+    print("  R2 / REGISTRY CREDENTIALS (set manually in Cloudflare + GitHub)")
     print("━" * 60)
-    for s in R2_SECRETS:
-        print(f"  {s['name']:<25} ← {s['source']}")
-
+    for name, source in R2_SECRETS:
+        print(f"  {name:<25} ← {source}")
     print()
 
-    # ── Environment ──────────────────────────────
-    env_choice = ""
-    while env_choice not in ['1', '2']:
-        print("Select environment:")
-        print("  1) Development (dev)")
-        print("  2) Production (prod)")
-        env_choice = input("Enter 1 or 2: ").strip()
+    if not args.non_interactive:
+        confirm = input("Generate both keys now? (Y/n): ").strip().lower()
+        if confirm == "n":
+            print("Aborted.")
+            return
 
-    env = "dev" if env_choice == '1' else "prod"
-    print(f"\n[Environment: {env.upper()}]\n")
-
-    # ── Select keys to generate ──────────────────
-    selected = []
-    for k in KEYS:
-        default = "Y/n" if k["required"] else "y/N"
-        ans = input(f"Generate '{k['name']}'? ({default}): ").strip().lower()
-        if k["required"] and ans != 'n':
-            selected.append(k)
-        elif not k["required"] and ans == 'y':
-            selected.append(k)
-
-    if not selected:
-        print("\nNo keys selected. Exiting.")
-        return
-
-    # ── Generate ─────────────────────────────────
     print("\nGenerating keys in memory...")
-    results = []
-    for k in selected:
+    results: List[tuple[str, str, str]] = []
+    for k in KEYS:
         priv, pub = generate_ed25519()
-
-        service_name = f"rove-{k['id']}-key-{env}"
+        service_name = f"rove-{k.id}-key-{env}"
         save_to_keychain(service_name, "rove-engine", priv)
+        save_to_keychain(service_name + "-public", "rove-engine", pub)
+        results.append((k.private_var, priv, k.name))
+        results.append((k.public_var, pub, k.name))
+        print(f"  ✓ {k.name} → Keychain service '{service_name}'")
 
-        results.append((k["infisical_private"], priv, k["name"]))
-        results.append((k["infisical_public"], pub, k["name"]))
-        print(f"  ✓ {k['name']}")
-
-    # ── Output ───────────────────────────────────
     print(f"\n{'═' * 60}")
-    print(f"  .env FORMAT — paste into Infisical ({env.upper()} environment)")
+    print(f"  .env — paste into Infisical ({env.upper()} environment)")
+    print("    or set directly as GitHub Actions secrets")
     print(f"{'═' * 60}\n")
 
     current_group = ""
     for name, value, group in results:
         if group != current_group:
-            print(f"# --- {group} ---")
+            print(f"\n# --- {group} ---")
             current_group = group
-        print(f'{name}="{clean_pem(value)}"')
+        print(f'{name}="{strip_pem(value)}"')
 
-    print(f"\n{'═' * 60}")
-    print(f"\n[✓] Private keys saved to macOS Keychain")
-    print(f"[→] Copy the output above → Infisical → Import as .env")
-    print(f"[→] Then sync Infisical → GitHub Actions secrets for each repo")
-    print(f"\nRepos that need these secrets:")
-    print(f"  • orvislab/rove          (core engine + tools)")
-    print(f"  • orvislab/rove-plugins  (official WASM plugins)")
-    print(f"  • orvislab/rove-community-plugins")
-    print(f"  • orvislab/rove-registry (manifest signing)")
     print()
+    print(f"{'═' * 60}")
+    print("  NEXT STEPS")
+    print(f"{'═' * 60}")
+    print()
+    print("  1. Copy the OFFICIAL private key into GitHub Actions secrets on:")
+    print("       • orvislab/rove                  (engine + core-tools)")
+    print("       • orvislab/rove-registry         (per-channel manifest signing)")
+    print("       • orvislab/rove-plugins          (official plugin manifests)")
+    print("     Secret name: ROVE_TEAM_OFFICIAL_PRIVATE_KEY")
+    print()
+    print("  2. Copy the COMMUNITY private key into GitHub Actions secrets on:")
+    print("       • orvislab/rove-community-plugins")
+    print("     Secret name: ROVE_TEAM_COMMUNITY_PRIVATE_KEY")
+    print()
+    print("  3. Copy BOTH public keys into GitHub Actions secrets on:")
+    print("       • orvislab/rove (for build.rs embedding)")
+    print("     Secret names: ROVE_TEAM_OFFICIAL_PUBLIC_KEY, ROVE_TEAM_COMMUNITY_PUBLIC_KEY")
+    print()
+    print("  4. Private keys also persist in macOS Keychain under:")
+    for k in KEYS:
+        print(f"       rove-{k.id}-key-{env}")
+    print()
+
 
 if __name__ == "__main__":
     if sys.platform != "darwin":
-        print("Error: This script requires macOS Keychain.")
-        print("On Linux, use `openssl genpkey -algorithm ed25519` manually.")
+        print("Error: macOS Keychain required. On Linux run openssl directly.", file=sys.stderr)
         sys.exit(1)
-
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\nExiting...")
+        print("\nAborted.")
         sys.exit(0)

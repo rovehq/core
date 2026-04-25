@@ -784,11 +784,12 @@ fn build_memory_plan(
             selected_sources.push("typed_memory".to_string());
         }
 
+        // UserFact and Preference intents also search semantic memory so that
+        // notes ingested without explicit "my X is Y" / "remember that" patterns
+        // (which land in episodic store only, not in memory_facts) are still found.
         if !matches!(
             intent,
-            MemoryIntent::UserFact
-                | MemoryIntent::Preference
-                | MemoryIntent::Warning
+            MemoryIntent::Warning
                 | MemoryIntent::StructuralCode
                 | MemoryIntent::RelationshipQuery
         ) {
@@ -902,11 +903,17 @@ fn detect_memory_intent(question: &str, domain: &TaskDomain) -> MemoryIntent {
     {
         return MemoryIntent::RelationshipQuery;
     }
-    if matches!(domain, TaskDomain::Code | TaskDomain::Git)
-        || query.contains("module")
+    if query.contains("module")
         || query.contains("function")
         || query.contains("file")
         || query.contains("architecture")
+        || (matches!(domain, TaskDomain::Code | TaskDomain::Git)
+            && (query.contains("struct")
+                || query.contains("class")
+                || query.contains("impl")
+                || query.contains("trait")
+                || query.contains("interface")
+                || query.contains("symbol")))
     {
         return MemoryIntent::StructuralCode;
     }

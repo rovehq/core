@@ -2,20 +2,20 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
-pub(super) struct TelegramRateLimits {
+pub struct TelegramRateLimits {
     recent_ops: Vec<std::time::Instant>,
     tier2_ops: Vec<std::time::Instant>,
 }
 
 impl TelegramRateLimits {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             recent_ops: Vec::new(),
             tier2_ops: Vec::new(),
         }
     }
 
-    pub(super) fn check_general(&mut self) -> bool {
+    pub fn check_general(&mut self) -> bool {
         let now = std::time::Instant::now();
         let one_hour = Duration::from_secs(3600);
         self.recent_ops
@@ -27,7 +27,7 @@ impl TelegramRateLimits {
         true
     }
 
-    pub(super) fn check_tier2(&mut self) -> bool {
+    pub fn check_tier2(&mut self) -> bool {
         let now = std::time::Instant::now();
         let ten_min = Duration::from_secs(600);
         self.tier2_ops
@@ -41,14 +41,14 @@ impl TelegramRateLimits {
 }
 
 #[derive(Serialize)]
-pub(super) struct InlineKeyboardButton {
-    pub(super) text: String,
-    pub(super) callback_data: String,
+pub struct InlineKeyboardButton {
+    pub text: String,
+    pub callback_data: String,
 }
 
 #[derive(Serialize)]
-pub(super) struct InlineKeyboardMarkup {
-    pub(super) inline_keyboard: Vec<Vec<InlineKeyboardButton>>,
+pub struct InlineKeyboardMarkup {
+    pub inline_keyboard: Vec<Vec<InlineKeyboardButton>>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

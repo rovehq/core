@@ -17,6 +17,9 @@ pub struct BrainsConfig {
     /// Auto-unload unused brains.
     #[serde(default = "default_true")]
     pub auto_unload: bool,
+    /// ID of an installed brain plugin to use as the active inference backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_backend: Option<String>,
 }
 
 impl Default for BrainsConfig {
@@ -26,6 +29,7 @@ impl Default for BrainsConfig {
             ram_limit_mb: default_ram_limit(),
             fallback: default_fallback_provider(),
             auto_unload: default_true(),
+            plugin_backend: None,
         }
     }
 }

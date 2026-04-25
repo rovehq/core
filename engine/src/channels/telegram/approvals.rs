@@ -47,7 +47,7 @@ pub async fn park_approval(key: String, timeout_secs: u64) -> oneshot::Receiver<
 }
 
 /// Resolve a pending approval. Returns true if the key was found.
-pub(super) async fn resolve_approval(key: &str, approved: bool) -> bool {
+pub async fn resolve_approval(key: &str, approved: bool) -> bool {
     if let Some(entry) = pending().entries.lock().await.remove(key) {
         entry.timeout_handle.abort();
         let _ = entry.tx.send(approved);

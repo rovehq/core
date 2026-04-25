@@ -1,19 +1,25 @@
-//! Build script for embedding the team public key at compile time
+//! Build script for embedding team public keys at compile time.
 //!
-//! This script reads the team public key from the manifest directory and
-//! embeds it into the binary. This ensures the key cannot be modified
-//! without recompiling the engine.
+//! Two production keys are embedded separately:
 //!
-//! # Key Location
+//! 1. **Official** — signs engine releases, core-tools, official/reviewed
+//!    plugins & drivers, brains, `revoked.json`, and the community-manifest
+//!    wrapper. Lives offline / HSM, rotated rarely.
+//!    - env:  `ROVE_TEAM_OFFICIAL_PUBLIC_KEY` (hex or base64)
+//!    - file: `manifest/team_official_public_key.bin` (raw 32 bytes)
+//!    - file: `manifest/team_official_public_key.hex`
 //!
-//! The script looks for the public key in the following locations (in order):
-//! 1. Environment variable `ROVE_TEAM_PUBLIC_KEY` (hex-encoded)
-//! 2. File `manifest/team_public_key.bin` (raw bytes)
-//! 3. File `manifest/team_public_key.hex` (hex-encoded)
-//! 4. File `manifest/dev_public_key.bin` (raw bytes, dev fallback)
+//! 2. **Community** — signs community-tier plugin manifests on PR merge.
+//!    Lives in CI secret, rotated independently.
+//!    - env:  `ROVE_TEAM_COMMUNITY_PUBLIC_KEY` (hex or base64)
+//!    - file: `manifest/team_community_public_key.bin`
+//!    - file: `manifest/team_community_public_key.hex`
 //!
-//! If no key is found, a placeholder key is generated for development builds.
-//! **Production builds MUST provide a real key.**
+//! Dev fallback: `manifest/dev_public_key.bin` is embedded for non-production
+//! builds (see `security/crypto/mod.rs`).
+//!
+//! If either key is missing, a placeholder zero key is generated. Placeholder
+//! signatures are rejected at runtime under `--features production`.
 
 use std::env;
 use std::fs;
@@ -35,117 +41,142 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let build_time = chrono::Utc::now().to_rfc3339();
     println!("cargo:rustc-env=BUILD_TIMESTAMP={}", build_time);
 
+    // 3. Stamp the release channel baked into this build.
+    let channel = if env::var_os("CARGO_FEATURE_CHANNEL_DEV").is_some() {
+        "dev"
+    } else {
+        "stable"
+    };
+    println!("cargo:rustc-env=ROVE_BUILD_CHANNEL={}", channel);
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CHANNEL_DEV");
+
     let out_dir = env::var("OUT_DIR")?;
 
-    // Load the team public key and write it to OUT_DIR
-    // crypto/mod.rs will include_bytes! from OUT_DIR
-    let public_key_bytes = load_team_public_key();
-    let dest_path = PathBuf::from(&out_dir).join("team_public_key.bin");
-    fs::write(&dest_path, &public_key_bytes)?;
+    // Official key — signs engine, core-tools, official/reviewed plugins &
+    // drivers, brains, revoked.json, community-manifest wrapper.
+    let official_key_bytes = load_public_key(
+        "ROVE_TEAM_OFFICIAL_PUBLIC_KEY",
+        &["manifest/team_official_public_key.bin"],
+        &["manifest/team_official_public_key.hex"],
+    );
+    fs::write(
+        PathBuf::from(&out_dir).join("team_official_public_key.bin"),
+        &official_key_bytes,
+    )?;
 
-    // Also write a dev key if we have one (for non-production builds)
+    // Community key — signs community-tier plugin manifests on PR merge.
+    // Lives in CI secret, rotated independently.
+    let community_key_bytes = load_public_key(
+        "ROVE_TEAM_COMMUNITY_PUBLIC_KEY",
+        &["manifest/team_community_public_key.bin"],
+        &["manifest/team_community_public_key.hex"],
+    );
+    fs::write(
+        PathBuf::from(&out_dir).join("team_community_public_key.bin"),
+        &community_key_bytes,
+    )?;
+
     let dev_key_bytes = load_dev_public_key();
-    let dev_dest_path = PathBuf::from(&out_dir).join("dev_public_key.bin");
-    fs::write(&dev_dest_path, &dev_key_bytes)?;
+    fs::write(
+        PathBuf::from(&out_dir).join("dev_public_key.bin"),
+        &dev_key_bytes,
+    )?;
 
-    println!("cargo:rerun-if-changed=manifest/team_public_key.bin");
-    println!("cargo:rerun-if-changed=manifest/team_public_key.hex");
+    println!("cargo:rerun-if-changed=manifest/team_official_public_key.bin");
+    println!("cargo:rerun-if-changed=manifest/team_official_public_key.hex");
+    println!("cargo:rerun-if-changed=manifest/team_community_public_key.bin");
+    println!("cargo:rerun-if-changed=manifest/team_community_public_key.hex");
     println!("cargo:rerun-if-changed=manifest/dev_public_key.bin");
-    println!("cargo:rerun-if-env-changed=ROVE_TEAM_PUBLIC_KEY");
+    println!("cargo:rerun-if-env-changed=ROVE_TEAM_OFFICIAL_PUBLIC_KEY");
+    println!("cargo:rerun-if-env-changed=ROVE_TEAM_COMMUNITY_PUBLIC_KEY");
 
-    // Warn if using placeholder key
-    if is_placeholder_key(&public_key_bytes) {
-        println!("cargo:warning=Using placeholder team public key for development");
-        println!("cargo:warning=Production builds MUST provide a real key via:");
-        println!("cargo:warning=  - ROVE_TEAM_PUBLIC_KEY environment variable");
-        println!("cargo:warning=  - manifest/team_public_key.bin file");
-        println!("cargo:warning=  - manifest/team_public_key.hex file");
+    if is_placeholder_key(&official_key_bytes) {
+        println!("cargo:warning=Using placeholder OFFICIAL public key for development");
+        println!("cargo:warning=Production builds MUST provide ROVE_TEAM_OFFICIAL_PUBLIC_KEY or manifest/team_official_public_key.bin");
+    }
+    if is_placeholder_key(&community_key_bytes) {
+        println!("cargo:warning=Using placeholder COMMUNITY public key for development");
+        println!("cargo:warning=Production builds MUST provide ROVE_TEAM_COMMUNITY_PUBLIC_KEY or manifest/team_community_public_key.bin");
     }
 
     Ok(())
 }
 
-/// Load the team public key from available sources
+/// Generic key loader used by both Official and Community keys.
 ///
-/// Priority order:
-/// 1. ROVE_TEAM_PUBLIC_KEY environment variable (hex)
-/// 2. manifest/team_public_key.bin (raw bytes)
-/// 3. manifest/team_public_key.hex (hex string)
-/// 4. Generate placeholder for development
-fn load_team_public_key() -> Vec<u8> {
-    // Try environment variable first (used by CI)
-    if let Ok(key_str) = env::var("ROVE_TEAM_PUBLIC_KEY") {
-        let key_str = key_str.trim();
-
-        // Try hex decode first (64 hex chars = 32 bytes raw key)
-        if let Ok(bytes) = hex::decode(key_str) {
-            if bytes.len() == 32 {
-                println!(
-                    "cargo:warning=Loaded team public key from ROVE_TEAM_PUBLIC_KEY env var (hex)"
-                );
-                return bytes;
-            }
+/// Resolution order:
+/// 1. Env var (hex or base64 DER)
+/// 2. Binary file (`manifest/<name>.bin`, raw 32 bytes)
+/// 3. Hex file (`manifest/<name>.hex`)
+/// 4. Placeholder zero key — rejected by production builds at runtime.
+fn load_public_key(env_var: &str, bin_paths: &[&str], hex_paths: &[&str]) -> Vec<u8> {
+    if let Ok(key_str) = env::var(env_var) {
+        if let Some(bytes) = parse_env_key(&key_str, env_var) {
+            return bytes;
         }
-
-        // Try base64 decode (PEM content without headers, from generate_keys.py)
-        // Ed25519 public keys in DER format are 44 bytes:
-        //   12 bytes ASN.1 header + 32 bytes raw key
-        use base64::Engine;
-        if let Ok(der_bytes) = base64::engine::general_purpose::STANDARD.decode(key_str) {
-            // Full DER-encoded Ed25519 public key (44 bytes)
-            if der_bytes.len() == 44 {
-                let ed25519_der_prefix: [u8; 12] = [
-                    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
-                ];
-                if der_bytes[..12] == ed25519_der_prefix {
-                    println!("cargo:warning=Loaded team public key from ROVE_TEAM_PUBLIC_KEY env var (base64 DER)");
-                    return der_bytes[12..].to_vec();
-                }
-            }
-            // Raw 32-byte key that was base64-encoded
-            if der_bytes.len() == 32 {
-                println!("cargo:warning=Loaded team public key from ROVE_TEAM_PUBLIC_KEY env var (base64 raw)");
-                return der_bytes;
-            }
-        }
-
-        println!("cargo:warning=Invalid ROVE_TEAM_PUBLIC_KEY (must be 32 bytes hex or base64-encoded Ed25519 public key)");
     }
 
     let workspace_root = get_workspace_root();
-
-    // Try binary file
-    let bin_path = workspace_root.join("manifest/team_public_key.bin");
-    if bin_path.exists() {
-        if let Ok(bytes) = fs::read(&bin_path) {
-            if bytes.len() == 32 {
-                println!("cargo:warning=Loaded team public key from manifest/team_public_key.bin");
-                return bytes;
-            }
-        }
-        println!("cargo:warning=Invalid manifest/team_public_key.bin (must be 32 bytes)");
-    }
-
-    // Try hex file
-    let hex_path = workspace_root.join("manifest/team_public_key.hex");
-    if hex_path.exists() {
-        if let Ok(hex_str) = fs::read_to_string(&hex_path) {
-            let hex_str = hex_str.trim();
-            if let Ok(bytes) = hex::decode(hex_str) {
+    for rel in bin_paths {
+        let path = workspace_root.join(rel);
+        if path.exists() {
+            if let Ok(bytes) = fs::read(&path) {
                 if bytes.len() == 32 {
-                    println!(
-                        "cargo:warning=Loaded team public key from manifest/team_public_key.hex"
-                    );
+                    println!("cargo:warning=Loaded key from {}", rel);
                     return bytes;
                 }
             }
+            println!("cargo:warning=Invalid {} (must be 32 bytes)", rel);
         }
-        println!("cargo:warning=Invalid manifest/team_public_key.hex (must be 32 bytes hex)");
+    }
+    for rel in hex_paths {
+        let path = workspace_root.join(rel);
+        if path.exists() {
+            if let Ok(hex_str) = fs::read_to_string(&path) {
+                if let Ok(bytes) = hex::decode(hex_str.trim()) {
+                    if bytes.len() == 32 {
+                        println!("cargo:warning=Loaded key from {}", rel);
+                        return bytes;
+                    }
+                }
+            }
+            println!("cargo:warning=Invalid {} (must be 32 bytes hex)", rel);
+        }
     }
 
-    // Generate placeholder for development
-    println!("cargo:warning=No team public key found, generating placeholder");
+    println!("cargo:warning=No key for {}, generating placeholder", env_var);
     generate_placeholder_key()
+}
+
+fn parse_env_key(key_str: &str, env_var: &str) -> Option<Vec<u8>> {
+    let key_str = key_str.trim();
+    if let Ok(bytes) = hex::decode(key_str) {
+        if bytes.len() == 32 {
+            println!("cargo:warning=Loaded key from {} (hex)", env_var);
+            return Some(bytes);
+        }
+    }
+    use base64::Engine;
+    if let Ok(der_bytes) = base64::engine::general_purpose::STANDARD.decode(key_str) {
+        if der_bytes.len() == 44 {
+            let ed25519_der_prefix: [u8; 12] = [
+                0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+            ];
+            if der_bytes[..12] == ed25519_der_prefix {
+                println!("cargo:warning=Loaded key from {} (base64 DER)", env_var);
+                return Some(der_bytes[12..].to_vec());
+            }
+        }
+        if der_bytes.len() == 32 {
+            println!("cargo:warning=Loaded key from {} (base64 raw)", env_var);
+            return Some(der_bytes);
+        }
+    }
+    println!(
+        "cargo:warning=Invalid {} (must be 32 bytes hex or base64-encoded Ed25519 public key)",
+        env_var
+    );
+    None
 }
 
 /// Load the dev public key from manifest/dev_public_key.bin

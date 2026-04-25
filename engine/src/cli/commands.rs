@@ -313,7 +313,11 @@ pub enum Command {
     },
 
     /// Run system diagnostics.
-    Doctor,
+    Doctor {
+        /// Output as JSON instead of formatted text.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Tail or follow daemon logs.
     Logs {
@@ -2216,4 +2220,31 @@ pub enum KnowledgeIngestSource {
     Url { url: String },
     /// Crawl a sitemap.xml and ingest all discovered URLs.
     Sitemap { url: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Command};
+    use clap::Parser;
+
+    #[test]
+    fn doctor_accepts_json_flag() {
+        let cli = Cli::try_parse_from(["rove", "doctor", "--json"])
+            .expect("doctor --json should parse");
+
+        match cli.command {
+            Some(Command::Doctor { json }) => assert!(json),
+            other => panic!("expected doctor command, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn doctor_defaults_to_text_output() {
+        let cli = Cli::try_parse_from(["rove", "doctor"]).expect("doctor should parse");
+
+        match cli.command {
+            Some(Command::Doctor { json }) => assert!(!json),
+            other => panic!("expected doctor command, got {:?}", other),
+        }
+    }
 }

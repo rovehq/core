@@ -62,7 +62,9 @@ async fn handle_ingest(
 
     let summary = match source {
         KnowledgeIngestSource::File { path } => {
-            let result = knowledge::ingest_file(repo, &path, domain_ref, tags_ref, force).await?;
+            let result =
+                knowledge::ingest_file(repo, &path, domain_ref, tags_ref, force, Some("cli"))
+                    .await?;
             print_ingest_result(&IngestSummary {
                 total: 1,
                 ingested: vec![result],
@@ -72,10 +74,15 @@ async fn handle_ingest(
             return Ok(());
         }
         KnowledgeIngestSource::Folder { path } => {
-            knowledge::ingest_folder(repo, &path, domain_ref, tags_ref, force, dry_run).await?
+            knowledge::ingest_folder(
+                repo, &path, domain_ref, tags_ref, force, dry_run, Some("cli"),
+            )
+            .await?
         }
         KnowledgeIngestSource::Url { url } => {
-            let result = knowledge::ingest_url(repo, &url, domain_ref, tags_ref, force).await?;
+            let result =
+                knowledge::ingest_url(repo, &url, domain_ref, tags_ref, force, Some("cli"))
+                    .await?;
             print_ingest_result(&IngestSummary {
                 total: 1,
                 ingested: vec![result],
@@ -85,7 +92,10 @@ async fn handle_ingest(
             return Ok(());
         }
         KnowledgeIngestSource::Sitemap { url } => {
-            knowledge::ingest_sitemap(repo, &url, domain_ref, tags_ref, force, dry_run).await?
+            knowledge::ingest_sitemap(
+                repo, &url, domain_ref, tags_ref, force, dry_run, Some("cli"),
+            )
+            .await?
         }
     };
 
@@ -163,9 +173,9 @@ async fn handle_search(
     query: &str,
     limit: usize,
 ) -> Result<()> {
-    let docs = repo.search(query, limit).await?;
-    let count = docs.len();
-    if docs.is_empty() {
+    let hits = repo.search(query, limit).await?;
+    let count = hits.len();
+    if hits.is_empty() {
         println!("No results for '{}'.", query);
         return Ok(());
     }
@@ -176,7 +186,8 @@ async fn handle_search(
         "ID", "Source", "Domain", "Words", "Title"
     );
     println!("{}", "-".repeat(100));
-    for doc in docs {
+    for hit in hits {
+        let doc = &hit.doc;
         let id_short = &doc.id[..doc.id.len().min(36)];
         let title = doc.title.as_deref().unwrap_or("(untitled)");
         println!(
@@ -187,6 +198,9 @@ async fn handle_search(
             doc.word_count.unwrap_or(0),
             title
         );
+        if !hit.snippet.is_empty() {
+            println!("  {}", hit.snippet);
+        }
     }
     println!("\n{} result(s) found.", count);
     Ok(())

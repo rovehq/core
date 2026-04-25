@@ -3,16 +3,18 @@
 //! Coordinates task persistence, background memory extraction, and the
 //! iterative ReAct loop implemented in the child modules below.
 
-mod dag;
+pub mod callable;
+mod apex;
 mod events;
 mod r#loop;
-mod orchestration;
-mod prompt;
+pub mod orchestration;
+pub mod prompt;
 mod result;
 mod shortcuts;
-#[cfg(test)]
-mod tests;
 mod tools;
+
+pub use orchestration::{decide_execution_strategy, ExecutionStrategy, OrchestrationHistory, OrchestrationDecision};
+pub use prompt::TaskContext;
 
 use anyhow::{Context, Result};
 use sdk::TaskExecutionProfile;
@@ -35,7 +37,7 @@ use crate::policy::PolicyEngine;
 use crate::rate_limiter::RateLimiter;
 use crate::risk_assessor::{OperationSource, RiskAssessor};
 use crate::security::secrets::scrub_text;
-use sdk::{RemoteExecutionPlan, TaskDomain};
+use sdk::{CallableAgentSpec, RemoteExecutionPlan, TaskDomain};
 
 use super::{preferences::PreferencesManager, WorkingMemory};
 
@@ -47,10 +49,10 @@ pub(crate) const MAX_RESULT_SIZE: usize = 5 * 1024 * 1024;
 /// Agent Core that orchestrates the agent loop.
 pub struct AgentCore {
     router: Arc<LLMRouter>,
-    memory: WorkingMemory,
+    pub memory: WorkingMemory,
     risk_assessor: RiskAssessor,
     rate_limiter: Arc<RateLimiter>,
-    task_repo: Arc<TaskRepository>,
+    pub task_repo: Arc<TaskRepository>,
     tools: Arc<ToolRegistry>,
     current_source: OperationSource,
     policy_engine: Option<PolicyEngine>,
@@ -62,10 +64,12 @@ pub struct AgentCore {
     background_jobs: Vec<JoinHandle<()>>,
     current_task_sensitive: bool,
     current_execution_profile: Option<TaskExecutionProfile>,
+    current_callable_roster: Vec<CallableAgentSpec>,
+    current_domain: TaskDomain,
     current_trace: Option<crate::telemetry::TaskTraceContext>,
     message_bus: Option<Arc<MessageBus>>,
     policy_preflight_commands: Vec<String>,
-    policy_after_write_commands: Vec<String>,
+    pub policy_after_write_commands: Vec<String>,
     policy_executed_commands: HashSet<String>,
 }
 
@@ -102,6 +106,8 @@ impl AgentCore {
             background_jobs: Vec::new(),
             current_task_sensitive: false,
             current_execution_profile: None,
+            current_callable_roster: Vec::new(),
+            current_domain: TaskDomain::General,
             current_trace: None,
             message_bus: None,
             policy_preflight_commands: Vec::new(),

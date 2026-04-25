@@ -1,16 +1,59 @@
 #!/bin/sh
 # Rove Installer
-# Primary:  Cloudflare R2 (registry.roveai.co)
+# Primary:  Cloudflare R2 (registry.roveai.co/{channel}/engine/manifest.json)
 # Fallback: GitHub Releases (github.com/orvislab/rove)
 #
-# Usage: curl -fsSL https://roveai.co/install.sh | sh
+# Usage:
+#   curl -fsSL https://roveai.co/install.sh | sh
+#   curl -fsSL https://roveai.co/install.sh | sh -s -- --channel=dev
 set -e
 
 REPO="orvislab/rove"
-BINARY="rove"
+CHANNEL="stable"
 INSTALL_DIR="/usr/local/bin"
 R2_BASE="https://registry.roveai.co"
 GH_BASE="https://github.com/${REPO}/releases/download"
+
+# ── Parse flags ──────────────────────────────────
+
+for arg in "$@"; do
+    case "$arg" in
+        --channel=*)
+            CHANNEL="${arg#--channel=}"
+            ;;
+        --channel)
+            echo "Error: --channel requires a value (e.g. --channel=dev)"
+            exit 1
+            ;;
+        -h|--help)
+            cat <<EOF
+Rove installer.
+
+Options:
+  --channel=stable|dev    Which release channel to install (default: stable).
+                          stable -> /usr/local/bin/rove, data dir ~/.rove
+                          dev    -> /usr/local/bin/rove-dev, data dir ~/.rove-dev
+EOF
+            exit 0
+            ;;
+    esac
+done
+
+case "$CHANNEL" in
+    stable)
+        BINARY="rove"
+        HOME_DIR="$HOME/.rove"
+        ;;
+    dev|nightly)
+        CHANNEL="dev"
+        BINARY="rove-dev"
+        HOME_DIR="$HOME/.rove-dev"
+        ;;
+    *)
+        echo "Error: unknown channel '$CHANNEL' (expected 'stable' or 'dev')"
+        exit 1
+        ;;
+esac
 
 # ── Detect platform ──────────────────────────────
 
@@ -45,26 +88,29 @@ detect_platform() {
 # ── Fetch latest version from manifest ───────────
 
 fetch_version() {
-    echo "Fetching latest version manifest..."
+    echo "Fetching ${CHANNEL} manifest..."
+    MANIFEST_URL="${R2_BASE}/${CHANNEL}/engine/manifest.json"
+    MANIFEST=$(curl -fsSL "$MANIFEST_URL" 2>/dev/null || true)
 
-    # Fetch OTA Manifest
-    MANIFEST=$(curl -fsSL "https://raw.githubusercontent.com/orvislab/rove-registry/main/manifest.json" 2>/dev/null || true)
-
-    if [ -n "$MANIFEST" ]; then
-        VERSION=$(echo "$MANIFEST" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-        ENGINES_BLOCK=$(echo "$MANIFEST" | sed -n '/"engines":/,$p')
-        BLOCK=$(echo "$ENGINES_BLOCK" | awk "/\"${TARGET}\"/,/\}/")
-        EXPECTED_HASH=$(echo "$BLOCK" | grep '"sha256"' | head -1 | sed 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([a-f0-9]\{64\}\)".*/\1/' || true)
-        R2_URL=$(echo "$BLOCK" | grep '"url"' | head -1 | sed 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        GH_URL=$(echo "$BLOCK" | grep '"fallback_url"' | head -1 | sed 's/.*"fallback_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        SOURCE="ota-registry"
-    fi
-
-    if [ -z "$VERSION" ] || [ -z "$R2_URL" ]; then
-        echo "Error: Could not determine latest version dynamically from manifest.json"
+    if [ -z "$MANIFEST" ]; then
+        echo "Error: Could not fetch $MANIFEST_URL"
         exit 1
     fi
 
+    VERSION=$(echo "$MANIFEST" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+    ENGINES_BLOCK=$(echo "$MANIFEST" | sed -n '/"engines":/,$p')
+    BLOCK=$(echo "$ENGINES_BLOCK" | awk "/\"${TARGET}\"/,/\}/")
+    EXPECTED_HASH=$(echo "$BLOCK" | grep '"sha256"' | head -1 | sed 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([a-f0-9]\{64\}\)".*/\1/' || true)
+    R2_URL=$(echo "$BLOCK" | grep '"url"' | head -1 | sed 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    GH_URL=$(echo "$BLOCK" | grep '"fallback_url"' | head -1 | sed 's/.*"fallback_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    SOURCE="${CHANNEL}-registry"
+
+    if [ -z "$VERSION" ] || [ -z "$R2_URL" ]; then
+        echo "Error: Could not determine latest version dynamically from $MANIFEST_URL"
+        exit 1
+    fi
+
+    echo "  Channel: $CHANNEL"
     echo "  Version: $VERSION (source: $SOURCE)"
 }
 
@@ -139,6 +185,10 @@ install_binary() {
         echo "Installed to ${INSTALL_DIR}/${BINARY}"
         echo "Make sure ${INSTALL_DIR} is in your PATH"
     fi
+
+    # Channel marker so the binary can detect a hand-configured home dir.
+    mkdir -p "$HOME_DIR"
+    printf '%s\n' "$CHANNEL" > "${HOME_DIR}/channel"
 }
 
 # ── Main ─────────────────────────────────────────
@@ -151,9 +201,11 @@ main() {
     echo ""
 
     detect_platform
-    echo "  OS:     $(uname -s)"
-    echo "  Arch:   $(uname -m)"
-    echo "  Target: $TARGET"
+    echo "  OS:       $(uname -s)"
+    echo "  Arch:     $(uname -m)"
+    echo "  Target:   $TARGET"
+    echo "  Binary:   $BINARY"
+    echo "  Home:     $HOME_DIR"
     echo ""
 
     fetch_version
@@ -162,8 +214,12 @@ main() {
     install_binary
 
     echo ""
-    echo "Run 'rove setup' to configure."
-    echo "Run 'rove doctor' to verify installation."
+    echo "Run '${BINARY} setup' to configure."
+    echo "Run '${BINARY} doctor' to verify installation."
+    if [ "$CHANNEL" = "dev" ]; then
+        echo ""
+        echo "Dev channel: engine auto-updates daily at UTC 00:00."
+    fi
     echo ""
 }
 

@@ -3,6 +3,7 @@ pub mod auth;
 pub mod extension_catalog;
 pub mod installed_plugins;
 pub mod knowledge;
+pub mod managed_agents;
 pub mod memory;
 pub mod memory_audit;
 pub mod pending;
@@ -12,12 +13,17 @@ pub mod remote_discovery;
 pub mod schedule;
 pub mod tasks;
 pub mod telegram_audit;
+pub mod threads;
 
 pub use agent_runs::{AgentRunRepository, WorkflowStepFinish, WorkflowStepStart};
 pub use auth::{AuthEvent, AuthReauth, AuthRepository, AuthSession};
 pub use extension_catalog::{ExtensionCatalogEntry, ExtensionCatalogRepository};
 pub use installed_plugins::{InstalledPlugin, InstalledPluginRepository};
-pub use knowledge::KnowledgeRepository;
+pub use knowledge::{KnowledgeRepository, KnowledgeSearchHit, MAX_INGEST_BYTES};
+pub use managed_agents::{
+    ManagedAgentRepository, ManagedAgentSession, ManagedAgentSessionEvent,
+    ManagedAgentSessionStatus,
+};
 pub use memory::{EpisodicMemory, MemoryEntry};
 pub use memory_audit::{
     current_episodic_hash, current_fact_hash, metadata_map, record_episodic_version_by_id,
@@ -32,6 +38,7 @@ pub use remote_discovery::RemoteDiscoveryRepository;
 pub use schedule::{ScheduleRepository, ScheduledTask};
 pub use tasks::{
     AgentActionQuery, AgentActionRecord, AgentEvent, StepType, Task, TaskListQuery,
-    TaskOutcomeStats, TaskRepository, TaskStatus, TaskStep,
+    TaskOutcomeStats, TaskRepository, TaskStatus, TaskStep, ThreadHistoryEntry,
 };
 pub use telegram_audit::TelegramAuditRepository;
+pub use threads::{AgentThread, AgentThreadEvent, ThreadRepository, ThreadStatus};

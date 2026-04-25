@@ -179,6 +179,3 @@ impl Default for MessageBus {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests;

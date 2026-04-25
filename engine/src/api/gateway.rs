@@ -4,8 +4,6 @@ mod locks;
 mod poller;
 mod submission;
 mod task;
-#[cfg(test)]
-mod tests;
 
 use std::sync::Arc;
 use tracing::info;

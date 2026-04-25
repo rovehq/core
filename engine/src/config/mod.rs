@@ -51,14 +51,17 @@ pub mod agent;
 pub mod approvals;
 pub mod brain;
 pub mod browser;
+pub mod channel;
 pub mod core;
 pub mod daemon;
 pub mod defaults;
+pub mod extensions;
 pub mod gateway;
 pub mod llm;
 pub mod loadout;
 pub mod memory;
 pub mod metadata;
+pub mod paths;
 pub mod policy;
 pub mod profile;
 pub mod remote;
@@ -69,21 +72,26 @@ pub mod steering;
 pub mod telegram;
 pub mod tools;
 pub mod transport;
+pub mod update;
 pub mod voice;
+pub mod wasm;
 pub mod webui;
 
 pub use agent::*;
 pub use approvals::*;
 pub use brain::*;
 pub use browser::*;
+pub use channel::Channel;
 pub use core::*;
 pub use daemon::*;
 pub use defaults::*;
+pub use extensions::ExtensionsConfig;
 pub use gateway::*;
 pub use llm::*;
 pub use loadout::*;
 pub use memory::*;
 pub use metadata::*;
+pub use paths::rove_home;
 pub use policy::*;
 pub use profile::*;
 pub use remote::*;
@@ -93,7 +101,9 @@ pub use security::*;
 pub use telegram::*;
 pub use tools::*;
 pub use transport::*;
+pub use update::UpdateConfig;
 pub use voice::*;
+pub use wasm::*;
 pub use webui::*;
 
 use sdk::config_handle::{
@@ -222,15 +232,19 @@ impl Config {
         Ok(())
     }
 
-    /// Get the default configuration file path (~/.rove/config.toml)
+    /// Get the default configuration file path (`$ROVE_HOME/config.toml`).
     fn default_config_path() -> Result<PathBuf, EngineError> {
         if let Some(path) = std::env::var_os("ROVE_CONFIG_PATH").filter(|value| !value.is_empty()) {
             return Ok(PathBuf::from(path));
         }
 
-        let home = dirs::home_dir()
-            .ok_or_else(|| EngineError::Config("Could not determine home directory".to_string()))?;
-        Ok(home.join(".rove").join("config.toml"))
+        if dirs::home_dir().is_none() {
+            return Err(EngineError::Config(
+                "Could not determine home directory".to_string(),
+            ));
+        }
+
+        Ok(paths::rove_home().join("config.toml"))
     }
 
     /// Resolve the effective configuration path, honoring `ROVE_CONFIG_PATH`.
@@ -256,6 +270,13 @@ impl Config {
         self.memory.min_to_consolidate = self.memory.min_to_consolidate.max(1);
         self.memory.query_limit = self.memory.query_limit.clamp(1, 20);
         self.memory.min_importance_to_inject = self.memory.min_importance_to_inject.clamp(0.1, 0.9);
+
+        // Clamp WASM runtime defaults
+        self.wasm.normalize();
+
+        // Update + extension channel metadata
+        self.update.normalize();
+        self.extensions.normalize();
 
         // Validate and process
         self.validate_and_process()?;

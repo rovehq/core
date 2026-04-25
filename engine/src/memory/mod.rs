@@ -3,8 +3,8 @@ pub mod knowledge_graph;
 
 pub use conductor::{
     build_extractor, ConsolidationBackend, ConsolidationResult, ContextAssembler, ContextLayers,
-    DagGraph, DagNode, DagNodeExecution, DagNodeExecutor, DagNodeState, DagRoutingPolicy,
-    DagRunReport, DagRunner, DagWave, EmbeddingGenerator, Evaluator, ExecutionLocation,
+    ApexGraph, ApexNode, ApexNodeExecution, ApexNodeExecutor, ApexNodeState, ApexRoutingPolicy,
+    ApexRunReport, ApexRunner, ApexWave, EmbeddingGenerator, Evaluator, ExecutionLocation,
     ExtractionBackend, ExtractionOutput, FactRow, GraphPathHit, HitType, HybridExecutor,
     IngestResult, MemoryContextBundle, MemoryExtractor, MemoryGraphHit, MemoryHit, MemoryKind,
     MemoryPlan, MemorySystem, PlanStep, Planner, SessionMemory, StepExecutionPolicy,

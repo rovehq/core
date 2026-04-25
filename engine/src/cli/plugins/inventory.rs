@@ -28,7 +28,7 @@ pub async fn handle_list(config: &Config, format: OutputFormat) -> Result<()> {
 pub async fn handle_inspect(config: &Config, selector: &str) -> Result<()> {
     let database = open_database(config).await?;
     let plugin = resolve_installed_plugin(&database, selector).await?;
-    print_plugin_details(&plugin);
+    print_plugin_details(&plugin, &config.wasm);
     Ok(())
 }
 
@@ -52,7 +52,7 @@ pub async fn handle_list_filtered(config: &Config, format: OutputFormat, kind: &
 pub async fn handle_inspect_filtered(config: &Config, selector: &str, kind: &str) -> Result<()> {
     let database = open_database(config).await?;
     let plugin = resolve_filtered_plugin(&database, selector, kind).await?;
-    print_plugin_details(&plugin);
+    print_plugin_details(&plugin, &config.wasm);
     Ok(())
 }
 
@@ -242,7 +242,7 @@ fn plugin_public_kind(plugin: &InstalledPlugin) -> &'static str {
     }
 }
 
-fn print_plugin_details(plugin: &InstalledPlugin) {
+fn print_plugin_details(plugin: &InstalledPlugin, wasm_defaults: &crate::config::wasm::WasmConfig) {
     let manifest = Manifest::from_json(&plugin.manifest).ok();
 
     println!("id: {}", plugin.id);
@@ -272,7 +272,7 @@ fn print_plugin_details(plugin: &InstalledPlugin) {
         println!("runtime_config: (none)");
     }
 
-    match installed_plugin_wasm_limit_report(plugin) {
+    match installed_plugin_wasm_limit_report(plugin, Some(wasm_defaults)) {
         Ok(Some(limits)) => {
             println!(
                 "wasm_limits: timeout={}s memory={} MB fuel={}",

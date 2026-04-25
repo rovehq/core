@@ -54,7 +54,7 @@ impl DaemonManager {
         }
     }
 
-    pub(super) fn get_pid_file_path(config: &Config) -> Result<PathBuf> {
+    pub fn get_pid_file_path(config: &Config) -> Result<PathBuf> {
         let mut data_dir = config.core.data_dir.clone();
         if let Some(home) = dirs::home_dir() {
             if data_dir.starts_with("~") {

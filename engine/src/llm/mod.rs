@@ -5,7 +5,10 @@
 //! the contract that all providers must implement, enabling the LLM router to work
 //! with multiple providers transparently.
 
+use std::sync::Mutex;
+
 use async_trait::async_trait;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub mod anthropic;
 pub mod custom;
@@ -49,6 +52,43 @@ pub enum LLMError {
 
     #[error("Unknown error: {0}")]
     Unknown(String),
+}
+
+// ── Global streaming sink ─────────────────────────────────────────────────────
+// When `--stream` is active for a CLI run, the CLI sets this sink before
+// execution. LLM providers that support streaming emit token chunks here.
+
+static STREAM_SINK: Mutex<Option<UnboundedSender<String>>> = Mutex::new(None);
+
+/// Set the global token-streaming sink. Called by the CLI before a streamed run.
+pub fn set_stream_sink(tx: UnboundedSender<String>) {
+    if let Ok(mut guard) = STREAM_SINK.lock() {
+        *guard = Some(tx);
+    }
+}
+
+/// Clear the global streaming sink. Called by the CLI after a streamed run.
+pub fn clear_stream_sink() {
+    if let Ok(mut guard) = STREAM_SINK.lock() {
+        *guard = None;
+    }
+}
+
+/// Emit one token chunk to the streaming sink, if one is registered.
+pub(crate) fn emit_stream_chunk(chunk: &str) {
+    if let Ok(guard) = STREAM_SINK.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(chunk.to_string());
+        }
+    }
+}
+
+/// Returns true when a streaming sink is registered (i.e. caller wants streaming).
+pub(crate) fn streaming_active() -> bool {
+    STREAM_SINK
+        .lock()
+        .map(|g| g.is_some())
+        .unwrap_or(false)
 }
 
 /// LLM Provider trait that all providers must implement

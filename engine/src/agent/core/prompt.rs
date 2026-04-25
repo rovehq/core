@@ -13,27 +13,33 @@ use sdk::{Complexity, Route, TaskDomain};
 
 use super::AgentCore;
 
-pub(super) struct TaskContext {
-    pub(super) domain_str: String,
-    pub(super) domain: TaskDomain,
-    pub(super) complexity: Complexity,
-    pub(super) route: Route,
-    pub(super) sensitive: bool,
+pub struct TaskContext {
+    pub domain_str: String,
+    pub domain: TaskDomain,
+    pub complexity: Complexity,
+    pub route: Route,
+    pub sensitive: bool,
 }
 
 impl AgentCore {
-    pub(super) async fn initialize_task_context(
+    pub async fn initialize_task_context(
         &mut self,
         task: &Task,
         risk_tier: RiskTier,
     ) -> Result<TaskContext> {
         self.memory.clear();
         self.current_execution_profile = task.execution_profile.clone();
+        self.current_callable_roster = task
+            .execution_profile
+            .as_ref()
+            .map(|p| p.callable_agents.clone())
+            .unwrap_or_default();
         self.policy_preflight_commands.clear();
         self.policy_after_write_commands.clear();
         self.policy_executed_commands.clear();
         let mut system_prompt = self.tools.system_prompt_for_query(&task.input);
         self.inject_execution_profile(&mut system_prompt);
+        self.inject_callable_roster(&mut system_prompt);
         let dispatch_result = self.dispatch_brain.classify(&task.input);
         let domain_name = dispatch_result.domain_label.to_lowercase();
         self.current_task_sensitive = dispatch_result.sensitive;
@@ -47,6 +53,36 @@ impl AgentCore {
         .await;
         let domain_str = dispatch_result.domain.to_string();
 
+        if let Some(thread_context) = self
+            .current_execution_profile
+            .as_ref()
+            .and_then(|profile| profile.thread_id.as_deref())
+        {
+            let task_id = task.id.to_string();
+            let history = self
+                .task_repo
+                .get_recent_thread_history(thread_context, Some(task_id.as_str()), 3)
+                .await
+                .unwrap_or_default();
+            if !history.is_empty() {
+                let mut lines = vec![format!(
+                    "Persistent execution thread context ({}):",
+                    thread_context
+                )];
+                for entry in history {
+                    lines.push(format!("Previous user task: {}", entry.input.trim()));
+                    if let Some(answer) = entry
+                        .answer
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                    {
+                        lines.push(format!("Previous answer: {}", answer.trim()));
+                    }
+                }
+                system_prompt = format!("{}\n\n{}", lines.join("\n"), system_prompt);
+            }
+        }
+
         debug!(
             task_id = %task.id,
             domain = ?dispatch_result.domain,
@@ -59,6 +95,7 @@ impl AgentCore {
             "Dispatch brain classification complete"
         );
 
+        self.current_domain = dispatch_result.domain;
         self.inject_memory_context(&task.input, dispatch_result.domain, &mut system_prompt)
             .await;
         self.inject_preferences(&mut system_prompt).await;
@@ -165,6 +202,38 @@ impl AgentCore {
         }
 
         *system_prompt = format!("{}\n\n{}", lines.join("\n"), system_prompt);
+    }
+
+    fn inject_callable_roster(&self, system_prompt: &mut String) {
+        if self.current_callable_roster.is_empty() {
+            return;
+        }
+        let roster_lines: Vec<String> = self
+            .current_callable_roster
+            .iter()
+            .map(|ca| format!("  - id: \"{}\", name: \"{}\", role: \"{}\"", ca.id, ca.name, ca.role))
+            .collect();
+
+        // If no other tools are registered, the schema builder never emits the
+        // IMPORTANT RULES / tool-call format block.  Inject it here so the LLM
+        // knows the JSON call format even when call_agent is the only tool.
+        if !system_prompt.contains("IMPORTANT RULES") {
+            system_prompt.push_str("\n\nIMPORTANT RULES:\n");
+            system_prompt.push_str("1. To call a tool, your ENTIRE response must be ONLY the JSON object — nothing else. No explanation, no markdown fences, no text before or after.\n");
+            system_prompt.push_str("2. When you have the final answer (after receiving tool results), respond with plain text only — no JSON.\n");
+            system_prompt.push_str("\nTool call format (your entire response must be exactly this):\n");
+            system_prompt.push_str(r#"{"function": "tool_name", "arguments": {"arg1": "value1"}}"#);
+            system_prompt.push_str("\n\nAvailable tools:");
+        }
+
+        // Use the same ## tool_name / Arguments: format as the builtin tools so the
+        // LLM knows exactly what JSON to emit.  The roster list tells it which
+        // agent_id values are valid.
+        let section = format!(
+            "\n\n## call_agent\nDelegate a sub-task to a named bounded agent declared in your callable-agent roster.\nArguments: {{\"agent_id\": \"<id from roster>\", \"prompt\": \"<task for the agent>\"}}\nCallable agent roster:\n{}\n",
+            roster_lines.join("\n")
+        );
+        system_prompt.push_str(&section);
     }
 
     async fn apply_policy(

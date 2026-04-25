@@ -1,4 +1,4 @@
-use super::{Event, EventType, MessageBus};
+use rove_engine::system::message_bus::{Event, EventType, MessageBus};
 
 #[tokio::test]
 async fn test_subscribe_and_publish() {

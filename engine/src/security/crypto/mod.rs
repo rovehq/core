@@ -23,15 +23,43 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 // Keys are loaded from build.rs output in OUT_DIR.
-// build.rs resolves the correct key from env vars or manifest/ files.
+// build.rs resolves each key from its own env var or manifest/ file.
+//
+// Two production keys are embedded, separately resolved:
+//   - OFFICIAL  (ROVE_TEAM_OFFICIAL_PUBLIC_KEY / manifest/team_official_public_key.*):
+//               engine releases, core-tools, official/reviewed plugins & drivers,
+//               brains, revoked.json, community-manifest wrapper.
+//   - COMMUNITY (ROVE_TEAM_COMMUNITY_PUBLIC_KEY / manifest/team_community_public_key.*):
+//               community-tier plugin manifests only. Signed on PR merge by CI
+//               holding the community private key as a secret.
+//
+// `verify_manifest_file` picks the key by trust_tier. Cross-signing
+// (community key on an official manifest, or vice versa) is rejected.
 
 #[cfg(not(feature = "production"))]
-const TEAM_PUBLIC_KEY_BYTES: &[u8] =
+const TEAM_OFFICIAL_PUBLIC_KEY_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/dev_public_key.bin"));
 
 #[cfg(feature = "production")]
-const TEAM_PUBLIC_KEY_BYTES: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/team_public_key.bin"));
+const TEAM_OFFICIAL_PUBLIC_KEY_BYTES: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/team_official_public_key.bin"));
+
+#[cfg(not(feature = "production"))]
+const TEAM_COMMUNITY_PUBLIC_KEY_BYTES: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/dev_public_key.bin"));
+
+#[cfg(feature = "production")]
+const TEAM_COMMUNITY_PUBLIC_KEY_BYTES: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/team_community_public_key.bin"));
+
+/// Which key signed (or should sign) a given manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRole {
+    /// Official + Reviewed tiers, engine releases, core-tools, drivers, brains.
+    Official,
+    /// Community-tier plugins only.
+    Community,
+}
 
 /// Nonce cache window in seconds
 ///
@@ -108,48 +136,77 @@ impl NonceCache {
 /// - Verifying envelopes with nonce-based replay prevention
 pub struct CryptoModule {
     team_public_key: VerifyingKey,
+    community_public_key: VerifyingKey,
     nonce_cache: Arc<Mutex<NonceCache>>,
 }
 
 impl CryptoModule {
-    /// Create a new CryptoModule with the embedded team public key
+    /// Create a new CryptoModule with the embedded team public keys
     ///
     /// # Errors
     ///
-    /// Returns an error if the embedded public key is invalid or corrupted.
+    /// Returns an error if either embedded public key is invalid or corrupted.
     /// This should never happen in a properly built binary.
     pub fn new() -> Result<Self, EngineError> {
-        // Validate key length
-        if TEAM_PUBLIC_KEY_BYTES.len() != PUBLIC_KEY_LENGTH {
-            return Err(EngineError::Config(format!(
-                "Invalid team public key length: expected {}, got {}",
-                PUBLIC_KEY_LENGTH,
-                TEAM_PUBLIC_KEY_BYTES.len()
-            )));
-        }
+        let team_public_key = Self::parse_embedded_key(
+            TEAM_OFFICIAL_PUBLIC_KEY_BYTES,
+            "official team public key",
+        )?;
+        let community_public_key = Self::parse_embedded_key(
+            TEAM_COMMUNITY_PUBLIC_KEY_BYTES,
+            "community team public key",
+        )?;
 
-        // Parse the public key
-        let team_public_key_bytes: [u8; PUBLIC_KEY_LENGTH] = TEAM_PUBLIC_KEY_BYTES
-            .try_into()
-            .map_err(|_| EngineError::Config("TEAM_PUBLIC_KEY_BYTES must be 32 bytes".into()))?;
-
-        let team_public_key = VerifyingKey::from_bytes(&team_public_key_bytes)
-            .map_err(|e| EngineError::Config(format!("Invalid team public key: {}", e)))?;
-
-        tracing::info!("CryptoModule initialized with embedded team public key");
+        tracing::info!("CryptoModule initialized with official + community public keys");
 
         Ok(Self {
             team_public_key,
+            community_public_key,
             nonce_cache: Arc::new(Mutex::new(NonceCache::new())),
         })
     }
 
-    /// Create a CryptoModule with a specific verifying key (for testing)
+    fn parse_embedded_key(bytes: &[u8], label: &str) -> Result<VerifyingKey, EngineError> {
+        if bytes.len() != PUBLIC_KEY_LENGTH {
+            return Err(EngineError::Config(format!(
+                "Invalid {} length: expected {}, got {}",
+                label,
+                PUBLIC_KEY_LENGTH,
+                bytes.len()
+            )));
+        }
+        let key_bytes: [u8; PUBLIC_KEY_LENGTH] = bytes
+            .try_into()
+            .map_err(|_| EngineError::Config(format!("{} must be 32 bytes", label)))?;
+        VerifyingKey::from_bytes(&key_bytes)
+            .map_err(|e| EngineError::Config(format!("Invalid {}: {}", label, e)))
+    }
+
+    /// Create a CryptoModule with a specific verifying key (for testing).
+    /// Both official and community roles resolve to the same key.
     #[cfg(test)]
     pub fn with_key(key: VerifyingKey) -> Self {
         Self {
             team_public_key: key,
+            community_public_key: key,
             nonce_cache: Arc::new(Mutex::new(NonceCache::new())),
+        }
+    }
+
+    /// Create a CryptoModule with distinct official + community keys (for testing).
+    #[cfg(test)]
+    pub fn with_keys(official: VerifyingKey, community: VerifyingKey) -> Self {
+        Self {
+            team_public_key: official,
+            community_public_key: community,
+            nonce_cache: Arc::new(Mutex::new(NonceCache::new())),
+        }
+    }
+
+    fn key_for(&self, role: KeyRole) -> &VerifyingKey {
+        match role {
+            KeyRole::Official => &self.team_public_key,
+            KeyRole::Community => &self.community_public_key,
         }
     }
 
@@ -158,38 +215,38 @@ impl CryptoModule {
         cfg!(feature = "production")
     }
 
-    /// Verify a manifest signature using the team public key
+    /// Verify a manifest signature using the OFFICIAL team public key.
     ///
-    /// The signature must be a hex-encoded Ed25519 signature, optionally
-    /// prefixed with "ed25519:".
-    ///
-    /// # Arguments
-    ///
-    /// * `manifest_bytes` - The canonical manifest JSON bytes to verify
-    /// * `signature_hex` - The signature in hex format
-    ///
-    /// # Errors
-    ///
-    /// Returns `EngineError::InvalidSignature` if verification fails.
+    /// Kept for backwards compatibility — callers that know they are verifying
+    /// an official-tier manifest (engine release, core-tool, etc.) can use this
+    /// directly. For tier-driven routing, prefer `verify_manifest_file` or
+    /// `verify_manifest_with_role`.
     pub fn verify_manifest(
         &self,
         manifest_bytes: &[u8],
         signature_hex: &str,
     ) -> Result<(), EngineError> {
-        tracing::debug!("Verifying manifest signature");
+        self.verify_manifest_with_role(manifest_bytes, signature_hex, KeyRole::Official)
+    }
 
-        // Parse signature from hex
+    /// Verify a manifest signature against the key for the requested role.
+    pub fn verify_manifest_with_role(
+        &self,
+        manifest_bytes: &[u8],
+        signature_hex: &str,
+        role: KeyRole,
+    ) -> Result<(), EngineError> {
+        tracing::debug!(?role, "Verifying manifest signature");
+
         let signature = self.parse_signature(signature_hex)?;
-
-        // Verify signature
-        self.team_public_key
+        self.key_for(role)
             .verify(manifest_bytes, &signature)
             .map_err(|e| {
-                tracing::error!("Manifest signature verification failed: {}", e);
+                tracing::error!(?role, "Manifest signature verification failed: {}", e);
                 EngineError::InvalidSignature
             })?;
 
-        tracing::info!("Manifest signature verified successfully");
+        tracing::info!(?role, "Manifest signature verified successfully");
         Ok(())
     }
 
@@ -268,7 +325,9 @@ impl CryptoModule {
         // Parse signature
         let signature = self.parse_signature(signature_hex)?;
 
-        // Verify signature against file hash
+        // File signatures (core-tool dylibs, driver binaries, etc.) always
+        // verify under the Official key. Community artifacts are WASM and
+        // signed at the manifest level, not per-file.
         self.team_public_key
             .verify(file_hash.as_bytes(), &signature)
             .map_err(|e| {
@@ -453,12 +512,17 @@ impl CryptoModule {
         Ok(canonical.into_bytes())
     }
 
-    /// Verify a manifest file: parse JSON, canonicalize, verify signature
+    /// Verify a manifest file, routing to the correct key by trust tier.
     ///
-    /// This is the high-level method that handles the full verification flow:
-    /// 1. Parse JSON to extract signature
-    /// 2. Strip signature fields and canonicalize
-    /// 3. Verify the canonical bytes against the signature
+    /// Flow:
+    /// 1. Parse JSON, extract `signature` and `trust_tier`
+    /// 2. Pick key role: Community tier ⇒ community key, everything else ⇒ official
+    /// 3. Strip signature fields, canonicalize
+    /// 4. Verify canonical bytes against the role's key
+    ///
+    /// Cross-signing (community key on a non-community tier, or vice versa)
+    /// fails at signature verification — the wrong key cannot produce a valid
+    /// signature for the canonical bytes.
     pub fn verify_manifest_file(&self, manifest_json: &[u8]) -> Result<(), EngineError> {
         let value: serde_json::Value = serde_json::from_slice(manifest_json)
             .map_err(|e| EngineError::Config(format!("Invalid manifest JSON: {}", e)))?;
@@ -468,7 +532,6 @@ impl CryptoModule {
             .and_then(|s| s.as_str())
             .ok_or_else(|| EngineError::Config("No signature in manifest".to_string()))?;
 
-        // Check for dev/placeholder signatures
         if signature.contains("PLACEHOLDER") || signature.contains("LOCAL_DEV") {
             if Self::is_production() {
                 return Err(EngineError::InvalidSignature);
@@ -477,9 +540,36 @@ impl CryptoModule {
             return Ok(());
         }
 
-        // Canonicalize and verify
+        let role = role_for_manifest(&value);
         let canonical = Self::canonicalize_manifest(manifest_json)?;
-        self.verify_manifest(&canonical, signature)
+        self.verify_manifest_with_role(&canonical, signature, role)
+    }
+}
+
+/// Pick the signing key role based on the manifest's `trust_tier` field.
+///
+/// Accepts either string form ("Official" / "Reviewed" / "Community") or
+/// integer form (0, 1, 2) — both appear in manifests today. Unknown or
+/// missing tiers default to Official, matching the previous single-key
+/// behavior.
+fn role_for_manifest(value: &serde_json::Value) -> KeyRole {
+    let tier = value.get("trust_tier");
+    match tier {
+        Some(serde_json::Value::String(s)) => {
+            if s.eq_ignore_ascii_case("community") {
+                KeyRole::Community
+            } else {
+                KeyRole::Official
+            }
+        }
+        Some(serde_json::Value::Number(n)) => {
+            if n.as_i64() == Some(2) {
+                KeyRole::Community
+            } else {
+                KeyRole::Official
+            }
+        }
+        _ => KeyRole::Official,
     }
 }
 
@@ -898,5 +988,112 @@ mod tests {
         // Replay should fail
         let result = crypto.verify_envelope(&envelope).await;
         assert!(matches!(result, Err(EngineError::NonceReused)));
+    }
+
+    /// Dual-key routing: community manifest signed by the community key passes;
+    /// community manifest signed by the official key (cross-signing) fails.
+    #[test]
+    fn test_verify_manifest_file_routes_by_trust_tier() {
+        use ed25519_dalek::Signer;
+
+        let official_sk = SigningKey::from_bytes(&[7u8; 32]);
+        let community_sk = SigningKey::from_bytes(&[9u8; 32]);
+        let crypto =
+            CryptoModule::with_keys(official_sk.verifying_key(), community_sk.verifying_key());
+
+        let community_manifest = serde_json::json!({
+            "name": "echo-plugin",
+            "version": "0.1.0",
+            "trust_tier": "Community",
+            "signature": ""
+        });
+        let bytes = serde_json::to_vec(&community_manifest).unwrap();
+        let canonical = CryptoModule::canonicalize_manifest(&bytes).unwrap();
+
+        // Signed with community key → passes
+        let good_sig = hex::encode(community_sk.sign(&canonical).to_bytes());
+        let mut signed = community_manifest.clone();
+        signed["signature"] = serde_json::Value::String(good_sig);
+        assert!(crypto
+            .verify_manifest_file(&serde_json::to_vec(&signed).unwrap())
+            .is_ok());
+
+        // Signed with official key (cross-signing) → rejected
+        let bad_sig = hex::encode(official_sk.sign(&canonical).to_bytes());
+        let mut signed_wrong = community_manifest.clone();
+        signed_wrong["signature"] = serde_json::Value::String(bad_sig);
+        assert!(matches!(
+            crypto.verify_manifest_file(&serde_json::to_vec(&signed_wrong).unwrap()),
+            Err(EngineError::InvalidSignature)
+        ));
+    }
+
+    /// Official manifest signed by community key is rejected (reverse cross-signing).
+    #[test]
+    fn test_official_manifest_rejects_community_signature() {
+        use ed25519_dalek::Signer;
+
+        let official_sk = SigningKey::from_bytes(&[7u8; 32]);
+        let community_sk = SigningKey::from_bytes(&[9u8; 32]);
+        let crypto =
+            CryptoModule::with_keys(official_sk.verifying_key(), community_sk.verifying_key());
+
+        let official_manifest = serde_json::json!({
+            "name": "telegram",
+            "version": "0.1.0",
+            "trust_tier": "Official",
+            "signature": ""
+        });
+        let bytes = serde_json::to_vec(&official_manifest).unwrap();
+        let canonical = CryptoModule::canonicalize_manifest(&bytes).unwrap();
+
+        // Community-signed official manifest → rejected
+        let bad_sig = hex::encode(community_sk.sign(&canonical).to_bytes());
+        let mut signed_wrong = official_manifest.clone();
+        signed_wrong["signature"] = serde_json::Value::String(bad_sig);
+        assert!(matches!(
+            crypto.verify_manifest_file(&serde_json::to_vec(&signed_wrong).unwrap()),
+            Err(EngineError::InvalidSignature)
+        ));
+
+        // Official-signed official manifest → passes
+        let good_sig = hex::encode(official_sk.sign(&canonical).to_bytes());
+        let mut signed = official_manifest.clone();
+        signed["signature"] = serde_json::Value::String(good_sig);
+        assert!(crypto
+            .verify_manifest_file(&serde_json::to_vec(&signed).unwrap())
+            .is_ok());
+    }
+
+    #[test]
+    fn test_role_for_manifest_parses_tier() {
+        assert_eq!(
+            role_for_manifest(&serde_json::json!({"trust_tier": "Community"})),
+            KeyRole::Community
+        );
+        assert_eq!(
+            role_for_manifest(&serde_json::json!({"trust_tier": "community"})),
+            KeyRole::Community
+        );
+        assert_eq!(
+            role_for_manifest(&serde_json::json!({"trust_tier": 2})),
+            KeyRole::Community
+        );
+        assert_eq!(
+            role_for_manifest(&serde_json::json!({"trust_tier": "Official"})),
+            KeyRole::Official
+        );
+        assert_eq!(
+            role_for_manifest(&serde_json::json!({"trust_tier": "Reviewed"})),
+            KeyRole::Official
+        );
+        assert_eq!(
+            role_for_manifest(&serde_json::json!({"trust_tier": 0})),
+            KeyRole::Official
+        );
+        assert_eq!(
+            role_for_manifest(&serde_json::json!({})),
+            KeyRole::Official
+        );
     }
 }

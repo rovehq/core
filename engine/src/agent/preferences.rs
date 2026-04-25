@@ -223,8 +223,5 @@ fn preferences_path() -> PathBuf {
         return data_dir.join("preferences.toml");
     }
 
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".rove")
-        .join("preferences.toml")
+    crate::config::paths::rove_home().join("preferences.toml")
 }

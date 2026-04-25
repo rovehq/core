@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3000",
+    "dev": "next dev",
     "build": "next build",
     "build:prod": "next build",
     "prod": "next build && python3 -m http.server 3000 -d dist",

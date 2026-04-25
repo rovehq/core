@@ -54,12 +54,12 @@ pub use embeddings::EmbeddingGenerator;
 pub use evaluator::Evaluator;
 pub use extract::{build_extractor, ExtractionOutput, HeuristicExtractor, MemoryExtractor};
 pub use fact_store::FactRow;
-pub use graph::{DagGraph, DagNode, DagNodeState, DagWave};
+pub use graph::{ApexGraph, ApexNode, ApexNodeState, ApexWave};
 pub use hybrid::{ExecutionLocation, HybridExecutor, StepExecutionResult};
 pub use planner::Planner;
 pub use policy::StepExecutionPolicy;
-pub use routing::DagRoutingPolicy;
-pub use runner::{DagNodeExecution, DagNodeExecutor, DagRunReport, DagRunner, DagSchedulingPolicy};
+pub use routing::ApexRoutingPolicy;
+pub use runner::{ApexNodeExecution, ApexNodeExecutor, ApexRunReport, ApexRunner, ApexSchedulingPolicy};
 pub use session::SessionMemory;
 pub use system::MemorySystem;
 pub use types::{

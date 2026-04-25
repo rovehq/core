@@ -97,6 +97,8 @@ pub async fn start_daemon(
         config.clone(),
     );
     spawn_workflow_file_watch_watcher(config.clone());
+    spawn_workflow_cron_scheduler(Arc::clone(&state.db), config.clone());
+    crate::system::auto_update::spawn_auto_update_scheduler();
 
     // Only allow explicit hosted and local dev origins for CORS.
     let cors = CorsLayer::new()
@@ -236,6 +238,7 @@ pub async fn start_daemon(
         .route("/v1/voice/test-output", post(api::test_voice_output))
         .route("/v1/config/reload", post(api::reload_config))
         .route("/v1/overview", get(api::overview))
+        .route("/v1/update/available", get(api::update_available))
         .route("/v1/health/snapshot", get(api::health_snapshot))
         .route("/v1/audit", get(api::list_audit_log))
         .route("/v1/logs/recent", get(api::recent_logs))
@@ -425,6 +428,7 @@ pub async fn start_daemon(
         .route("/api/v1/execute", post(api::execute_task))
         .route("/api/v1/tasks/:task_id", get(api::task_status))
         .route("/api/v1/overview", get(api::overview))
+        .route("/api/v1/update/available", get(api::update_available))
         .route(
             "/api/v1/browser",
             get(api::browser_status).put(api::update_browser),
@@ -499,6 +503,55 @@ pub async fn start_daemon(
                 .delete(api::remove_agent),
         )
         .route("/api/v1/agents/:id/run", post(api::run_agent))
+        .route(
+            "/api/v1/agents/:id/threads",
+            get(api::list_agent_threads),
+        )
+        .route(
+            "/api/v1/managed-agents",
+            get(api::list_managed_agents).post(api::create_managed_agent),
+        )
+        .route("/api/v1/managed-agents/:id", get(api::get_managed_agent))
+        .route(
+            "/api/v1/managed-agents/environments",
+            get(api::list_managed_agent_environments),
+        )
+        .route(
+            "/api/v1/managed-agents/environments/:id",
+            get(api::get_managed_agent_environment),
+        )
+        .route(
+            "/api/v1/managed-agents/sessions",
+            get(api::list_managed_agent_sessions).post(api::create_managed_agent_session),
+        )
+        .route(
+            "/api/v1/managed-agents/sessions/:id",
+            get(api::get_managed_agent_session),
+        )
+        .route(
+            "/api/v1/managed-agents/sessions/:id/wake",
+            post(api::wake_managed_agent_session),
+        )
+        .route(
+            "/api/v1/managed-agents/sessions/:id/message",
+            post(api::send_managed_agent_session_message),
+        )
+        .route(
+            "/api/v1/managed-agents/sessions/:id/events",
+            get(api::list_managed_agent_session_events),
+        )
+        .route(
+            "/api/v1/agent-threads",
+            get(api::list_agent_threads_all),
+        )
+        .route(
+            "/api/v1/agent-threads/:id",
+            get(api::get_agent_thread),
+        )
+        .route(
+            "/api/v1/agent-threads/:id/events",
+            get(api::list_agent_thread_events),
+        )
         .route(
             "/api/v1/workflows",
             get(api::list_workflows).post(api::create_workflow),
@@ -647,6 +700,50 @@ pub async fn start_daemon(
         .route("/api/v1/remote/nodes/:name", delete(api::remote_unpair))
         .route("/api/v1/remote/rename", post(api::remote_rename))
         .route("/api/v1/remote/send", post(api::remote_send))
+        .route(
+            "/api/v1/knowledge",
+            get(api::list_knowledge),
+        )
+        .route(
+            "/api/v1/knowledge/stats",
+            get(api::knowledge_stats),
+        )
+        .route(
+            "/api/v1/knowledge/search",
+            get(api::search_knowledge),
+        )
+        .route(
+            "/api/v1/knowledge/ingest/upload",
+            post(api::ingest_knowledge_upload),
+        )
+        .route(
+            "/api/v1/knowledge/ingest/file",
+            post(api::ingest_knowledge_file),
+        )
+        .route(
+            "/api/v1/knowledge/ingest/folder",
+            post(api::ingest_knowledge_folder),
+        )
+        .route(
+            "/api/v1/knowledge/ingest/url",
+            post(api::ingest_knowledge_url),
+        )
+        .route(
+            "/api/v1/knowledge/ingest/sitemap",
+            post(api::ingest_knowledge_sitemap),
+        )
+        .route(
+            "/api/v1/knowledge/:id",
+            get(api::get_knowledge).delete(api::remove_knowledge),
+        )
+        .route(
+            "/api/v1/knowledge/jobs",
+            get(api::list_knowledge_jobs),
+        )
+        .route(
+            "/api/v1/knowledge/jobs/:id",
+            get(api::get_knowledge_job),
+        )
         .route("/v1/chat/completions", post(mcp::mcp_chat_completions))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1058,6 +1155,109 @@ mod tests {
         };
         assert!(is_extension_reload_event(&event, &db_path, &plugin_dir));
     }
+}
+
+fn spawn_workflow_cron_scheduler(db: Arc<Database>, config: Config) {
+    let db_path = database_path(&config);
+
+    tokio::spawn(async move {
+        // Wait until next minute boundary before starting the tick loop
+        // so cron expressions fire predictably at wall-clock minute boundaries.
+        let now = chrono::Utc::now();
+        use chrono::Timelike;
+        let secs_until_next_minute = 60 - now.second() as u64;
+        tokio::time::sleep(Duration::from_secs(secs_until_next_minute)).await;
+
+        let _ = db; // drop captured Arc; open fresh connection each tick to avoid lifetime issues
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+
+        loop {
+            interval.tick().await;
+            let tick_time = chrono::Utc::now();
+            let one_minute_ago = tick_time - chrono::Duration::seconds(60);
+
+            let repo = match crate::specs::SpecRepository::new() {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("cron scheduler: failed to load specs: {}", e);
+                    continue;
+                }
+            };
+            let fresh_db = match crate::storage::Database::new(&db_path).await {
+                Ok(db) => db,
+                Err(e) => {
+                    warn!("cron scheduler: failed to open db: {}", e);
+                    continue;
+                }
+            };
+
+            let workflows = match repo.list_workflows() {
+                Ok(w) => w,
+                Err(e) => {
+                    warn!("cron scheduler: failed to list workflows: {}", e);
+                    continue;
+                }
+            };
+
+            for workflow in workflows {
+                if !workflow.enabled || workflow.schedules.is_empty() {
+                    continue;
+                }
+                for expr in &workflow.schedules {
+                    let schedule = match expr.parse::<cron::Schedule>() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!(
+                                workflow_id = %workflow.id,
+                                expr = %expr,
+                                "cron scheduler: invalid cron expression: {}",
+                                e
+                            );
+                            continue;
+                        }
+                    };
+                    // Fire if any scheduled time falls in the [one_minute_ago, tick_time) window.
+                    let fired = schedule
+                        .after(&one_minute_ago)
+                        .next()
+                        .is_some_and(|next| next <= tick_time);
+                    if !fired {
+                        continue;
+                    }
+                    let input = format!("Scheduled run: {}", workflow.name);
+                    match crate::system::workflow_runtime::start_new_run(
+                        &repo,
+                        &fresh_db,
+                        &config,
+                        &workflow,
+                        &input,
+                    )
+                    .await
+                    {
+                        Ok(result) => {
+                            info!(
+                                workflow_id = %workflow.id,
+                                run_id = %result.run.run_id,
+                                expr = %expr,
+                                "cron trigger fired"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                workflow_id = %workflow.id,
+                                expr = %expr,
+                                "cron trigger failed to start workflow run: {}",
+                                e
+                            );
+                        }
+                    }
+                    // Only fire each workflow once per tick even if multiple
+                    // expressions would match the same minute.
+                    break;
+                }
+            }
+        }
+    });
 }
 
 fn daemon_socket_addr(bind_addr: &str, port: u16) -> Result<SocketAddr> {

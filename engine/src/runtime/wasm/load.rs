@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::config::wasm::WasmConfig;
 use crate::runtime::sdk_plugin_entry_from_installed_plugin;
 use crate::storage::InstalledPlugin;
 
@@ -72,12 +73,20 @@ where
 pub(crate) fn resolve_wasm_resource_limits(
     plugin_entry: &sdk::manifest::PluginEntry,
     plugin_path: &Path,
+    operator_defaults: Option<&WasmConfig>,
 ) -> Result<WasmResourceLimits, EngineError> {
     let mut limits = WasmResourceLimits {
         timeout_secs: plugin_entry.wasm_timeout_secs(),
         max_memory_mb: plugin_entry.wasm_max_memory_mb(),
         fuel_limit: plugin_entry.wasm_fuel_limit(),
     };
+
+    // Operator-configured ceiling tightens the plugin's own limits (never loosens).
+    if let Some(defaults) = operator_defaults {
+        limits.timeout_secs = limits.timeout_secs.min(defaults.default_timeout_secs);
+        limits.max_memory_mb = limits.max_memory_mb.min(defaults.default_max_memory_mb);
+        limits.fuel_limit = limits.fuel_limit.min(defaults.default_fuel_limit);
+    }
 
     let sidecar_path = wasm_capabilities_sidecar_path(plugin_path);
     if !sidecar_path.exists() {
@@ -124,8 +133,9 @@ pub(crate) fn resolve_wasm_resource_limits(
 pub(crate) fn effective_wasm_limit_report(
     plugin_entry: &sdk::manifest::PluginEntry,
     plugin_path: &Path,
+    operator_defaults: Option<&WasmConfig>,
 ) -> Result<WasmLimitReport, EngineError> {
-    let limits = resolve_wasm_resource_limits(plugin_entry, plugin_path)?;
+    let limits = resolve_wasm_resource_limits(plugin_entry, plugin_path, operator_defaults)?;
     let sidecar_path = wasm_capabilities_sidecar_path(plugin_path);
     Ok(WasmLimitReport {
         timeout_secs: limits.timeout_secs,
@@ -139,6 +149,7 @@ pub(crate) fn effective_wasm_limit_report(
 
 pub(crate) fn installed_plugin_wasm_limit_report(
     plugin: &InstalledPlugin,
+    operator_defaults: Option<&WasmConfig>,
 ) -> Result<Option<WasmLimitReport>, EngineError> {
     let Some(plugin_entry) = sdk_plugin_entry_from_installed_plugin(plugin) else {
         return Ok(None);
@@ -147,7 +158,7 @@ pub(crate) fn installed_plugin_wasm_limit_report(
         return Ok(None);
     };
     let plugin_path = PathBuf::from(binary_path);
-    effective_wasm_limit_report(&plugin_entry, &plugin_path).map(Some)
+    effective_wasm_limit_report(&plugin_entry, &plugin_path, operator_defaults).map(Some)
 }
 
 impl WasmRuntime {
@@ -231,7 +242,8 @@ impl WasmRuntime {
         })?;
 
         let wasm = Wasm::data(wasm_bytes);
-        let resource_limits = resolve_wasm_resource_limits(plugin_entry, &plugin_path)?;
+        let resource_limits =
+            resolve_wasm_resource_limits(plugin_entry, &plugin_path, Some(&self.config.wasm))?;
         let extism_manifest = ExtismManifest::new([wasm])
             .with_memory_options(
                 MemoryOptions::new()
@@ -278,7 +290,7 @@ mod tests {
         std::fs::write(&plugin_path, b"wasm").expect("write plugin");
 
         let plugin = PluginEntry::default();
-        let limits = resolve_wasm_resource_limits(&plugin, &plugin_path).expect("limits");
+        let limits = resolve_wasm_resource_limits(&plugin, &plugin_path, None).expect("limits");
         assert_eq!(limits.timeout_secs, 60);
         assert_eq!(limits.max_memory_mb, 10);
         assert_eq!(limits.fuel_limit, 50_000_000);
@@ -297,7 +309,7 @@ mod tests {
         .expect("write sidecar");
 
         let plugin = PluginEntry::default();
-        let limits = resolve_wasm_resource_limits(&plugin, &plugin_path).expect("limits");
+        let limits = resolve_wasm_resource_limits(&plugin, &plugin_path, None).expect("limits");
         assert_eq!(limits.timeout_secs, 15);
         assert_eq!(limits.max_memory_mb, 4);
         assert_eq!(limits.fuel_limit, 1000);
@@ -311,7 +323,7 @@ mod tests {
         let sidecar_path = wasm_capabilities_sidecar_path(&plugin_path);
         std::fs::write(&sidecar_path, r#"{"max_memory_mb":4}"#).expect("write sidecar");
 
-        let report = effective_wasm_limit_report(&PluginEntry::default(), &plugin_path)
+        let report = effective_wasm_limit_report(&PluginEntry::default(), &plugin_path, None)
             .expect("effective report");
         assert_eq!(report.max_memory_mb, 4);
         assert_eq!(
@@ -331,7 +343,7 @@ mod tests {
         )
         .expect("write sidecar");
 
-        let error = resolve_wasm_resource_limits(&PluginEntry::default(), &plugin_path)
+        let error = resolve_wasm_resource_limits(&PluginEntry::default(), &plugin_path, None)
             .expect_err("zero max_memory_mb should fail");
         assert!(error.to_string().contains("max_memory_mb"));
     }

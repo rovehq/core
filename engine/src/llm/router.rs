@@ -48,14 +48,60 @@ pub struct LLMRouter {
     /// LLM configuration
     config: Arc<LLMConfig>,
 
-    /// Optional local reasoning brain
+    /// Optional local reasoning brain (also used for embeddings)
     local_brain: Option<Arc<LocalBrain>>,
+
+    /// Optional plugin brain backend — takes precedence over local_brain for completions
+    plugin_brain: Option<Arc<dyn Brain>>,
 }
 
 impl LLMRouter {
     fn should_try_local_brain_first(&self, profile: &TaskProfile) -> bool {
-        profile.sensitivity > self.config.sensitivity_threshold
+        self.plugin_brain.is_some()
+            || profile.sensitivity > self.config.sensitivity_threshold
             || self.config.default_provider == "local-brain"
+    }
+
+    async fn try_plugin_brain(
+        &self,
+        messages: &[Message],
+    ) -> Option<super::Result<(super::LLMResponse, String)>> {
+        let plugin_brain = self.plugin_brain.as_ref()?;
+
+        tracing::debug!(backend = %plugin_brain.name(), "Attempting plugin brain backend");
+
+        let brain_messages: Vec<sdk::Message> = messages
+            .iter()
+            .map(|m| sdk::Message {
+                role: m.role.to_string(),
+                content: m.content.clone(),
+            })
+            .collect();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(120),
+            plugin_brain.complete("You are a helpful AI assistant.", &brain_messages, &[]),
+        )
+        .await;
+
+        let backend_name = plugin_brain.name().to_string();
+        match result {
+            Ok(Ok(brain_response)) => {
+                tracing::info!(backend = %backend_name, "Plugin brain succeeded");
+                let llm_response = super::LLMResponse::FinalAnswer(super::FinalAnswer {
+                    content: brain_response.content,
+                });
+                Some(Ok((llm_response, backend_name)))
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(backend = %backend_name, "Plugin brain failed: {}", scrub_text(&error.to_string()));
+                None
+            }
+            Err(_) => {
+                tracing::warn!(backend = %backend_name, "Plugin brain timed out after 120s");
+                None
+            }
+        }
     }
 
     async fn try_local_brain(
@@ -116,6 +162,7 @@ impl LLMRouter {
             providers,
             config,
             local_brain: None,
+            plugin_brain: None,
         }
     }
 
@@ -134,14 +181,28 @@ impl LLMRouter {
             providers,
             config,
             local_brain,
+            plugin_brain: None,
         }
+    }
+
+    pub fn with_plugin_brain(mut self, brain: Option<Arc<dyn Brain>>) -> Self {
+        self.plugin_brain = brain;
+        self
     }
 
     pub fn local_brain(&self) -> Option<Arc<LocalBrain>> {
         self.local_brain.clone()
     }
 
+    pub fn plugin_brain(&self) -> Option<Arc<dyn Brain>> {
+        self.plugin_brain.clone()
+    }
+
     pub async fn has_local_model(&self) -> bool {
+        if self.plugin_brain.is_some() {
+            return true;
+        }
+
         if let Some(local_brain) = &self.local_brain {
             if local_brain.check_available().await {
                 return true;
@@ -163,6 +224,9 @@ impl LLMRouter {
         messages: &[Message],
     ) -> super::Result<(super::LLMResponse, String)> {
         if provider_name == "local-brain" {
+            if let Some(result) = self.try_plugin_brain(messages).await {
+                return result;
+            }
             if let Some(result) = self.try_local_brain(messages).await {
                 return result;
             }
@@ -190,6 +254,9 @@ impl LLMRouter {
         &self,
         messages: &[Message],
     ) -> super::Result<(super::LLMResponse, String)> {
+        if let Some(result) = self.try_plugin_brain(messages).await {
+            return result;
+        }
         if let Some(result) = self.try_local_brain(messages).await {
             if result.is_ok() {
                 return result;
@@ -443,6 +510,12 @@ impl LLMRouter {
 
         if try_local_first {
             tried_local = true;
+            if let Some(result) = self.try_plugin_brain(messages).await {
+                match result {
+                    Ok(response) => return Ok(response),
+                    Err(error) => tracing::warn!("Plugin brain fallback failed: {}", error),
+                }
+            }
             if let Some(result) = self.try_local_brain(messages).await {
                 match result {
                     Ok(response) => return Ok(response),
@@ -537,18 +610,50 @@ impl LLMRouter {
             }
         }
 
-        // All providers failed
-        tracing::error!("All LLM providers exhausted");
-        if failures.is_empty() {
-            Err(LLMError::ProviderUnavailable(
-                "All LLM providers failed".to_string(),
-            ))
-        } else {
-            Err(LLMError::ProviderUnavailable(format!(
-                "All LLM providers failed: {}",
-                failures.join("; ")
-            )))
+        // All providers failed on first pass. Retry once after a short back-off
+        // to handle transient rate-limit bursts from concurrent parallel tasks.
+        tracing::warn!(
+            "All LLM providers exhausted on first pass ({}). Retrying after 600ms.",
+            failures.join("; ")
+        );
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        failures.clear();
+
+        let ranked_providers = self.rank_providers(&profile);
+        for provider in ranked_providers {
+            if !provider.check_health().await {
+                failures.push(format!("{}: health check failed", provider.name()));
+                continue;
+            }
+            let timeout_secs = if provider.is_local() { 120 } else { 30 };
+            let result = tokio::time::timeout(
+                Duration::from_secs(timeout_secs),
+                provider.generate(messages),
+            )
+            .await;
+            match result {
+                Ok(Ok(response)) => {
+                    tracing::info!("Provider {} succeeded on retry", provider.name());
+                    return Ok((response, provider.name().to_string()));
+                }
+                Ok(Err(e)) => {
+                    failures.push(format!("{}: {}", provider.name(), scrub_text(&e.to_string())));
+                }
+                Err(_) => {
+                    failures.push(format!("{}: timed out after {}s", provider.name(), timeout_secs));
+                }
+            }
         }
+
+        tracing::error!("All LLM providers exhausted after retry");
+        Err(LLMError::ProviderUnavailable(format!(
+            "All LLM providers failed: {}",
+            if failures.is_empty() {
+                "no providers available".to_string()
+            } else {
+                failures.join("; ")
+            }
+        )))
     }
 
     async fn call_provider_group(

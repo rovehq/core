@@ -2,8 +2,6 @@
 
 mod call;
 mod load;
-#[cfg(test)]
-mod tests;
 mod verify;
 
 use crate::crypto::CryptoModule;
@@ -72,8 +70,8 @@ impl NativeRuntime {
         );
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_library_registered(&self, lib_path: &str) -> bool {
+    #[doc(hidden)]
+    pub fn is_library_registered(&self, lib_path: &str) -> bool {
         self.registered_libraries.contains_key(lib_path)
     }
 }

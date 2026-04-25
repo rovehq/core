@@ -2500,7 +2500,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/api/v1/remote/execute"))
+            .and(path("/v1/remote/execute"))
             .and(header("authorization", "Bearer remote-token"))
             .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
                 "success": true,
@@ -2515,7 +2515,7 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/api/v1/tasks/remote-task-1"))
+            .and(path("/v1/remote/tasks/remote-task-1"))
             .and(header("authorization", "Bearer remote-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
@@ -2617,8 +2617,8 @@ mod tests {
 
         let (_temp, config) = test_config();
         let app = Router::new()
-            .route("/api/v1/remote/execute", post(execute_remote))
-            .route("/ws/task", get(ws_task));
+            .route("/v1/remote/execute", post(execute_remote))
+            .route("/v1/remote/events/ws", get(ws_task));
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let server = tokio::spawn(async move {
@@ -2708,7 +2708,7 @@ mod tests {
         let lab = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/api/v1/remote/execute"))
+            .and(path("/v1/remote/execute"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
                 "task_id": "office-task",
@@ -2770,7 +2770,7 @@ mod tests {
         let busy = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/v1/remote/status"))
+            .and(path("/v1/remote/status/public"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "enabled": true,
                 "node": {
@@ -2795,7 +2795,7 @@ mod tests {
             .mount(&quiet)
             .await;
         Mock::given(method("POST"))
-            .and(path("/api/v1/remote/execute"))
+            .and(path("/v1/remote/execute"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
                 "task_id": "quiet-task",
@@ -2809,7 +2809,7 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/api/v1/remote/status"))
+            .and(path("/v1/remote/status/public"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "enabled": true,
                 "node": {
@@ -2834,7 +2834,7 @@ mod tests {
             .mount(&busy)
             .await;
         Mock::given(method("POST"))
-            .and(path("/api/v1/remote/execute"))
+            .and(path("/v1/remote/execute"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
                 "task_id": "busy-task",
@@ -2938,7 +2938,7 @@ auto_tag = ["office-workspace"]
         let fallback = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/api/v1/remote/execute"))
+            .and(path("/v1/remote/execute"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
                 "task_id": "office-task",
@@ -2952,7 +2952,7 @@ auto_tag = ["office-workspace"]
             .await;
 
         Mock::given(method("POST"))
-            .and(path("/api/v1/remote/execute"))
+            .and(path("/v1/remote/execute"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
                 "task_id": "fallback-task",
@@ -3022,7 +3022,7 @@ auto_tag = ["office-workspace"]
         let captured = Arc::new(Mutex::new(None));
         let state = CaptureState(Arc::clone(&captured));
         let app = Router::new()
-            .route("/api/v1/remote/execute", post(execute_remote))
+            .route("/v1/remote/execute", post(execute_remote))
             .with_state(state);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");

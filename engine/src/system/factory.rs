@@ -1220,6 +1220,7 @@ mod tests {
 
     #[test]
     fn preview_result_reports_existing_target_changes() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();
@@ -1258,6 +1259,7 @@ mod tests {
 
     #[test]
     fn create_and_approve_agent_promotes_draft() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();
@@ -1297,6 +1299,7 @@ mod tests {
 
     #[test]
     fn create_and_approve_workflow_promotes_draft() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();
@@ -1327,6 +1330,7 @@ mod tests {
 
     #[tokio::test]
     async fn from_task_generates_specs() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let db = Database::new(&temp_dir.path().join("factory.db"))

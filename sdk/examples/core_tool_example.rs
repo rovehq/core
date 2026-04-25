@@ -224,6 +224,7 @@ fn main() {
             },
             daemon: DaemonConfigSnapshot {
                 profile: "desktop".to_string(),
+                developer_mode: false,
             },
             core: CoreConfigSnapshot {
                 workspace: "~/projects".to_string(),

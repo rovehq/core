@@ -3,11 +3,13 @@ use std::time::Instant;
 use ratatui::{layout::Rect, style::Style, text::Span, widgets::Paragraph, Frame};
 
 use super::super::theme;
+use crate::config::channel::Channel;
 
 pub struct StatusBar {
     pub spinning: bool,
     pub tick: u8,
     pub start_time: Option<Instant>,
+    pub update_available: Option<(String, String)>,
 }
 
 impl StatusBar {
@@ -16,6 +18,7 @@ impl StatusBar {
             spinning: false,
             tick: 0,
             start_time: None,
+            update_available: None,
         }
     }
 
@@ -32,6 +35,14 @@ impl StatusBar {
         } else {
             String::new()
         }
+    }
+
+    pub fn set_update_available(&mut self, current: String, latest: String) {
+        self.update_available = Some((current, latest));
+    }
+
+    pub fn clear_update_available(&mut self) {
+        self.update_available = None;
     }
 }
 
@@ -53,7 +64,10 @@ pub fn render(f: &mut Frame, area: Rect, bar: &StatusBar) {
         "ready".to_string()
     };
 
-    let line = ratatui::text::Line::from(vec![
+    let channel = Channel::current();
+    let channel_label = format!(" [{}] ", channel.as_str());
+
+    let mut spans = vec![
         Span::styled(
             format!(" {} ", spinner),
             Style::default().fg(if bar.spinning {
@@ -63,8 +77,17 @@ pub fn render(f: &mut Frame, area: Rect, bar: &StatusBar) {
             }),
         ),
         Span::styled(status_text, Style::default().fg(theme::DIM)),
-    ]);
+        Span::styled(channel_label, Style::default().fg(theme::DIM)),
+    ];
 
+    if let Some((current, latest)) = bar.update_available.as_ref() {
+        spans.push(Span::styled(
+            format!("· update v{} → v{} (run `rove update`)", current, latest),
+            Style::default().fg(theme::YELLOW),
+        ));
+    }
+
+    let line = ratatui::text::Line::from(spans);
     let para = Paragraph::new(line);
     f.render_widget(para, area);
 }

@@ -355,6 +355,14 @@ pub async fn run_tui() -> Result<()> {
 
     let (dispatch_tx, mut dispatch_rx) = mpsc::unbounded_channel::<DispatchResult>();
 
+    let (update_tx, mut update_rx) =
+        mpsc::unbounded_channel::<crate::system::update_status::UpdateStatus>();
+    tokio::spawn(async move {
+        if let Ok(status) = crate::system::update_status::check_update_available().await {
+            let _ = update_tx.send(status);
+        }
+    });
+
     let mut app = App::new();
 
     loop {
@@ -381,6 +389,13 @@ pub async fn run_tui() -> Result<()> {
             }
             Some(result) = dispatch_rx.recv() => {
                 app.apply_dispatch_result(result);
+            }
+            Some(update) = update_rx.recv() => {
+                if update.update_available {
+                    app.status_bar.set_update_available(update.current, update.latest);
+                } else {
+                    app.status_bar.clear_update_available();
+                }
             }
         }
 

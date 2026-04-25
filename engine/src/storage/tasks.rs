@@ -76,6 +76,7 @@ pub struct Task {
     pub source: String,
     pub agent_id: Option<String>,
     pub agent_name: Option<String>,
+    pub thread_id: Option<String>,
     pub worker_preset_id: Option<String>,
     pub worker_preset_name: Option<String>,
     pub status: TaskStatus,
@@ -125,7 +126,7 @@ pub struct AgentActionRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DagHistorySummary {
+pub struct ApexHistorySummary {
     pub task_id: String,
     pub status: TaskStatus,
     pub duration_ms: Option<i64>,
@@ -133,6 +134,15 @@ pub struct DagHistorySummary {
     pub dag_step_successes: i64,
     pub dag_step_failures: i64,
     pub last_event_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadHistoryEntry {
+    pub task_id: String,
+    pub input: String,
+    pub answer: Option<String>,
+    pub status: TaskStatus,
+    pub created_at: i64,
 }
 
 /// Task repository for database operations
@@ -151,6 +161,7 @@ pub struct TaskOutcomeStats {
 pub struct TaskListQuery {
     pub status: Option<TaskStatus>,
     pub agent_id: Option<String>,
+    pub thread_id: Option<String>,
     pub date_from: Option<i64>,
     pub date_to: Option<i64>,
     pub limit: i64,
@@ -174,6 +185,10 @@ impl TaskRepository {
         Self { pool }
     }
 
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     /// Create a new task
     ///
     /// Requirements: 12.4, 12.10
@@ -195,11 +210,12 @@ impl TaskRepository {
         let source = source
             .map(TaskSource::as_str)
             .unwrap_or_else(|| "cli".to_string());
-        let (agent_id, agent_name, worker_preset_id, worker_preset_name) = execution_profile
-            .map_or((None, None, None, None), |profile| {
+        let (agent_id, agent_name, thread_id, worker_preset_id, worker_preset_name) =
+            execution_profile.map_or((None, None, None, None, None), |profile| {
                 (
                     profile.agent_id.clone(),
                     profile.agent_name.clone(),
+                    profile.thread_id.clone(),
                     profile.worker_preset_id.clone(),
                     profile.worker_preset_name.clone(),
                 )
@@ -207,13 +223,14 @@ impl TaskRepository {
 
         // Use parameterized query to prevent SQL injection
         sqlx::query(
-            "INSERT OR IGNORE INTO tasks (id, input, source, agent_id, agent_name, worker_preset_id, worker_preset_name, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO tasks (id, input, source, agent_id, agent_name, thread_id, worker_preset_id, worker_preset_name, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id_str)
         .bind(input)
         .bind(&source)
         .bind(&agent_id)
         .bind(&agent_name)
+        .bind(&thread_id)
         .bind(&worker_preset_id)
         .bind(&worker_preset_name)
         .bind(status)
@@ -228,6 +245,7 @@ impl TaskRepository {
             source,
             agent_id,
             agent_name,
+            thread_id,
             worker_preset_id,
             worker_preset_name,
             status: TaskStatus::Pending,
@@ -310,7 +328,7 @@ impl TaskRepository {
     pub async fn get_task(&self, task_id: &uuid::Uuid) -> Result<Option<Task>> {
         let task_id_str = task_id.to_string();
         let row = sqlx::query(
-            "SELECT id, input, source, agent_id, agent_name, worker_preset_id, worker_preset_name, status, provider_used, duration_ms, created_at, completed_at FROM tasks WHERE id = ?"
+            "SELECT id, input, source, agent_id, agent_name, thread_id, worker_preset_id, worker_preset_name, status, provider_used, duration_ms, created_at, completed_at FROM tasks WHERE id = ?"
         )
         .bind(&task_id_str)
         .fetch_optional(&self.pool)
@@ -331,20 +349,67 @@ impl TaskRepository {
         .await
     }
 
+    pub async fn get_recent_thread_history(
+        &self,
+        thread_id: &str,
+        exclude_task_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ThreadHistoryEntry>> {
+        let rows = sqlx::query(
+            r#"SELECT t.id AS task_id, t.input, t.status, t.created_at,
+                      (
+                        SELECT payload
+                        FROM agent_events ev
+                        WHERE ev.task_id = t.id
+                          AND ev.event_type = 'answer'
+                        ORDER BY ev.step_num DESC
+                        LIMIT 1
+                      ) AS answer_payload
+               FROM tasks t
+               WHERE t.thread_id = ?1
+                 AND (?2 IS NULL OR t.id != ?2)
+               ORDER BY t.created_at DESC
+               LIMIT ?3"#,
+        )
+        .bind(thread_id)
+        .bind(exclude_task_id)
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to load recent thread history")?;
+
+        let mut entries = rows
+            .into_iter()
+            .map(|row| ThreadHistoryEntry {
+                task_id: row.get("task_id"),
+                input: row.get("input"),
+                answer: row
+                    .get::<Option<String>, _>("answer_payload")
+                    .and_then(|payload| parse_answer_payload(&payload)),
+                status: TaskStatus::parse_str(row.get::<String, _>("status").as_str()),
+                created_at: row.get("created_at"),
+            })
+            .collect::<Vec<_>>();
+        entries.reverse();
+        Ok(entries)
+    }
+
     pub async fn list_tasks(&self, query: &TaskListQuery) -> Result<Vec<Task>> {
         let rows = sqlx::query(
-            r#"SELECT id, input, source, agent_id, agent_name, worker_preset_id, worker_preset_name,
+            r#"SELECT id, input, source, agent_id, agent_name, thread_id, worker_preset_id, worker_preset_name,
                       status, provider_used, duration_ms, created_at, completed_at
                FROM tasks
                WHERE (?1 IS NULL OR status = ?1)
                  AND (?2 IS NULL OR agent_id = ?2)
-                 AND (?3 IS NULL OR created_at >= ?3)
-                 AND (?4 IS NULL OR created_at <= ?4)
+                 AND (?3 IS NULL OR thread_id = ?3)
+                 AND (?4 IS NULL OR created_at >= ?4)
+                 AND (?5 IS NULL OR created_at <= ?5)
                ORDER BY created_at DESC
-               LIMIT ?5 OFFSET ?6"#,
+               LIMIT ?6 OFFSET ?7"#,
         )
         .bind(query.status.as_ref().map(TaskStatus::as_str))
         .bind(query.agent_id.as_deref())
+        .bind(query.thread_id.as_deref())
         .bind(query.date_from)
         .bind(query.date_to)
         .bind(query.limit.max(1))
@@ -653,11 +718,11 @@ impl TaskRepository {
             .collect())
     }
 
-    pub async fn get_recent_dag_history(
+    pub async fn get_recent_apex_history(
         &self,
         domain: &str,
         limit: i64,
-    ) -> Result<Vec<DagHistorySummary>> {
+    ) -> Result<Vec<ApexHistorySummary>> {
         let rows = sqlx::query(
             r#"SELECT
                    ae.task_id AS task_id,
@@ -682,7 +747,7 @@ impl TaskRepository {
 
         Ok(rows
             .into_iter()
-            .map(|r| DagHistorySummary {
+            .map(|r| ApexHistorySummary {
                 task_id: r.get("task_id"),
                 status: match r.get::<String, _>("status").as_str() {
                     "pending" => TaskStatus::Pending,
@@ -777,6 +842,7 @@ fn map_task_row(r: sqlx::sqlite::SqliteRow) -> Task {
         source: r.get("source"),
         agent_id: r.get("agent_id"),
         agent_name: r.get("agent_name"),
+        thread_id: r.get("thread_id"),
         worker_preset_id: r.get("worker_preset_id"),
         worker_preset_name: r.get("worker_preset_name"),
         status: TaskStatus::parse_str(r.get::<String, _>("status").as_str()),
@@ -814,6 +880,7 @@ mod tests {
         TaskExecutionProfile {
             agent_id: Some(agent_id.to_string()),
             agent_name: Some(agent_name.to_string()),
+            thread_id: None,
             worker_preset_id: Some("worker.research".to_string()),
             worker_preset_name: Some("Research Worker".to_string()),
             purpose: Some("test".to_string()),
@@ -822,6 +889,7 @@ mod tests {
             output_contract: None,
             outcome_contract: None,
             max_iterations: Some(4),
+            callable_agents: vec![],
         }
     }
 
@@ -1014,5 +1082,52 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, new_id);
         assert_eq!(filtered[0].created_at, 200);
+    }
+
+    #[tokio::test]
+    async fn list_tasks_supports_thread_filter() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::new(&temp_dir.path().join("task-thread-filter.db"))
+            .await
+            .unwrap();
+        let repo = db.tasks();
+
+        let alpha_id = uuid::Uuid::new_v4();
+        repo.create_task_with_metadata(
+            &alpha_id,
+            "research release",
+            Some(&TaskSource::Cli),
+            Some(&test_profile("agent.alpha", "Alpha")),
+        )
+        .await
+        .unwrap();
+
+        let beta_profile = TaskExecutionProfile {
+            thread_id: Some("thread:beta".to_string()),
+            ..test_profile("agent.beta", "Beta")
+        };
+        let beta_id = uuid::Uuid::new_v4();
+        repo.create_task_with_metadata(
+            &beta_id,
+            "ship release",
+            Some(&TaskSource::Cli),
+            Some(&beta_profile),
+        )
+        .await
+        .unwrap();
+
+        let filtered = repo
+            .list_tasks(&TaskListQuery {
+                thread_id: Some("thread:beta".to_string()),
+                limit: 20,
+                offset: 0,
+                ..TaskListQuery::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, beta_id);
+        assert_eq!(filtered[0].thread_id.as_deref(), Some("thread:beta"));
     }
 }

@@ -78,10 +78,7 @@ pub fn default_data_dir() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".rove")
-        .join("data")
+    super::paths::rove_home().join("data")
 }
 
 pub fn default_search_provider() -> SearchProviderKind {
@@ -193,10 +190,7 @@ pub fn default_max_session_tokens() -> usize {
 
 /// Default policy directory.
 pub fn default_policy_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".rove")
-        .join("policy")
+    super::paths::rove_home().join("policy")
 }
 
 pub fn default_steering_dir() -> PathBuf {
@@ -254,4 +248,22 @@ pub fn default_gateway_poll_interval() -> u64 {
 /// Default gateway poll limit
 pub fn default_gateway_poll_limit() -> i64 {
     10
+}
+
+/// Default WASM plugin memory cap in megabytes.
+/// Matches ZeroClaw baseline; clamped to 1-1024 MB.
+pub fn default_wasm_max_memory_mb() -> u32 {
+    10
+}
+
+/// Default WASM plugin per-call timeout in seconds.
+/// Clamped to 1-600s.
+pub fn default_wasm_timeout_secs() -> u64 {
+    60
+}
+
+/// Default WASM plugin fuel limit (instruction budget per call).
+/// Minimum value: 1.
+pub fn default_wasm_fuel_limit() -> u64 {
+    50_000_000
 }

@@ -259,6 +259,12 @@ fn test_property_task_serialization_round_trip() {
     let original_task = Task {
         id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000000").unwrap(),
         input: "Test input string with special characters !@#$%^&*()".to_string(),
+        source: "cli".to_string(),
+        agent_id: None,
+        agent_name: None,
+        thread_id: None,
+        worker_preset_id: None,
+        worker_preset_name: None,
         status: TaskStatus::Completed,
         provider_used: Some("openai".to_string()),
         duration_ms: Some(1500),

@@ -134,6 +134,8 @@ pub async fn build_for_execution_role(
             provider.base_url.clone(),
             provider.model.clone(),
             api_key_name,
+            provider.is_cloud,
+            provider.no_system_prompt,
             secret_cache.clone(),
         )));
 

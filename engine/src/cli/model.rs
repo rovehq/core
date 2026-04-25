@@ -55,16 +55,18 @@ pub async fn handle_setup() -> Result<()> {
         base_url,
         model,
         secret_key,
+        is_cloud: false,
+        no_system_prompt: false,
     });
 
     if set_default {
         config.llm.default_provider = name.clone();
     }
 
-    let config_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-        .join(".rove")
-        .join("config.toml");
+    if dirs::home_dir().is_none() {
+        anyhow::bail!("Cannot determine home directory");
+    }
+    let config_path = crate::config::paths::rove_home().join("config.toml");
     let toml_string = toml::to_string_pretty(&config)?;
     std::fs::write(&config_path, toml_string)?;
 

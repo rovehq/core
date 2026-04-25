@@ -5,8 +5,6 @@ mod pid;
 mod providers;
 mod shutdown;
 mod signals;
-#[cfg(test)]
-mod tests;
 
 use std::fs;
 use std::path::PathBuf;
@@ -136,10 +134,37 @@ impl DaemonManager {
 
     pub fn status(config: &Config) -> Result<DaemonStatus> {
         let pid_file = Self::get_pid_file_path(config)?;
-        let (is_running, pid) = match Self::read_pid_file(&pid_file) {
-            Ok(pid) if Self::is_process_running(pid) => (true, Some(pid)),
-            _ => (false, None),
+
+        // Phase 3a: check PID file, self-heal stale entries.
+        let (mut is_running, pid) = match Self::read_pid_file(&pid_file) {
+            Ok(candidate) if Self::is_process_running(candidate) => (true, Some(candidate)),
+            Ok(_dead) => {
+                // Stale PID — process gone. Remove the file so next `rove start`
+                // doesn't see a ghost and so future status calls don't repeat this.
+                let _ = fs::remove_file(&pid_file);
+                (false, None)
+            }
+            Err(_) => (false, None),
         };
+
+        // Phase 3b: if PID check says "not running", probe the configured port
+        // as a fallback. Handles the case where the PID file was clobbered by a
+        // failed `rove start` attempt while the original daemon is still serving.
+        if !is_running {
+            let bind_addr = config.webui.bind_addr.clone();
+            if let Ok(addr) = bind_addr.parse::<std::net::SocketAddr>() {
+                if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+                {
+                    tracing::warn!(
+                        "Daemon port {} is answering but PID file is missing/stale — \
+                         daemon is running without a valid PID record",
+                        addr.port()
+                    );
+                    is_running = true;
+                    // pid stays None — we know it's up but can't determine PID
+                }
+            }
+        }
 
         let config_clone = config.clone();
         let providers = std::thread::spawn(move || {

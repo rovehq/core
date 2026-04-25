@@ -12,10 +12,7 @@ pub fn log_file_path() -> PathBuf {
         return data_dir.join("rove.log");
     }
 
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".rove")
-        .join("rove.log")
+    crate::config::paths::rove_home().join("rove.log")
 }
 
 pub fn recent_lines(limit: usize) -> Result<Vec<String>> {

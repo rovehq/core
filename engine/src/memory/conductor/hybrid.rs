@@ -7,14 +7,14 @@
 //!
 //! Architecture:
 //! 1. Cloud brain generates structured plan (list of steps with dependencies)
-//! 2. DAG executor runs steps concurrently where possible
+//! 2. APEX executor runs steps concurrently where possible
 //! 3. Each step executed by local brain (if available) or cloud fallback
 //! 4. Sensitive data never sent to cloud during execution
 
-use crate::conductor::graph::DagGraph;
+use crate::conductor::graph::ApexGraph;
 use crate::conductor::policy::StepExecutionPolicy;
-use crate::conductor::routing::DagRoutingPolicy;
-use crate::conductor::runner::{DagNodeExecution, DagNodeExecutor, DagRunner};
+use crate::conductor::routing::ApexRoutingPolicy;
+use crate::conductor::runner::{ApexNodeExecution, ApexNodeExecutor, ApexRunner};
 use crate::conductor::types::{ConductorPlan, PlanStep, RoutePolicy, StepRole, StepType};
 use crate::llm::router::LLMRouter;
 use crate::llm::{LLMResponse, Message};
@@ -22,6 +22,28 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use brain::reasoning::LocalBrain;
 use sdk::{Brain, Complexity, Route, TaskDomain};
+
+/// Controls which LLM is used for APEX planning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlanMode {
+    /// Use the ONNX classifier result: Complex → cloud, Simple/Medium → local.
+    #[default]
+    Auto,
+    /// Always use a cloud provider for planning.
+    Cloud,
+    /// Always plan locally (skip cloud call and compression).
+    Local,
+}
+
+/// Returns true when the planning context should be compressed before sending
+/// to the cloud planner.
+pub fn should_compress(complexity: Complexity, mode: PlanMode) -> bool {
+    match mode {
+        PlanMode::Cloud => true,
+        PlanMode::Local => false,
+        PlanMode::Auto => complexity == Complexity::Complex,
+    }
+}
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -65,13 +87,13 @@ struct HybridNodeExecutor {
 }
 
 #[async_trait]
-impl DagNodeExecutor for HybridNodeExecutor {
+impl ApexNodeExecutor for HybridNodeExecutor {
     async fn execute_node(
         &self,
         step: &PlanStep,
         dependency_context: &str,
         route: Route,
-    ) -> Result<DagNodeExecution> {
+    ) -> Result<ApexNodeExecution> {
         let start = std::time::Instant::now();
         let policy = StepExecutionPolicy::for_step(step, route);
         let mut executed_route = route;
@@ -86,7 +108,7 @@ impl DagNodeExecutor for HybridNodeExecutor {
                     {
                         Ok(output) => {
                             let elapsed = start.elapsed().as_millis() as u64;
-                            return Ok(DagNodeExecution {
+                            return Ok(ApexNodeExecution {
                                 step_id: step.id.clone(),
                                 output,
                                 route: Route::Local,
@@ -114,7 +136,7 @@ impl DagNodeExecutor for HybridNodeExecutor {
             .context("Router execution failed")?;
         let elapsed = start.elapsed().as_millis() as u64;
 
-        Ok(DagNodeExecution {
+        Ok(ApexNodeExecution {
             step_id: step.id.clone(),
             output,
             route: actual_route,
@@ -188,9 +210,77 @@ impl HybridExecutor {
         }
     }
 
+    /// Compress the memory block locally before cloud planning.
+    ///
+    /// Returns `None` when:
+    /// - No local brain is available
+    /// - The local brain call fails
+    /// - The compressed output is empty or not shorter than the raw input
+    pub async fn compress_context_locally(&self, goal: &str, raw: &str) -> Option<String> {
+        use crate::memory::conductor::session::truncate;
+
+        let local_brain = self.local_brain.as_ref()?;
+        if !local_brain.check_available().await {
+            return None;
+        }
+
+        let capped = truncate(raw, 8000);
+
+        let system = "You compress conversation context for a task planner. Preserve:\n\
+            - The user's intent (what they want accomplished)\n\
+            - Hard constraints (file paths, numbers, deadlines, names)\n\
+            - Decisions already made\n\
+            - Open questions\n\
+            Drop: pleasantries, repetition, meta-commentary, tool-call noise.\n\
+            Output tight bullets under 400 tokens. No preamble. No meta-summary.";
+
+        let messages = vec![sdk::Message {
+            role: "user".to_string(),
+            content: format!("Goal: {}\n\nRaw context:\n{}", goal, capped),
+        }];
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            local_brain.complete(system, &messages, &[]),
+        )
+        .await;
+
+        let compressed = match result {
+            Ok(Ok(response)) => response.content,
+            Ok(Err(e)) => {
+                warn!("Local compression failed: {}", e);
+                return None;
+            }
+            Err(_) => {
+                warn!("Local compression timed out");
+                return None;
+            }
+        };
+
+        if compressed.is_empty() || compressed.len() >= raw.len() {
+            debug!(
+                raw_len = raw.len(),
+                compressed_len = compressed.len(),
+                "Compression output rejected (empty or not shorter), using raw context"
+            );
+            return None;
+        }
+
+        info!(
+            raw_chars = raw.len(),
+            compressed_chars = compressed.len(),
+            "Compressed memory: {} chars → {} chars",
+            raw.len(),
+            compressed.len()
+        );
+        Some(compressed)
+    }
+
     /// Generate a plan using cloud brain
     ///
-    /// Cloud brain has larger context and better planning capabilities
+    /// Cloud brain has larger context and better planning capabilities.
+    /// Always routes to a non-local (cloud) provider so that planning benefits
+    /// from a large-context reasoning model.
     pub async fn plan_with_cloud(&self, goal: &str, context: &str) -> Result<ConductorPlan> {
         info!("Planning with cloud brain: {}", goal);
 
@@ -216,7 +306,7 @@ impl HybridExecutor {
 
         let (response, provider) = self
             .router
-            .call(&[system, user])
+            .call_cloud_only(&[system, user])
             .await
             .context("Cloud planning failed")?;
 
@@ -249,7 +339,7 @@ impl HybridExecutor {
         } else {
             Route::Cloud
         };
-        let mut graph = DagGraph::from_plan(
+        let mut graph = ApexGraph::from_plan(
             format!("plan:{}", plan.id),
             plan,
             TaskDomain::General,
@@ -257,8 +347,8 @@ impl HybridExecutor {
             false,
             preferred_route,
         );
-        DagRoutingPolicy::new(self.local_brain.is_some()).assign_routes(&mut graph, plan);
-        let runner = DagRunner::new();
+        ApexRoutingPolicy::new(self.local_brain.is_some()).assign_routes(&mut graph, plan);
+        let runner = ApexRunner::new();
         let node_executor = HybridNodeExecutor {
             router: Arc::clone(&self.router),
             local_brain: self.local_brain.clone(),
@@ -266,7 +356,7 @@ impl HybridExecutor {
         let report = runner.run(graph, plan, &node_executor).await?;
 
         if report.has_failures() {
-            warn!(plan_id = %plan.id, "DAG execution completed with failed or blocked steps");
+            warn!(plan_id = %plan.id, "APEX execution completed with failed or blocked steps");
         }
 
         let mut results = self.results.write().await;
@@ -431,6 +521,31 @@ mod tests {
     use super::*;
     use crate::conductor::types::{StepRole, StepType};
     use crate::config::LLMConfig;
+
+    #[test]
+    fn should_compress_auto_simple() {
+        assert!(!should_compress(Complexity::Simple, PlanMode::Auto));
+    }
+
+    #[test]
+    fn should_compress_auto_medium() {
+        assert!(!should_compress(Complexity::Medium, PlanMode::Auto));
+    }
+
+    #[test]
+    fn should_compress_auto_complex() {
+        assert!(should_compress(Complexity::Complex, PlanMode::Auto));
+    }
+
+    #[test]
+    fn should_compress_cloud_override() {
+        assert!(should_compress(Complexity::Simple, PlanMode::Cloud));
+    }
+
+    #[test]
+    fn should_compress_local_override() {
+        assert!(!should_compress(Complexity::Complex, PlanMode::Local));
+    }
 
     fn make_test_step(id: &str, deps: Vec<String>) -> PlanStep {
         PlanStep {

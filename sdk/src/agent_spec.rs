@@ -162,6 +162,60 @@ impl Default for OutcomeContract {
     }
 }
 
+/// A bounded named child agent that a parent agent can dispatch sub-tasks to.
+///
+/// Declared in `AgentSpec.callable_agents`.  Each (parent, callable) pair gets
+/// a persistent `AgentThread` so follow-up dispatches continue on the same
+/// thread and are inspectable from operator surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallableAgentSpec {
+    /// Stable id used to address this callable agent from a parent.
+    pub id: String,
+    /// Human-readable name shown in operator UIs.
+    pub name: String,
+    /// Role hint matching `SubagentRole` variants ("executor", "researcher", etc.).
+    #[serde(default = "default_callable_role")]
+    pub role: String,
+    /// Allowed tool names for the callable agent (empty = inherit parent set).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+    /// Working-memory budget in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_budget: Option<usize>,
+    /// Override the LLM model for this callable agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<String>,
+    /// Maximum reasoning steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u32>,
+    /// Hard timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// Expected output description used for self-evaluation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_contract: Option<String>,
+}
+
+impl Default for CallableAgentSpec {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            role: default_callable_role(),
+            allowed_tools: Vec::new(),
+            memory_budget: None,
+            model_override: None,
+            max_steps: None,
+            timeout_secs: None,
+            output_contract: None,
+        }
+    }
+}
+
+fn default_callable_role() -> String {
+    "executor".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSpec {
     #[serde(default = "default_agent_spec_schema_version")]
@@ -176,6 +230,9 @@ pub struct AgentSpec {
     pub capabilities: Vec<CapabilityRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<ChannelBinding>,
+    /// Reusable bounded child agents this agent can dispatch sub-tasks to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callable_agents: Vec<CallableAgentSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_policy: Option<String>,
     #[serde(default = "default_memory_policy")]
@@ -211,6 +268,7 @@ impl Default for AgentSpec {
             enabled: true,
             capabilities: Vec::new(),
             channels: Vec::new(),
+            callable_agents: Vec::new(),
             model_policy: None,
             memory_policy: default_memory_policy(),
             approval_mode: None,
@@ -369,6 +427,8 @@ pub struct TaskExecutionProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_preset_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_preset_name: Option<String>,
@@ -378,6 +438,8 @@ pub struct TaskExecutionProfile {
     pub instructions: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callable_agents: Vec<CallableAgentSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

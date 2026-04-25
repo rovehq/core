@@ -225,6 +225,67 @@ pub struct NodeLoadSnapshot {
     pub recent_avg_duration_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedAgentEnvironment {
+    pub id: String,
+    pub profile_name: String,
+    pub loadout_name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builtins: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drivers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brain_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_profile: Option<String>,
+    #[serde(default)]
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedAgentSessionStatus {
+    Ready,
+    Running,
+    Idle,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManagedAgentSession {
+    pub id: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    pub environment_id: String,
+    pub profile_name: String,
+    pub loadout_name: String,
+    pub primary_thread_id: String,
+    pub status: ManagedAgentSessionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_task_id: Option<String>,
+    pub created_at: i64,
+    pub last_active_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManagedAgentSessionEvent {
+    pub position: i64,
+    pub id: String,
+    pub session_id: String,
+    pub event_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    pub payload: Value,
+    pub created_at: i64,
+}
+
 /// Reachability record for a remote transport path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RemoteTransportRecord {

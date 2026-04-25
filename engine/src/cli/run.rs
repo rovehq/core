@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -6,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use brain::dispatch::DispatchBrain;
-use sdk::{RunIsolation, RunMode, TaskExecutionProfile};
+use sdk::{RunContextId, RunIsolation, RunMode, TaskExecutionProfile, TaskSource};
 use tempfile::TempDir;
 use tokio::time::sleep;
 use uuid::Uuid;
@@ -123,15 +124,56 @@ async fn handle_local_run(
     let task_id = Uuid::new_v4();
     let dispatch = preview_dispatch(&task, view);
     task_view::print_start(&task, &task_id.to_string(), format, view, dispatch.as_ref())?;
-    let result = execute_local_task_request_with_id(
+
+    // For live streaming: wire a channel from the LLM sink to stdout.
+    let stream_printer = if matches!(view, TaskView::Live) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        crate::llm::set_stream_sink(tx);
+        let handle = tokio::spawn(async move {
+            while let Some(chunk) = rx.recv().await {
+                print!("{chunk}");
+                let _ = std::io::stdout().flush();
+            }
+        });
+        Some(handle)
+    } else {
+        None
+    };
+
+    let result = execute_local_task_request_with_source_and_id(
         task.clone(),
         runtime_config,
         run_mode,
         run_isolation,
         execution_profile,
+        TaskSource::Cli,
         task_id,
     )
     .await;
+
+    if stream_printer.is_some() {
+        crate::llm::clear_stream_sink();
+        if let Some(handle) = stream_printer {
+            let _ = handle.await;
+        }
+        println!();
+    }
+
+    // Show agent events (thoughts, tool calls, observations) for --view live/logs.
+    // Local runs don't have a polling loop, so we print them after completion.
+    if view.wants_progress() {
+        let db_path = database_path(runtime_config);
+        if let Ok(db) = Database::new(&db_path).await {
+            let task_repo = db.tasks();
+            let events = task_repo
+                .get_agent_events(&task_id.to_string())
+                .await
+                .unwrap_or_default();
+            for event in &events {
+                task_view::print_stream_event(event, view);
+            }
+        }
+    }
 
     match result {
         Ok(task_result) => {
@@ -172,23 +214,45 @@ pub async fn execute_local_task_request(
     run_isolation: RunIsolation,
     execution_profile: Option<TaskExecutionProfile>,
 ) -> Result<TaskResult> {
-    execute_local_task_request_with_id(
+    execute_local_task_request_with_source_and_id(
         task,
         runtime_config,
         run_mode,
         run_isolation,
         execution_profile,
+        TaskSource::Cli,
         Uuid::new_v4(),
     )
     .await
 }
 
-async fn execute_local_task_request_with_id(
+pub async fn execute_local_task_request_with_source(
     task: String,
     runtime_config: &Config,
     run_mode: RunMode,
     run_isolation: RunIsolation,
     execution_profile: Option<TaskExecutionProfile>,
+    source: TaskSource,
+) -> Result<TaskResult> {
+    execute_local_task_request_with_source_and_id(
+        task,
+        runtime_config,
+        run_mode,
+        run_isolation,
+        execution_profile,
+        source,
+        Uuid::new_v4(),
+    )
+    .await
+}
+
+async fn execute_local_task_request_with_source_and_id(
+    task: String,
+    runtime_config: &Config,
+    run_mode: RunMode,
+    run_isolation: RunIsolation,
+    execution_profile: Option<TaskExecutionProfile>,
+    source: TaskSource,
     task_id: Uuid,
 ) -> Result<TaskResult> {
     let prepared_workspace = prepare_run_workspace(runtime_config, &task, run_mode, run_isolation)?;
@@ -200,16 +264,21 @@ async fn execute_local_task_request_with_id(
         .context("Failed to open database")?;
     let db_pool = database.pool().clone();
 
+    let tools = super::bootstrap::build_tools(&database, &runtime_config).await?;
+    let plugin_brain = tools.plugin_brain();
+
     let (providers, local_brain) = super::bootstrap::build_providers(&runtime_config).await?;
-    let router = Arc::new(LLMRouter::with_local_brain(
-        providers,
-        Arc::new(runtime_config.llm.clone()),
-        local_brain,
-    ));
+    let router = Arc::new(
+        LLMRouter::with_local_brain(
+            providers,
+            Arc::new(runtime_config.llm.clone()),
+            local_brain,
+        )
+        .with_plugin_brain(plugin_brain),
+    );
     let rate_limiter = Arc::new(RateLimiter::new(db_pool.clone()));
     let risk_assessor = RiskAssessor::new();
     let task_repo = Arc::new(TaskRepository::new(db_pool.clone()));
-    let tools = super::bootstrap::build_tools(&database, &runtime_config).await?;
     let policy_engine = load_policy_engine(&runtime_config).await;
     let workspace_locks = Arc::new(WorkspaceLocks::new());
     let memory_system = Arc::new(MemorySystem::new_with_config(
@@ -230,13 +299,19 @@ async fn execute_local_task_request_with_id(
     )?;
     agent.set_memory_system(memory_system);
 
-    let mut agent_task = Task::build_from_cli_with_context(
-        task,
-        Some(prepared_workspace.workspace.clone()),
+    let mut agent_task = Task {
+        id: task_id,
+        input: task,
+        source,
+        execution_profile: None,
+        risk_tier_override: None,
+        run_context_id: RunContextId(Uuid::new_v4().to_string()),
         run_mode,
         run_isolation,
-    )
-    .with_id(task_id);
+        session_id: None,
+        workspace: Some(prepared_workspace.workspace.clone()),
+        created_at: chrono::Utc::now().timestamp(),
+    };
     if let Some(profile) = execution_profile {
         agent_task = agent_task.with_execution_profile(profile);
     }

@@ -1,3 +1,4 @@
+pub mod auto_update;
 pub mod backup;
 pub mod browser;
 pub mod daemon;
@@ -18,6 +19,7 @@ pub mod services;
 pub mod specs;
 pub mod starter_catalog;
 pub mod telemetry;
+pub mod update_status;
 pub mod voice;
 pub mod web_search;
 pub mod worker_presets;

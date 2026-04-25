@@ -3,14 +3,21 @@ use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::config::channel::Channel;
 use crate::config::metadata::{user_agent, VERSION};
 use crate::security::crypto::CryptoModule;
 
 use super::output::OutputFormat;
 
+const REGISTRY_BASE: &str = "https://registry.roveai.co";
+const REGISTRY_BASE_ENV: &str = "ROVE_REGISTRY_BASE";
+
 #[derive(Debug, Deserialize)]
 struct RegistryManifest {
+    #[allow(dead_code)]
     version: String,
+    #[serde(default)]
+    channel: Option<String>,
     engines: std::collections::HashMap<String, EngineRelease>,
 }
 
@@ -24,16 +31,15 @@ struct EngineRelease {
 }
 
 pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()> {
+    let channel = Channel::current();
     let current = semver::Version::parse(VERSION).context("Failed to parse current version")?;
 
-    let client = reqwest::Client::builder()
-        .user_agent(user_agent())
-        .build()?;
-    let manifest_url =
-        "https://raw.githubusercontent.com/orvislab/rove-registry/main/manifest.json";
+    let client = reqwest::Client::builder().user_agent(user_agent()).build()?;
+    let manifest_url = channel_manifest_url(channel);
+    let signature_url = channel_manifest_signature_url(channel);
 
     let manifest_text = client
-        .get(manifest_url)
+        .get(&manifest_url)
         .send()
         .await?
         .error_for_status()
@@ -41,14 +47,36 @@ pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()>
         .text()
         .await?;
 
+    let signature_hex = client
+        .get(&signature_url)
+        .send()
+        .await?
+        .error_for_status()
+        .context("Failed to fetch registry manifest signature")?
+        .text()
+        .await?;
+
+    verify_manifest_signature(manifest_text.as_bytes(), signature_hex.trim())
+        .context("Registry manifest signature verification failed")?;
+
     let manifest: RegistryManifest =
         serde_json::from_str(&manifest_text).context("Failed to parse registry manifest JSON")?;
+
+    if let Some(claimed) = manifest.channel.as_deref() {
+        if !claimed.eq_ignore_ascii_case(channel.as_str()) {
+            anyhow::bail!(
+                "Manifest channel mismatch: expected '{}', got '{}'",
+                channel.as_str(),
+                claimed
+            );
+        }
+    }
 
     let latest_version = manifest
         .engines
         .get("latest")
         .map(|release| release.version.as_str())
-        .unwrap_or(manifest.version.as_str());
+        .ok_or_else(|| anyhow::anyhow!("Manifest missing 'latest' engine entry"))?;
     let latest =
         semver::Version::parse(latest_version).context("Failed to parse latest version")?;
 
@@ -56,7 +84,7 @@ pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()>
         return print_up_to_date(&current, &latest, format);
     }
 
-    print_available(&current, &latest, manifest_url, format)?;
+    print_available(&current, &latest, &manifest_url, format)?;
     if check_only {
         return Ok(());
     }
@@ -82,11 +110,17 @@ pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()>
     replace_binary(target, &payload)?;
 
     match format {
-        OutputFormat::Text => println!("Successfully updated Rove: v{} -> v{}", current, latest),
+        OutputFormat::Text => println!(
+            "Successfully updated Rove ({} channel): v{} -> v{}",
+            channel.as_str(),
+            current,
+            latest
+        ),
         OutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "status": "updated",
+                "channel": channel.as_str(),
                 "previous_version": current.to_string(),
                 "new_version": latest.to_string(),
             }))?
@@ -94,6 +128,37 @@ pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()>
     }
 
     Ok(())
+}
+
+pub fn channel_manifest_url(channel: Channel) -> String {
+    format!(
+        "{}/{}/engine/manifest.json",
+        registry_base(),
+        channel.as_str()
+    )
+}
+
+pub fn channel_manifest_signature_url(channel: Channel) -> String {
+    format!(
+        "{}/{}/engine/manifest.sig",
+        registry_base(),
+        channel.as_str()
+    )
+}
+
+fn registry_base() -> String {
+    std::env::var(REGISTRY_BASE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| REGISTRY_BASE.to_string())
+}
+
+pub fn verify_manifest_signature(manifest_bytes: &[u8], signature_hex: &str) -> Result<()> {
+    let crypto = CryptoModule::new().context("Failed to load embedded team public key")?;
+    crypto
+        .verify_manifest(manifest_bytes, signature_hex)
+        .map_err(|error| anyhow::anyhow!("{}", error))
 }
 
 fn print_up_to_date(
@@ -252,4 +317,43 @@ fn current_manifest_target() -> &'static str {
 
     #[allow(unreachable_code)]
     "unsupported"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        channel_manifest_signature_url, channel_manifest_url, verify_manifest_signature,
+    };
+    use crate::config::channel::Channel;
+
+    #[test]
+    fn manifest_url_uses_channel_segment() {
+        assert!(channel_manifest_url(Channel::Stable).contains("/stable/"));
+        assert!(channel_manifest_url(Channel::Dev).contains("/dev/"));
+        assert!(channel_manifest_signature_url(Channel::Dev).ends_with("manifest.sig"));
+    }
+
+    #[test]
+    fn manifest_url_honors_registry_base_override() {
+        let previous = std::env::var_os("ROVE_REGISTRY_BASE");
+        std::env::set_var("ROVE_REGISTRY_BASE", "https://mirror.example.com");
+        let url = channel_manifest_url(Channel::Stable);
+        assert!(url.starts_with("https://mirror.example.com/stable/engine/manifest.json"));
+        match previous {
+            Some(value) => std::env::set_var("ROVE_REGISTRY_BASE", value),
+            None => std::env::remove_var("ROVE_REGISTRY_BASE"),
+        }
+    }
+
+    #[test]
+    fn rejects_obviously_bad_signature() {
+        let err =
+            verify_manifest_signature(b"{}", "ed25519:00").expect_err("short sig must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Signature") || msg.contains("signature"),
+            "unexpected error: {}",
+            msg
+        );
+    }
 }

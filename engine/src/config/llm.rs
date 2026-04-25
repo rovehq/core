@@ -18,6 +18,15 @@ pub struct CustomProvider {
     /// (e.g. local proxies that don't require authentication).
     #[serde(default)]
     pub secret_key: String,
+    /// Override localhost detection — treat this provider as a cloud provider
+    /// for routing purposes (e.g. local llama-server used as the planning brain).
+    #[serde(default)]
+    pub is_cloud: bool,
+    /// Merge system messages into the first user message instead of sending them
+    /// as a separate system role. Required for models whose chat template does not
+    /// support a system role (e.g. Gemma via llama-server).
+    #[serde(default)]
+    pub no_system_prompt: bool,
 }
 
 /// LLM provider configuration.

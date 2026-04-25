@@ -296,15 +296,37 @@ pub async fn extract_and_store(
 
     // Store relationships
     for rel in &extraction.relationships {
-        // Find node IDs by label (simplified - in production, use proper lookup)
-        // For now, we'll skip relationships if nodes don't exist
-        // TODO: Implement proper node lookup by label
-        debug!(
-            from = %rel.from_label,
-            to = %rel.to_label,
-            relation = %rel.relation.as_str(),
-            "relationship extracted (storage TODO)"
-        );
+        let from_node = graph.find_node_by_label(&rel.from_label).await?;
+        let to_node = graph.find_node_by_label(&rel.to_label).await?;
+        match (from_node, to_node) {
+            (Some(from), Some(to)) => {
+                let edge = crate::knowledge_graph::GraphEdge {
+                    id: format!("{}:{}:{}", from.id, rel.relation.as_str(), to.id),
+                    from_id: from.id,
+                    to_id: to.id,
+                    relation: rel.relation.clone(),
+                    weight: 1.0,
+                    properties: None,
+                    source_kind: GraphSourceKind::LlmInferred,
+                    source_scope: "per_node".to_string(),
+                    source_ref: Some(task_id.to_string()),
+                    confidence: 0.7,
+                    created_at: now,
+                    updated_at: now,
+                };
+                graph
+                    .add_edge(&edge)
+                    .await
+                    .context("Failed to store relationship edge")?;
+            }
+            _ => {
+                debug!(
+                    from = %rel.from_label,
+                    to = %rel.to_label,
+                    "skipping relationship — one or both nodes not yet stored"
+                );
+            }
+        }
     }
 
     debug!(

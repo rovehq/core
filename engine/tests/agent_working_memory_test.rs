@@ -1,5 +1,5 @@
-use super::WorkingMemory;
-use crate::llm::{Message, MessageRole};
+use rove_engine::agent::WorkingMemory;
+use rove_engine::llm::{Message, MessageRole};
 
 #[test]
 fn test_new_working_memory() {

@@ -255,11 +255,13 @@ fn execution_profile_for_step(
         return Ok(Some(TaskExecutionProfile {
             agent_id: Some(spec.id.clone()),
             agent_name: Some(spec.name.clone()),
+            thread_id: None,
             worker_preset_id: None,
             worker_preset_name: None,
             purpose: Some(spec.purpose.clone()),
             instructions: spec.instructions.clone(),
             allowed_tools: allowed_tools(&spec),
+            callable_agents: spec.callable_agents.clone(),
             output_contract: spec.output_contract.clone(),
             outcome_contract: step
                 .outcome_contract
@@ -288,6 +290,15 @@ fn render_step_prompt(
 
     for (name, value) in variables {
         rendered = rendered.replace(&format!("{{{{{name}}}}}"), value);
+    }
+
+    // If the template didn't reference {{last_output}} explicitly but a prior
+    // step produced output, prepend it so the agent has context to work with.
+    if !last_output.is_empty()
+        && !template.contains("{{last_output}}")
+        && last_output != input
+    {
+        rendered = format!("Previous step output:\n{last_output}\n\n{rendered}");
     }
 
     rendered

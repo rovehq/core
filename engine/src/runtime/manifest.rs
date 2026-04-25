@@ -64,10 +64,54 @@ pub struct PathPattern(pub String);
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DomainPattern(pub String);
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeclaredBrainBackend {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default = "default_brain_complete_fn")]
+    pub completion_fn: String,
+}
+
+impl DeclaredBrainBackend {
+    pub fn display_name(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(self.id.as_str())
+    }
+}
+
+fn default_brain_complete_fn() -> String {
+    "brain_complete".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DeclaredBrowserBackend {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Maps standard method names to their plugin-side names.
+    #[serde(default)]
+    pub tool_names: std::collections::BTreeMap<String, String>,
+}
+
+impl DeclaredBrowserBackend {
+    pub fn display_name(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(self.id.as_str())
+    }
+
+    /// Returns the standard tool names in deterministic order.
+    pub fn standard_tool_names(&self) -> Vec<&str> {
+        self.tool_names.keys().map(String::as_str).collect()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ToolCatalog {
     #[serde(default)]
     pub tools: Vec<DeclaredTool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brain_backend: Option<DeclaredBrainBackend>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_backend: Option<DeclaredBrowserBackend>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

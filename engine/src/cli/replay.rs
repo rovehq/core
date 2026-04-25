@@ -46,19 +46,21 @@ pub async fn handle_replay(task_id: String, config: &Config, format: OutputForma
             }
 
             println!();
-            println!("Steps ({} total):", steps.len());
-            println!();
 
-            for step in steps {
-                println!("Step {}: {:?}", step.step_order, step.step_type);
-                println!("  {}", step.content);
+            if !steps.is_empty() {
+                println!("Steps ({} total):", steps.len());
                 println!();
+                for step in steps {
+                    println!("Step {}: {:?}", step.step_order, step.step_type);
+                    println!("  {}", step.content);
+                    println!();
+                }
             }
 
             println!("Events ({} total):", events.len());
             println!();
 
-            for event in events {
+            for event in &events {
                 println!("Event {}: {}", event.step_num, event.event_type);
                 println!("  {}", event.payload);
                 println!();

@@ -1,3 +1,5 @@
+mod helpers;
+
 use std::sync::Arc;
 use std::{collections::VecDeque, sync::Mutex};
 
@@ -5,20 +7,19 @@ use async_trait::async_trait;
 use std::time::Instant;
 use tempfile::TempDir;
 
-use super::orchestration::{decide_execution_strategy, ExecutionStrategy, OrchestrationHistory};
-use super::prompt::TaskContext;
-use super::{AgentCore, TaskResult};
-use crate::builtin_tools::{FilesystemTool, TerminalTool, ToolRegistry};
-use crate::config::LLMConfig;
-use crate::db::tasks::TaskRepository;
-use crate::db::tasks::TaskStatus;
-use crate::db::Database;
-use crate::gateway::{Task, WorkspaceLocks};
-use crate::llm::router::LLMRouter;
-use crate::llm::{FinalAnswer, LLMProvider, LLMResponse, Message};
-use crate::rate_limiter::RateLimiter;
-use crate::risk_assessor::RiskAssessor;
-use crate::risk_assessor::RiskTier;
+use rove_engine::agent::core::{decide_execution_strategy, ExecutionStrategy, OrchestrationHistory, TaskContext};
+use rove_engine::agent::{AgentCore, TaskResult};
+use rove_engine::builtin_tools::{FilesystemTool, TerminalTool, ToolRegistry};
+use rove_engine::config::LLMConfig;
+use rove_engine::db::tasks::TaskRepository;
+use rove_engine::db::tasks::TaskStatus;
+use rove_engine::db::Database;
+use rove_engine::gateway::{Task, WorkspaceLocks};
+use rove_engine::llm::router::LLMRouter;
+use rove_engine::llm::{FinalAnswer, LLMProvider, LLMResponse, Message};
+use rove_engine::rate_limiter::RateLimiter;
+use rove_engine::risk_assessor::RiskAssessor;
+use rove_engine::risk_assessor::RiskTier;
 use sdk::{
     Complexity, OutcomeContract, RemoteExecutionPlan, Route, TaskDomain, TaskExecutionProfile,
 };
@@ -53,7 +54,16 @@ async fn setup_test_agent_with_providers(
     let rate_limiter = Arc::new(RateLimiter::new(pool.clone()));
     let task_repo = Arc::new(TaskRepository::new(pool));
 
-    let mut tools = ToolRegistry::empty();
+    let test_config = Arc::new(rove_engine::config::Config {
+        security: rove_engine::config::SecurityConfig {
+            confirm_tier1: false,
+            require_explicit_tier2: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let mut tools = ToolRegistry::empty_with_config(Arc::clone(&test_config));
     if include_core_tools {
         tools
             .register_builtin_filesystem(
@@ -74,7 +84,7 @@ async fn setup_test_agent_with_providers(
         task_repo,
         Arc::new(tools),
         None,
-        Arc::new(crate::config::Config::default()),
+        test_config,
         Arc::new(WorkspaceLocks::new()),
     )
     .expect("Failed to create AgentCore in test");
@@ -102,8 +112,8 @@ async fn setup_test_agent_for_hook_workspace(
         custom_providers: vec![],
     });
 
-    let config = Arc::new(crate::config::Config {
-        core: crate::config::CoreConfig {
+    let config = Arc::new(rove_engine::config::Config {
+        core: rove_engine::config::CoreConfig {
             workspace: workspace.to_path_buf(),
             ..Default::default()
         },
@@ -132,40 +142,7 @@ async fn setup_test_agent_for_hook_workspace(
     agent
 }
 
-struct MockSequenceProvider {
-    name: String,
-    responses: Mutex<VecDeque<LLMResponse>>,
-}
-
-impl MockSequenceProvider {
-    fn new(name: &str, responses: Vec<LLMResponse>) -> Self {
-        Self {
-            name: name.to_string(),
-            responses: Mutex::new(VecDeque::from(responses)),
-        }
-    }
-}
-
-#[async_trait]
-impl LLMProvider for MockSequenceProvider {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn is_local(&self) -> bool {
-        false
-    }
-
-    fn estimated_cost(&self, _tokens: usize) -> f64 {
-        1.0
-    }
-
-    async fn generate(&self, _messages: &[Message]) -> crate::llm::Result<LLMResponse> {
-        self.responses.lock().unwrap().pop_front().ok_or_else(|| {
-            crate::llm::LLMError::ProviderUnavailable("No mock response".to_string())
-        })
-    }
-}
+use helpers::mock_llm::MockSequenceProvider;
 
 #[test]
 fn test_task_creation() {
@@ -264,11 +241,13 @@ async fn test_planned_task_enforces_agent_allowed_tools() {
     let task = Task::build_from_cli("read note.txt").with_execution_profile(TaskExecutionProfile {
         agent_id: Some("restricted-reader".to_string()),
         agent_name: Some("Restricted Reader".to_string()),
+        thread_id: None,
         worker_preset_id: None,
         worker_preset_name: None,
         purpose: Some("read fixture".to_string()),
         instructions: "Only use the allowed tools.".to_string(),
         allowed_tools: vec!["write_file".to_string()],
+        callable_agents: Vec::new(),
         output_contract: None,
         outcome_contract: None,
         max_iterations: None,
@@ -328,14 +307,14 @@ fn multi_stage_medium_task_fans_out() {
         &["cargo test".to_string()],
         Some(&OrchestrationHistory {
             sampled_tasks: 3,
-            dag_tasks: 2,
+            apex_tasks: 2,
             linear_tasks: 1,
             failed_tasks: 1,
-            average_dag_steps: 3,
+            average_apex_steps: 3,
         }),
     );
 
-    assert_eq!(decision.strategy, ExecutionStrategy::Dag);
+    assert_eq!(decision.strategy, ExecutionStrategy::Apex);
     assert!(decision.estimated_steps >= 3);
     assert!(decision
         .reasons
@@ -365,7 +344,7 @@ async fn test_complex_task_uses_dag_execution_path() {
         .expect("complex task should succeed");
 
     assert_eq!(result.answer, "verified summary");
-    assert_eq!(result.provider_used, "dag[cloud]");
+    assert_eq!(result.provider_used, "apex[cloud]");
     assert_eq!(result.iterations, 2);
 
     let db_path = temp_dir.path().join("test.db");
@@ -408,7 +387,7 @@ async fn test_medium_code_task_uses_dag_execution_path() {
         .expect("medium task should succeed");
 
     assert_eq!(result.answer, "tests passed");
-    assert_eq!(result.provider_used, "dag[cloud]");
+    assert_eq!(result.provider_used, "apex[cloud]");
     assert_eq!(result.iterations, 2);
 }
 
@@ -434,11 +413,13 @@ async fn final_answer_retries_when_outcome_evaluator_requests_revision() {
         TaskExecutionProfile {
             agent_id: Some("agent.release".to_string()),
             agent_name: Some("Release Agent".to_string()),
+            thread_id: None,
             worker_preset_id: None,
             worker_preset_name: None,
             purpose: Some("Summarize release state".to_string()),
             instructions: "Answer directly.".to_string(),
             allowed_tools: Vec::new(),
+            callable_agents: Vec::new(),
             output_contract: None,
             outcome_contract: Some(OutcomeContract {
                 success_criteria: "State the deployment status and whether verification passed."
@@ -486,11 +467,13 @@ async fn evaluator_failure_persists_structured_event() {
         TaskExecutionProfile {
             agent_id: Some("agent.release".to_string()),
             agent_name: Some("Release Agent".to_string()),
+            thread_id: None,
             worker_preset_id: None,
             worker_preset_name: None,
             purpose: Some("Summarize release state".to_string()),
             instructions: "Answer directly.".to_string(),
             allowed_tools: Vec::new(),
+            callable_agents: Vec::new(),
             output_contract: None,
             outcome_contract: Some(OutcomeContract {
                 success_criteria: "State the deployment status and whether verification passed."
@@ -605,13 +588,13 @@ command = "./handler.sh"
 }
 
 #[tokio::test]
-async fn test_dag_write_steps_run_policy_after_write_commands() {
+async fn test_apex_write_steps_run_policy_after_write_commands() {
     let plan = r#"[
         {"id":"step_1","description":"Update the note file","role":"Executor","parallel_safe":false,"dependencies":[],"expected_outcome":"File updated"}
     ]"#;
     let responses = vec![
         LLMResponse::FinalAnswer(FinalAnswer::new(plan)),
-        LLMResponse::ToolCall(crate::llm::ToolCall::new(
+        LLMResponse::ToolCall(rove_engine::llm::ToolCall::new(
             "tool-1".to_string(),
             "write_file",
             serde_json::json!({"path":"notes.txt","content":"hello"}).to_string(),
@@ -627,7 +610,7 @@ async fn test_dag_write_steps_run_policy_after_write_commands() {
         .initialize_task_context(&task, RiskTier::Tier0)
         .await
         .expect("task context");
-    agent.policy_after_write_commands = vec!["rg --files".to_string()];
+    agent.policy_after_write_commands = vec!["git --version".to_string()];
     agent
         .task_repo
         .create_task(&task.id, &task.input)
@@ -641,9 +624,9 @@ async fn test_dag_write_steps_run_policy_after_write_commands() {
 
     let orchestration = agent.select_execution_strategy(&task, &context).await;
     let result = agent
-        .execute_dag_task(&task.id, &task, &context, &orchestration, Instant::now())
+        .execute_apex_task(&task.id, &task, &context, &orchestration, Instant::now())
         .await
-        .expect("DAG write task should succeed");
+        .expect("APEX write task should succeed");
     assert_eq!(result.answer, "file updated and checked");
 
     let db_path = temp_dir.path().join("test.db");

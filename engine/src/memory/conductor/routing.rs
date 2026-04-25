@@ -1,20 +1,20 @@
 use sdk::{Complexity, Route, TaskDomain};
 
-use super::graph::DagGraph;
+use super::graph::ApexGraph;
 use super::types::{ConductorPlan, PlanStep, RoutePolicy, StepRole};
 
-pub struct DagRoutingPolicy {
+pub struct ApexRoutingPolicy {
     local_brain_available: bool,
 }
 
-impl DagRoutingPolicy {
+impl ApexRoutingPolicy {
     pub fn new(local_brain_available: bool) -> Self {
         Self {
             local_brain_available,
         }
     }
 
-    pub fn assign_routes(&self, graph: &mut DagGraph, plan: &ConductorPlan) {
+    pub fn assign_routes(&self, graph: &mut ApexGraph, plan: &ConductorPlan) {
         let leaf_steps = leaf_step_ids(plan);
         for step in &plan.steps {
             let route_policy =
@@ -86,6 +86,10 @@ impl DagRoutingPolicy {
             StepRole::Executor => match preferred_route {
                 Route::Local if self.local_brain_available => Route::Local,
                 Route::Local => Route::Ollama,
+                // For complex tasks, prefer the reasoning-tuned LocalBrain over a small Ollama model.
+                Route::Ollama if self.local_brain_available && complexity == Complexity::Complex => {
+                    Route::Local
+                }
                 Route::Ollama => Route::Ollama,
                 Route::Cloud => {
                     if matches!(complexity, Complexity::Complex)
@@ -125,7 +129,7 @@ mod tests {
 
     use crate::conductor::types::{PlanStep, RoutePolicy, StepRole, StepType};
 
-    use super::DagRoutingPolicy;
+    use super::ApexRoutingPolicy;
 
     fn make_step(role: StepRole) -> PlanStep {
         PlanStep {
@@ -147,7 +151,7 @@ mod tests {
 
     #[test]
     fn researcher_prefers_local_when_available() {
-        let policy = DagRoutingPolicy::new(true);
+        let policy = ApexRoutingPolicy::new(true);
         let route = policy.route_for_step(
             &make_step(StepRole::Researcher),
             TaskDomain::Code,
@@ -160,7 +164,7 @@ mod tests {
 
     #[test]
     fn verifier_falls_back_to_ollama_without_local_brain() {
-        let policy = DagRoutingPolicy::new(false);
+        let policy = ApexRoutingPolicy::new(false);
         let route = policy.route_for_step(
             &make_step(StepRole::Verifier),
             TaskDomain::General,
@@ -173,7 +177,7 @@ mod tests {
 
     #[test]
     fn complex_code_execution_keeps_cloud_route() {
-        let policy = DagRoutingPolicy::new(false);
+        let policy = ApexRoutingPolicy::new(false);
         let route = policy.route_for_step(
             &make_step(StepRole::Executor),
             TaskDomain::Code,
@@ -186,7 +190,7 @@ mod tests {
 
     #[test]
     fn medium_general_execution_stays_local_first() {
-        let policy = DagRoutingPolicy::new(false);
+        let policy = ApexRoutingPolicy::new(false);
         let route = policy.route_for_step(
             &make_step(StepRole::Executor),
             TaskDomain::General,
@@ -198,8 +202,34 @@ mod tests {
     }
 
     #[test]
+    fn complex_executor_prefers_local_brain_over_ollama() {
+        let policy = ApexRoutingPolicy::new(true);
+        let route = policy.route_for_step(
+            &make_step(StepRole::Executor),
+            TaskDomain::General,
+            Complexity::Complex,
+            Route::Ollama,
+            &RoutePolicy::Inherit,
+        );
+        assert_eq!(route, Route::Local);
+    }
+
+    #[test]
+    fn simple_executor_keeps_ollama_even_with_local_brain() {
+        let policy = ApexRoutingPolicy::new(true);
+        let route = policy.route_for_step(
+            &make_step(StepRole::Executor),
+            TaskDomain::General,
+            Complexity::Simple,
+            Route::Ollama,
+            &RoutePolicy::Inherit,
+        );
+        assert_eq!(route, Route::Ollama);
+    }
+
+    #[test]
     fn sensitive_leaf_nodes_become_local_only() {
-        let policy = DagRoutingPolicy::new(false);
+        let policy = ApexRoutingPolicy::new(false);
         assert_eq!(
             policy.route_policy_for_step(&make_step(StepRole::Verifier), true, true),
             RoutePolicy::LocalOnly

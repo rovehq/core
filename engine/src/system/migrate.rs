@@ -918,6 +918,7 @@ mod tests {
 
     #[test]
     fn import_creates_disabled_specs_with_provenance() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         let root = temp_dir.path().join("source");
         fs::create_dir_all(root.join("agents")).unwrap();

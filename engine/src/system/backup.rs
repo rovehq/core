@@ -320,6 +320,7 @@ mod tests {
 
     #[test]
     fn export_and_restore_round_trip_selected_files() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         let config_root = temp_dir.path().join("config-root");
         let data_dir = temp_dir.path().join("data");

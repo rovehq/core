@@ -625,6 +625,73 @@ export interface StarterCatalogEntry {
   notes: string[];
 }
 
+export interface KnowledgeDocument {
+  id: string;
+  source_type: string;
+  source_path: string;
+  title: string | null;
+  content: string;
+  content_hash: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  word_count: number | null;
+  domain: string | null;
+  tags: string | null;
+  indexed_at: number;
+  last_accessed: number | null;
+  access_count: number;
+}
+
+export interface KnowledgeIngestResult {
+  id: string;
+  title: string | null;
+  source_type: string;
+  source_path: string;
+  word_count: number;
+}
+
+export interface KnowledgeIngestSummary {
+  total: number;
+  ingested: KnowledgeIngestResult[];
+  skipped: string[];
+  errors: string[];
+}
+
+export interface KnowledgeSearchHit {
+  doc: KnowledgeDocument;
+  snippet: string;
+}
+
+export interface KnowledgeJob {
+  id: string;
+  kind: string;
+  status: 'running' | 'done' | 'error';
+  source: string;
+  total: number;
+  processed: number;
+  errors: string[];
+  started_at: number;
+  finished_at: number | null;
+}
+
+export interface SourceBreakdown {
+  source_type: string;
+  count: number;
+  words: number;
+}
+
+export interface DomainBreakdown {
+  domain: string | null;
+  count: number;
+}
+
+export interface KnowledgeStats {
+  total_documents: number;
+  total_words: number;
+  by_source: SourceBreakdown[];
+  by_domain: DomainBreakdown[];
+}
+
 export interface ChannelStatus {
   name: string;
   enabled: boolean;
@@ -2450,6 +2517,132 @@ export class RoveDaemonClient {
         method: 'POST',
       },
     );
+  }
+
+  async listKnowledge(params?: { limit?: number; offset?: number }): Promise<KnowledgeDocument[]> {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.offset != null) qs.set('offset', String(params.offset));
+    const q = qs.toString();
+    return this.request<KnowledgeDocument[]>(`/api/v1/knowledge${q ? `?${q}` : ''}`);
+  }
+
+  async getKnowledge(id: string): Promise<KnowledgeDocument> {
+    return this.request<KnowledgeDocument>(`/api/v1/knowledge/${encodeURIComponent(id)}`);
+  }
+
+  async searchKnowledge(query: string, limit?: number): Promise<KnowledgeSearchHit[]> {
+    const qs = new URLSearchParams({ q: query });
+    if (limit != null) qs.set('limit', String(limit));
+    return this.request<KnowledgeSearchHit[]>(`/api/v1/knowledge/search?${qs}`);
+  }
+
+  async listKnowledgeJobs(): Promise<KnowledgeJob[]> {
+    return this.request<KnowledgeJob[]>('/api/v1/knowledge/jobs');
+  }
+
+  async getKnowledgeJob(id: string): Promise<KnowledgeJob> {
+    return this.request<KnowledgeJob>(`/api/v1/knowledge/jobs/${encodeURIComponent(id)}`);
+  }
+
+  async knowledgeStats(): Promise<KnowledgeStats> {
+    return this.request<KnowledgeStats>('/api/v1/knowledge/stats');
+  }
+
+  async removeKnowledge(id: string): Promise<void> {
+    return this.request<void>(`/api/v1/knowledge/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async ingestKnowledgeFile(body: {
+    path: string;
+    domain?: string;
+    tags?: string[];
+    force?: boolean;
+  }): Promise<KnowledgeIngestResult> {
+    return this.request<KnowledgeIngestResult>('/api/v1/knowledge/ingest/file', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async ingestKnowledgeFolder(body: {
+    path: string;
+    domain?: string;
+    tags?: string[];
+    force?: boolean;
+    dry_run?: boolean;
+  }): Promise<KnowledgeIngestSummary> {
+    return this.request<KnowledgeIngestSummary>('/api/v1/knowledge/ingest/folder', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async ingestKnowledgeUrl(body: {
+    url: string;
+    domain?: string;
+    tags?: string[];
+    force?: boolean;
+  }): Promise<KnowledgeIngestResult> {
+    return this.request<KnowledgeIngestResult>('/api/v1/knowledge/ingest/url', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async ingestKnowledgeSitemap(body: {
+    url: string;
+    domain?: string;
+    tags?: string[];
+    force?: boolean;
+    dry_run?: boolean;
+  }): Promise<KnowledgeIngestSummary> {
+    return this.request<KnowledgeIngestSummary>('/api/v1/knowledge/ingest/sitemap', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async uploadKnowledgeFiles(files: File[]): Promise<KnowledgeIngestSummary> {
+    const form = new FormData();
+    for (const file of files) {
+      form.append('file', file, file.name);
+    }
+    // Do not set Content-Type — browser must set it with the multipart boundary.
+    return this.requestRaw<KnowledgeIngestSummary>('/api/v1/knowledge/ingest/upload', {
+      method: 'POST',
+      body: form,
+    });
+  }
+
+  private async requestRaw<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const errors: string[] = [];
+    for (const baseUrl of this.orderedBaseUrls()) {
+      try {
+        const headers = new Headers(init.headers);
+        if (this.token) headers.set('Authorization', `Bearer ${this.token}`);
+        const response = await fetch(`${baseUrl}${path}`, {
+          ...init,
+          headers,
+          cache: 'no-store',
+        });
+        if (!response.ok) {
+          let message = response.statusText;
+          try {
+            const body = (await response.json()) as { error?: string };
+            message = body.error ?? message;
+          } catch { /* ignore */ }
+          throw new DaemonError(message, response.status);
+        }
+        this.preferredBaseUrl = baseUrl;
+        if (response.status === 204) return undefined as T;
+        return (await response.json()) as T;
+      } catch (error) {
+        if (error instanceof DaemonError) throw error;
+        errors.push(`${baseUrl}: ${String(error)}`);
+      }
+    }
+    throw new DaemonError(`Unable to reach daemon. ${errors.join('; ')}`);
   }
 
   connectEvents(onEvent: (event: DaemonEvent) => void): WebSocket {

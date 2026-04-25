@@ -38,7 +38,7 @@ pub async fn query(
 
     // Query insights layer
     if layers.insights {
-        let domain_str = format!("{:?}", domain);
+        let domain_str = format!("{:?}", domain).to_ascii_lowercase();
         match sqlx::query(
             r#"SELECT i.id, i.insight, i.created_at, bm25(insights_fts) as bm25_rank
                FROM insights_fts
@@ -82,7 +82,7 @@ pub async fn query(
 
     // Query episodic layer
     if layers.episodic {
-        let domain_str = format!("{:?}", domain);
+        let domain_str = format!("{:?}", domain).to_ascii_lowercase();
 
         match sqlx::query(
             r#"SELECT e.id, e.summary, e.importance, e.created_at, 
@@ -136,7 +136,7 @@ pub async fn query(
 
     // Query task_trace layer (agent_events)
     if layers.task_trace {
-        let domain_str = format!("{:?}", domain);
+        let domain_str = format!("{:?}", domain).to_ascii_lowercase();
         match sqlx::query(
             r#"SELECT ae.id, ae.event_type, ae.payload, ae.created_at,
                       bm25(agent_events_fts) as bm25_rank
@@ -280,7 +280,7 @@ pub async fn query_hybrid(
 
     // Query episodic layer with embeddings
     if layers.episodic {
-        let domain_str = format!("{:?}", domain);
+        let domain_str = format!("{:?}", domain).to_ascii_lowercase();
 
         // Fetch memories with BM25 scores and embeddings
         match sqlx::query(
@@ -364,7 +364,7 @@ pub async fn query_hybrid(
 
     // Query insights layer (BM25 only, insights don't have embeddings)
     if layers.insights {
-        let domain_str = format!("{:?}", domain);
+        let domain_str = format!("{:?}", domain).to_ascii_lowercase();
         match sqlx::query(
             r#"SELECT i.id, i.insight, i.created_at, bm25(insights_fts) as bm25_rank
                FROM insights_fts

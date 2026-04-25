@@ -643,6 +643,11 @@ impl HookHandle {
         } else {
             match serde_json::from_str::<HookResponse>(&stdout) {
                 Ok(parsed) => Some(parsed),
+                Err(_) if !output.status.success() => {
+                    // Non-zero exit with non-JSON stdout: treat stdout as plain reason text.
+                    // Don't count as a hook failure — intentional block.
+                    None
+                }
                 Err(error) => {
                     self.register_failure().await;
                     return Err(anyhow::anyhow!("invalid hook stdout JSON: {}", error));
@@ -874,6 +879,7 @@ pub fn task_source_label(source: &TaskSource) -> String {
         TaskSource::Channel(kind) => format!("channel:{kind}"),
         TaskSource::WebUI => "webui".to_string(),
         TaskSource::Remote(node) => format!("remote:{node}"),
+        TaskSource::Subagent(parent_id) => format!("subagent:{parent_id}"),
     }
 }
 

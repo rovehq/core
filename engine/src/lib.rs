@@ -55,3 +55,6 @@ pub use system::workflow_runtime;
 pub use system::workflow_triggers;
 pub use system::zerotier;
 pub use tools as builtin_tools;
+
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -107,11 +107,13 @@ pub fn execution_profile_for_preset(id: &str) -> Result<TaskExecutionProfile> {
     Ok(TaskExecutionProfile {
         agent_id: None,
         agent_name: None,
+        thread_id: None,
         worker_preset_id: Some(preset.id.clone()),
         worker_preset_name: Some(preset.name.clone()),
         purpose: Some(preset.description.clone()),
         instructions: preset.instructions.clone(),
         allowed_tools: preset.allowed_tools.clone(),
+        callable_agents: Vec::new(),
         output_contract: preset.output_contract.clone(),
         outcome_contract: None,
         max_iterations: preset.max_iterations,

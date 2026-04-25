@@ -1,15 +1,23 @@
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tracing::warn;
 
+use crate::api::gateway::{Gateway, GatewayConfig};
 use crate::cli::database_path::database_path;
 use crate::config::Config;
 use crate::runtime::registry::ToolSchema;
 use crate::runtime::ToolRegistry;
-use crate::storage::Database;
+use crate::storage::{Database, PendingTaskStatus};
 use sdk::TaskSource;
+
+const EXECUTE_AGENT_TOOL: &str = "rove.execute_agent";
+const DEFAULT_WAIT_SECS: u64 = 300;
+const MAX_WAIT_SECS: u64 = 3600;
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -55,6 +63,12 @@ pub async fn serve_stdio(config: &Config) -> Result<()> {
     let runtime = crate::runtime::RuntimeManager::build(&database, config)
         .await
         .context("failed to build runtime for MCP server")?;
+    let db = Arc::new(database);
+    let gateway = Arc::new(
+        Gateway::new(Arc::clone(&db), GatewayConfig::from_config(config))
+            .context("failed to start gateway for MCP server")?,
+    );
+    Arc::clone(&gateway).start();
 
     let stdin = BufReader::new(io::stdin());
     let mut lines = stdin.lines();
@@ -101,7 +115,7 @@ pub async fn serve_stdio(config: &Config) -> Result<()> {
             continue;
         };
 
-        let response = match handle_request(&runtime.registry, request).await {
+        let response = match handle_request(&runtime.registry, &gateway, &db, request).await {
             Ok(result) => JsonRpcResponse {
                 jsonrpc: "2.0",
                 id,
@@ -134,6 +148,8 @@ async fn handle_notification(method: &str) {
 
 async fn handle_request(
     registry: &ToolRegistry,
+    gateway: &Arc<Gateway>,
+    database: &Arc<Database>,
     request: JsonRpcRequest,
 ) -> std::result::Result<Value, String> {
     match request.method.as_str() {
@@ -148,15 +164,7 @@ async fn handle_request(
             }
         })),
         "ping" => Ok(json!({})),
-        "tools/list" => {
-            let tools = registry
-                .all_schemas()
-                .await
-                .into_iter()
-                .map(tool_descriptor)
-                .collect::<Vec<_>>();
-            Ok(json!({ "tools": tools }))
-        }
+        "tools/list" => Ok(list_tools_response(registry).await),
         "tools/call" => {
             let name = request
                 .params
@@ -169,6 +177,11 @@ async fn handle_request(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
+
+            if name == EXECUTE_AGENT_TOOL {
+                return run_execute_agent(gateway, database, &arguments).await;
+            }
+
             let result = registry
                 .call(name, arguments, "mcp-serve", &TaskSource::Cli)
                 .await
@@ -184,6 +197,167 @@ async fn handle_request(
             }))
         }
         other => Err(format!("unsupported MCP method '{}'", other)),
+    }
+}
+
+async fn list_tools_response(registry: &ToolRegistry) -> Value {
+    let mut tools: Vec<McpToolDescriptor> = registry
+        .all_schemas()
+        .await
+        .into_iter()
+        .map(tool_descriptor)
+        .collect();
+    tools.push(execute_agent_tool_descriptor());
+    json!({ "tools": tools })
+}
+
+fn execute_agent_tool_descriptor() -> McpToolDescriptor {
+    McpToolDescriptor {
+        name: EXECUTE_AGENT_TOOL.to_string(),
+        description: "Submit a prompt to the Rove agent loop and wait for the final answer. \
+                      Use this to delegate work to Rove from another LLM."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "string",
+                    "description": "Natural-language task for the Rove agent.",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Optional agent id to route the task through a specific agent.",
+                },
+                "wait_seconds": {
+                    "type": "integer",
+                    "description": "Maximum seconds to wait for completion (default 300, max 3600).",
+                    "minimum": 1,
+                    "maximum": MAX_WAIT_SECS,
+                }
+            },
+            "required": ["input"],
+        }),
+    }
+}
+
+async fn run_execute_agent(
+    gateway: &Arc<Gateway>,
+    database: &Arc<Database>,
+    arguments: &Value,
+) -> std::result::Result<Value, String> {
+    let input = arguments
+        .get("input")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "rove.execute_agent requires a non-empty `input`".to_string())?;
+
+    let wait_secs = arguments
+        .get("wait_seconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_WAIT_SECS)
+        .clamp(1, MAX_WAIT_SECS);
+
+    let execution_profile = match arguments
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(agent_id) => {
+            let repo = crate::system::specs::SpecRepository::new()
+                .map_err(|error| format!("failed to load agent registry: {}", error))?;
+            Some(
+                crate::cli::agents::execution_profile_for_agent(&repo, agent_id)
+                    .map_err(|error| format!("invalid agent_id '{}': {}", agent_id, error))?,
+            )
+        }
+        None => None,
+    };
+
+    let task_id = gateway
+        .submit_cli(input, None, execution_profile.as_ref())
+        .await
+        .map_err(|error| format!("failed to submit task: {}", error))?;
+
+    let completion = wait_for_task_completion(database, &task_id, Duration::from_secs(wait_secs))
+        .await
+        .map_err(|error| format!("failed to poll task '{}': {}", task_id, error))?;
+
+    Ok(encode_completion(task_id, completion))
+}
+
+enum McpCompletion {
+    Running,
+    Done { answer: String },
+    Failed { error: String },
+    Missing,
+}
+
+async fn wait_for_task_completion(
+    database: &Arc<Database>,
+    task_id: &str,
+    timeout: Duration,
+) -> anyhow::Result<McpCompletion> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let pending = database.pending_tasks().get_task(task_id).await?;
+        let Some(pending) = pending else {
+            return Ok(McpCompletion::Missing);
+        };
+        match pending.status {
+            PendingTaskStatus::Done => {
+                let answer = database
+                    .tasks()
+                    .get_latest_answer(task_id)
+                    .await?
+                    .unwrap_or_else(|| "Task completed".to_string());
+                return Ok(McpCompletion::Done { answer });
+            }
+            PendingTaskStatus::Failed => {
+                return Ok(McpCompletion::Failed {
+                    error: pending.error.unwrap_or_else(|| "Task failed".to_string()),
+                });
+            }
+            PendingTaskStatus::Pending | PendingTaskStatus::Running => {
+                if Instant::now() >= deadline {
+                    return Ok(McpCompletion::Running);
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+}
+
+fn encode_completion(task_id: String, completion: McpCompletion) -> Value {
+    match completion {
+        McpCompletion::Done { answer } => json!({
+            "content": [{ "type": "text", "text": answer }],
+            "isError": false,
+            "taskId": task_id,
+            "status": "completed",
+        }),
+        McpCompletion::Failed { error } => json!({
+            "content": [{ "type": "text", "text": error }],
+            "isError": true,
+            "taskId": task_id,
+            "status": "failed",
+        }),
+        McpCompletion::Running => json!({
+            "content": [{
+                "type": "text",
+                "text": format!("Task {} still running. Poll /v1/tasks/{}/status or re-call with larger wait_seconds.", task_id, task_id)
+            }],
+            "isError": false,
+            "taskId": task_id,
+            "status": "running",
+        }),
+        McpCompletion::Missing => json!({
+            "content": [{ "type": "text", "text": format!("Task {} was not persisted", task_id) }],
+            "isError": true,
+            "taskId": task_id,
+            "status": "missing",
+        }),
     }
 }
 
@@ -234,7 +408,7 @@ async fn write_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{handle_request, stringify_result, tool_descriptor};
+    use super::{list_tools_response, stringify_result, tool_descriptor, EXECUTE_AGENT_TOOL};
     use crate::runtime::ToolRegistry;
 
     #[tokio::test]
@@ -243,17 +417,7 @@ mod tests {
         registry.register_builtin_web_fetch().await;
         registry.register_builtin_web_search().await;
 
-        let result = handle_request(
-            &registry,
-            super::JsonRpcRequest {
-                jsonrpc: "2.0".to_string(),
-                id: Some(serde_json::json!("1")),
-                method: "tools/list".to_string(),
-                params: serde_json::json!({}),
-            },
-        )
-        .await
-        .unwrap();
+        let result = list_tools_response(&registry).await;
 
         let tools = result
             .get("tools")
@@ -264,6 +428,19 @@ mod tests {
         }));
         assert!(tools.iter().any(|tool| {
             tool.get("name").and_then(serde_json::Value::as_str) == Some("web_search")
+        }));
+    }
+
+    #[tokio::test]
+    async fn tools_list_exposes_execute_agent_meta_tool() {
+        let registry = ToolRegistry::empty();
+        let result = list_tools_response(&registry).await;
+        let tools = result
+            .get("tools")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        assert!(tools.iter().any(|tool| {
+            tool.get("name").and_then(serde_json::Value::as_str) == Some(EXECUTE_AGENT_TOOL)
         }));
     }
 

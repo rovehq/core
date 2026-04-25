@@ -99,6 +99,8 @@ fn apply_provider(config: &mut Config, result: &setup::SetupResult) {
                 base_url: result.base_url.clone(),
                 model: result.model.clone(),
                 secret_key: result.secret_key.clone(),
+                is_cloud: false,
+                no_system_prompt: false,
             });
         }
     }

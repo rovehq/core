@@ -1,32 +1,32 @@
 use crate::gateway::Task;
-use crate::storage::tasks::DagHistorySummary;
+use crate::storage::tasks::ApexHistorySummary;
 use sdk::{Complexity, TaskDomain};
 
 use super::prompt::TaskContext;
 use super::AgentCore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ExecutionStrategy {
+pub enum ExecutionStrategy {
     Linear,
-    Dag,
+    Apex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct OrchestrationDecision {
-    pub(super) strategy: ExecutionStrategy,
-    pub(super) estimated_steps: usize,
-    pub(super) reasons: Vec<String>,
+pub struct OrchestrationDecision {
+    pub strategy: ExecutionStrategy,
+    pub estimated_steps: usize,
+    pub reasons: Vec<String>,
 }
 
 impl OrchestrationDecision {
-    pub(super) fn use_dag(&self) -> bool {
-        matches!(self.strategy, ExecutionStrategy::Dag)
+    pub(super) fn use_apex(&self) -> bool {
+        matches!(self.strategy, ExecutionStrategy::Apex)
     }
 
     pub(super) fn summary(&self) -> String {
         let strategy = match self.strategy {
             ExecutionStrategy::Linear => "linear",
-            ExecutionStrategy::Dag => "dag",
+            ExecutionStrategy::Apex => "apex",
         };
         if self.reasons.is_empty() {
             return format!("{strategy} · {} step(s)", self.estimated_steps);
@@ -41,23 +41,23 @@ impl OrchestrationDecision {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct OrchestrationHistory {
-    pub(super) sampled_tasks: usize,
-    pub(super) dag_tasks: usize,
-    pub(super) linear_tasks: usize,
-    pub(super) failed_tasks: usize,
-    pub(super) average_dag_steps: usize,
+pub struct OrchestrationHistory {
+    pub sampled_tasks: usize,
+    pub apex_tasks: usize,
+    pub linear_tasks: usize,
+    pub failed_tasks: usize,
+    pub average_apex_steps: usize,
 }
 
 impl AgentCore {
-    pub(super) async fn select_execution_strategy(
+    pub async fn select_execution_strategy(
         &self,
         task: &Task,
         context: &TaskContext,
     ) -> OrchestrationDecision {
         let history = self
             .task_repo
-            .get_recent_dag_history(&context.domain_str, 12)
+            .get_recent_apex_history(&context.domain_str, 12)
             .await
             .ok()
             .map(|summaries| summarize_history(&summaries))
@@ -72,7 +72,7 @@ impl AgentCore {
     }
 }
 
-pub(super) fn decide_execution_strategy(
+pub fn decide_execution_strategy(
     task: &Task,
     context: &TaskContext,
     policy_after_write_commands: &[String],
@@ -135,7 +135,7 @@ pub(super) fn decide_execution_strategy(
         Complexity::Complex => {
             reasons.push("complex dispatch".to_string());
             return OrchestrationDecision {
-                strategy: ExecutionStrategy::Dag,
+                strategy: ExecutionStrategy::Apex,
                 estimated_steps: estimated_steps.max(3),
                 reasons,
             };
@@ -190,7 +190,7 @@ pub(super) fn decide_execution_strategy(
     }
 
     if let Some(history) = history {
-        if history.sampled_tasks >= 2 && history.dag_tasks >= history.linear_tasks.max(1) {
+        if history.sampled_tasks >= 2 && history.apex_tasks >= history.linear_tasks.max(1) {
             score += 1;
             reasons.push("recent domain work was multi-step".to_string());
         }
@@ -200,17 +200,17 @@ pub(super) fn decide_execution_strategy(
             reasons.push("recent domain failures suggest verification".to_string());
         }
 
-        if history.average_dag_steps >= 3 {
+        if history.average_apex_steps >= 3 {
             score += 1;
             reasons.push(format!(
-                "recent domain tasks averaged {} DAG steps",
-                history.average_dag_steps
+                "recent domain tasks averaged {} APEX steps",
+                history.average_apex_steps
             ));
         }
     }
 
     let strategy = if score >= 3 {
-        ExecutionStrategy::Dag
+        ExecutionStrategy::Apex
     } else {
         ExecutionStrategy::Linear
     };
@@ -222,12 +222,12 @@ pub(super) fn decide_execution_strategy(
     }
 }
 
-fn summarize_history(summaries: &[DagHistorySummary]) -> OrchestrationHistory {
+fn summarize_history(summaries: &[ApexHistorySummary]) -> OrchestrationHistory {
     if summaries.is_empty() {
         return OrchestrationHistory::default();
     }
 
-    let dag_tasks = summaries
+    let apex_tasks = summaries
         .iter()
         .filter(|summary| summary.dag_step_successes > 0 || summary.dag_step_failures > 0)
         .count();
@@ -235,22 +235,22 @@ fn summarize_history(summaries: &[DagHistorySummary]) -> OrchestrationHistory {
         .iter()
         .filter(|summary| matches!(summary.status, crate::storage::TaskStatus::Failed))
         .count();
-    let dag_step_total: i64 = summaries
+    let apex_step_total: i64 = summaries
         .iter()
         .map(|summary| summary.dag_step_successes + summary.dag_step_failures)
         .sum();
-    let average_dag_steps = if dag_tasks == 0 {
+    let average_apex_steps = if apex_tasks == 0 {
         0
     } else {
-        ((dag_step_total as f64) / (dag_tasks as f64)).round() as usize
+        ((apex_step_total as f64) / (apex_tasks as f64)).round() as usize
     };
 
     OrchestrationHistory {
         sampled_tasks: summaries.len(),
-        dag_tasks,
-        linear_tasks: summaries.len().saturating_sub(dag_tasks),
+        apex_tasks,
+        linear_tasks: summaries.len().saturating_sub(apex_tasks),
         failed_tasks,
-        average_dag_steps,
+        average_apex_steps,
     }
 }
 

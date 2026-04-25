@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use sqlx::Row as SqlxRow;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -34,7 +35,11 @@ use crate::system::{
 use crate::targeting::extract_task_target;
 use crate::zerotier::ZeroTierManager;
 use sdk::{
-    AgentSpec, AuthState, DaemonCapabilities, DaemonHello, NodeLoadSnapshot, NodeSummary,
+    AgentSpec, AuthState, DaemonCapabilities, DaemonHello,
+    ManagedAgentEnvironment as ManagedAgentEnvironmentView,
+    ManagedAgentSession as ManagedAgentSessionView,
+    ManagedAgentSessionEvent as ManagedAgentSessionEventView,
+    ManagedAgentSessionStatus as ManagedAgentSessionStatusView, NodeLoadSnapshot, NodeSummary,
     PasskeyFinishRequest, PasskeyRegistrationStartRequest, PolicyScope, RemoteExecutionPlan,
     RunContextId, RunIsolation, RunMode, SpecRunStatus, TaskExecutionProfile, TaskSource,
     WorkflowSpec,
@@ -108,6 +113,7 @@ pub struct TaskEventsResponse {
 pub struct TaskListRequest {
     pub status: Option<String>,
     pub agent_id: Option<String>,
+    pub thread_id: Option<String>,
     pub date_from: Option<i64>,
     pub date_to: Option<i64>,
     pub limit: Option<i64>,
@@ -124,6 +130,30 @@ pub struct TaskAgentFacet {
 pub struct SpecRunRequest {
     pub prompt: Option<String>,
     pub input: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ManagedAgentSessionCreateRequest {
+    pub agent_id: String,
+    pub environment_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ManagedAgentSessionMessageRequest {
+    pub prompt: Option<String>,
+    pub input: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ManagedAgentSessionListRequest {
+    pub agent_id: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ManagedAgentSessionEventListRequest {
+    pub after: Option<i64>,
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +189,24 @@ pub struct DaemonConfigView {
     pub tls_enabled: bool,
     pub tls_cert_path: String,
     pub tls_key_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ManagedAgentSessionDetail {
+    pub session: ManagedAgentSessionView,
+    pub recent_tasks: Vec<crate::storage::tasks::ThreadHistoryEntry>,
+    pub shared_callable_threads: Vec<crate::storage::AgentThread>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ManagedAgentSessionMessageResponse {
+    pub session: ManagedAgentSessionView,
+    pub task_id: Option<String>,
+    pub status: String,
+    pub answer: Option<String>,
+    pub provider: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -627,6 +675,7 @@ pub async fn list_tasks(
         .list_tasks(&crate::storage::TaskListQuery {
             status,
             agent_id: query.agent_id.filter(|value| !value.trim().is_empty()),
+            thread_id: query.thread_id.filter(|value| !value.trim().is_empty()),
             date_from: query.date_from,
             date_to: query.date_to,
             limit: query.limit.unwrap_or(50).clamp(1, 500),
@@ -1094,6 +1143,540 @@ pub async fn remove_agent(Path(id): Path<String>) -> impl IntoResponse {
     }
 }
 
+pub async fn list_managed_agents() -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.list_agents() {
+            Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_managed_agent(Path(id): Path<String>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.load_agent(&id) {
+            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::NOT_FOUND, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn create_managed_agent(Json(spec): Json<AgentSpec>) -> impl IntoResponse {
+    match SpecRepository::new() {
+        Ok(repo) => match repo.save_agent(&spec) {
+            Ok(item) => (StatusCode::CREATED, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_managed_agent_environments() -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match managed_agent_environments(&config) {
+            Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+            Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_managed_agent_environment(Path(id): Path<String>) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => match managed_agent_environment_by_id(&config, Some(id.as_str())) {
+            Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+            Err(error) => json_error_response(StatusCode::NOT_FOUND, error),
+        },
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_managed_agent_sessions(
+    State(state): State<AppState>,
+    Query(query): Query<ManagedAgentSessionListRequest>,
+) -> impl IntoResponse {
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    match state
+        .db
+        .managed_agents()
+        .list_sessions(
+            query.limit.unwrap_or(50).clamp(1, 200),
+            query
+                .agent_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
+        )
+        .await
+    {
+        Ok(items) => (
+            StatusCode::OK,
+            Json(
+                items
+                    .into_iter()
+                    .map(|item| managed_agent_session_view(&repo, item))
+                    .collect::<Vec<_>>(),
+            ),
+        )
+            .into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn create_managed_agent_session(
+    State(state): State<AppState>,
+    Json(payload): Json<ManagedAgentSessionCreateRequest>,
+) -> impl IntoResponse {
+    if payload.agent_id.trim().is_empty() {
+        return invalid_request("Managed agent session requires a non-empty `agent_id`");
+    }
+
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let agent = match repo.load_agent(&payload.agent_id) {
+        Ok(spec) => spec,
+        Err(error) => return json_error_response(StatusCode::NOT_FOUND, error),
+    };
+    if !agent.enabled {
+        return json_error_response(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("Agent '{}' is disabled", agent.id),
+        );
+    }
+
+    let config = match Config::load_or_create() {
+        Ok(config) => config,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let environment =
+        match managed_agent_environment_by_id(&config, payload.environment_id.as_deref()) {
+            Ok(environment) => environment,
+            Err(error) => return json_error_response(StatusCode::BAD_REQUEST, error),
+        };
+
+    let sessions = state.db.managed_agents();
+    let session = match sessions
+        .create_session(
+            &agent.id,
+            &environment.id,
+            &environment.profile_name,
+            &environment.loadout_name,
+        )
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    if let Err(error) = sessions
+        .append_event(
+            &session.id,
+            "session.created",
+            None,
+            Some(&session.primary_thread_id),
+            &serde_json::json!({
+                "agent_id": &session.agent_id,
+                "environment_id": &session.environment_id,
+                "profile_name": &session.profile_name,
+                "loadout_name": &session.loadout_name,
+                "primary_thread_id": &session.primary_thread_id,
+            }),
+        )
+        .await
+    {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(managed_agent_session_view(&repo, session)),
+    )
+        .into_response()
+}
+
+pub async fn get_managed_agent_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let session = match state.db.managed_agents().get_session(&id).await {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return json_error_response(
+                StatusCode::NOT_FOUND,
+                anyhow::anyhow!("Managed agent session '{}' not found", id),
+            )
+        }
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    match managed_agent_session_detail(&state, &repo, session).await {
+        Ok(detail) => (StatusCode::OK, Json(detail)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn wake_managed_agent_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let sessions = state.db.managed_agents();
+    let session = match sessions.get_session(&id).await {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return json_error_response(
+                StatusCode::NOT_FOUND,
+                anyhow::anyhow!("Managed agent session '{}' not found", id),
+            )
+        }
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    if let Err(error) = sessions.touch_session(&id).await {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+    if let Err(error) = sessions
+        .append_event(
+            &id,
+            "session.woken",
+            session.last_task_id.as_deref(),
+            Some(&session.primary_thread_id),
+            &serde_json::json!({
+                "status": managed_agent_status_label(&session.status),
+                "primary_thread_id": &session.primary_thread_id,
+            }),
+        )
+        .await
+    {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+
+    let refreshed = match sessions.get_session(&id).await {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return json_error_response(
+                StatusCode::NOT_FOUND,
+                anyhow::anyhow!("Managed agent session '{}' not found", id),
+            )
+        }
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+
+    match managed_agent_session_detail(&state, &repo, refreshed).await {
+        Ok(detail) => (StatusCode::OK, Json(detail)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn send_managed_agent_session_message(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<ManagedAgentSessionMessageRequest>,
+) -> impl IntoResponse {
+    let Some(input) = parse_task_input(payload.input, payload.prompt) else {
+        return invalid_request("Request must include a non-empty `input` or `prompt` field");
+    };
+
+    let repo = match SpecRepository::new() {
+        Ok(repo) => repo,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let sessions = state.db.managed_agents();
+    let session = match sessions.get_session(&id).await {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return json_error_response(
+                StatusCode::NOT_FOUND,
+                anyhow::anyhow!("Managed agent session '{}' not found", id),
+            )
+        }
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let agent = match repo.load_agent(&session.agent_id) {
+        Ok(agent) => agent,
+        Err(error) => return json_error_response(StatusCode::NOT_FOUND, error),
+    };
+    if !agent.enabled {
+        return json_error_response(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("Agent '{}' is disabled", agent.id),
+        );
+    }
+
+    let runtime_config = match managed_agent_runtime_config(&session) {
+        Ok(config) => config,
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let execution_profile = TaskExecutionProfile {
+        agent_id: Some(agent.id.clone()),
+        agent_name: Some(agent.name.clone()),
+        thread_id: Some(session.primary_thread_id.clone()),
+        worker_preset_id: None,
+        worker_preset_name: None,
+        purpose: Some(agent.purpose.clone()),
+        instructions: agent.instructions.clone(),
+        allowed_tools: allowed_tools(&agent),
+        callable_agents: agent.callable_agents.clone(),
+        output_contract: agent.output_contract.clone(),
+        outcome_contract: agent.outcome_contract.clone(),
+        max_iterations: None,
+    };
+
+    if let Err(error) = sessions
+        .append_event(
+            &session.id,
+            "user.message",
+            session.last_task_id.as_deref(),
+            Some(&session.primary_thread_id),
+            &serde_json::json!({ "input": &input }),
+        )
+        .await
+    {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+    if let Err(error) = sessions
+        .update_status(
+            &session.id,
+            crate::storage::ManagedAgentSessionStatus::Running,
+            session.last_task_id.as_deref(),
+        )
+        .await
+    {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+    if let Err(error) = sessions
+        .append_event(
+            &session.id,
+            "session.turn_started",
+            session.last_task_id.as_deref(),
+            Some(&session.primary_thread_id),
+            &serde_json::json!({
+                "environment_id": &session.environment_id,
+                "profile_name": &session.profile_name,
+                "thread_id": &session.primary_thread_id,
+            }),
+        )
+        .await
+    {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+
+    match crate::cli::run::execute_local_task_request_with_source(
+        input.clone(),
+        &runtime_config,
+        RunMode::Serial,
+        RunIsolation::None,
+        Some(execution_profile),
+        TaskSource::Channel("managed_agents".to_string()),
+    )
+    .await
+    {
+        Ok(result) => {
+            let task_id = result.task_id.clone();
+            let answer = result.answer.clone();
+            let provider = result.provider_used.clone();
+            let duration_ms = result.duration_ms;
+            let iterations = result.iterations;
+            let domain = result.domain.to_string().to_lowercase();
+            let sensitive = result.sensitive;
+
+            if let Err(error) = sessions
+                .update_status(
+                    &session.id,
+                    crate::storage::ManagedAgentSessionStatus::Idle,
+                    Some(&task_id),
+                )
+                .await
+            {
+                return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+            }
+            if let Err(error) = sessions
+                .append_event(
+                    &session.id,
+                    "assistant.message",
+                    Some(&task_id),
+                    Some(&session.primary_thread_id),
+                    &serde_json::json!({ "answer": &answer }),
+                )
+                .await
+            {
+                return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+            }
+            if let Err(error) = sessions
+                .append_event(
+                    &session.id,
+                    "task.completed",
+                    Some(&task_id),
+                    Some(&session.primary_thread_id),
+                    &serde_json::json!({
+                        "provider": &provider,
+                        "duration_ms": duration_ms,
+                        "iterations": iterations,
+                        "domain": domain,
+                        "sensitive": sensitive,
+                    }),
+                )
+                .await
+            {
+                return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+            }
+
+            let refreshed = match sessions.get_session(&session.id).await {
+                Ok(Some(session)) => session,
+                Ok(None) => {
+                    return json_error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        anyhow::anyhow!("Managed agent session '{}' disappeared", session.id),
+                    )
+                }
+                Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+            };
+
+            (
+                StatusCode::OK,
+                Json(ManagedAgentSessionMessageResponse {
+                    session: managed_agent_session_view(&repo, refreshed),
+                    task_id: Some(task_id),
+                    status: "completed".to_string(),
+                    answer: Some(answer),
+                    provider: Some(provider),
+                    duration_ms: Some(duration_ms),
+                    message: None,
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            let _ = sessions
+                .update_status(
+                    &session.id,
+                    crate::storage::ManagedAgentSessionStatus::Failed,
+                    session.last_task_id.as_deref(),
+                )
+                .await;
+            let _ = sessions
+                .append_event(
+                    &session.id,
+                    "task.failed",
+                    session.last_task_id.as_deref(),
+                    Some(&session.primary_thread_id),
+                    &serde_json::json!({ "error": error.to_string() }),
+                )
+                .await;
+
+            let refreshed = match sessions.get_session(&session.id).await {
+                Ok(Some(session)) => session,
+                _ => session,
+            };
+
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ManagedAgentSessionMessageResponse {
+                    session: managed_agent_session_view(&repo, refreshed),
+                    task_id: None,
+                    status: "failed".to_string(),
+                    answer: None,
+                    provider: None,
+                    duration_ms: None,
+                    message: Some(error.to_string()),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn list_managed_agent_session_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ManagedAgentSessionEventListRequest>,
+) -> impl IntoResponse {
+    match state.db.managed_agents().get_session(&id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return json_error_response(
+                StatusCode::NOT_FOUND,
+                anyhow::anyhow!("Managed agent session '{}' not found", id),
+            )
+        }
+        Err(error) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+
+    match state
+        .db
+        .managed_agents()
+        .list_events(&id, query.after, query.limit.unwrap_or(100).clamp(1, 500))
+        .await
+    {
+        Ok(events) => (
+            StatusCode::OK,
+            Json(
+                events
+                    .into_iter()
+                    .map(managed_agent_session_event_view)
+                    .collect::<Vec<_>>(),
+            ),
+        )
+            .into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_agent_threads(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.threads().list_for_agent(&id, 50).await {
+        Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_agent_threads_all(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.threads().list_all(100).await {
+        Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_agent_thread(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.threads().get(&id).await {
+        Ok(Some(thread)) => (StatusCode::OK, Json(thread)).into_response(),
+        Ok(None) => json_error_response(
+            StatusCode::NOT_FOUND,
+            anyhow::anyhow!("Agent thread '{}' not found", id),
+        ),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn list_agent_thread_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.threads().events(&id).await {
+        Ok(events) => (StatusCode::OK, Json(events)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn list_agent_runs(State(state): State<AppState>) -> impl IntoResponse {
     match state.db.agent_runs().list_agent_runs(50).await {
         Ok(items) => (StatusCode::OK, Json(items)).into_response(),
@@ -1143,11 +1726,13 @@ pub async fn run_agent(
     let profile = TaskExecutionProfile {
         agent_id: Some(spec.id.clone()),
         agent_name: Some(spec.name.clone()),
+        thread_id: None,
         worker_preset_id: None,
         worker_preset_name: None,
         purpose: Some(spec.purpose.clone()),
         instructions: spec.instructions.clone(),
         allowed_tools: allowed_tools(&spec),
+        callable_agents: spec.callable_agents.clone(),
         output_contract: spec.output_contract.clone(),
         outcome_contract: spec.outcome_contract.clone(),
         max_iterations: None,
@@ -2759,6 +3344,13 @@ pub async fn list_services() -> impl IntoResponse {
     }
 }
 
+pub async fn update_available() -> impl IntoResponse {
+    match crate::system::update_status::check_update_available().await {
+        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_GATEWAY, error),
+    }
+}
+
 pub async fn overview(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let config = match Config::load_or_create() {
         Ok(config) => config,
@@ -3873,5 +4465,766 @@ fn completion_response(
             }),
         )
             .into_response(),
+    }
+}
+
+fn managed_agent_environments(config: &Config) -> anyhow::Result<Vec<ManagedAgentEnvironmentView>> {
+    let active_profile = config.selected_profile_name();
+    if config.profiles.is_empty() {
+        let loadout = crate::config::ResolvedLoadout::compatibility_default();
+        return Ok(vec![ManagedAgentEnvironmentView {
+            id: "env:default".to_string(),
+            profile_name: loadout.profile_name,
+            loadout_name: loadout.loadout_name,
+            builtins: loadout.builtins.into_iter().collect(),
+            drivers: loadout
+                .drivers
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            plugins: loadout
+                .plugins
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            browser_profile: loadout.browser_profile,
+            brain_profile: loadout.brain_profile,
+            approval_profile: loadout.approval_profile,
+            active: true,
+        }]);
+    }
+
+    let mut environments = Vec::new();
+    for (profile_name, profile) in &config.profiles {
+        let Some(loadout) = config.loadouts.get(profile.loadout.as_str()) else {
+            anyhow::bail!(
+                "Profile '{}' references unknown loadout '{}'",
+                profile_name,
+                profile.loadout
+            );
+        };
+        environments.push(ManagedAgentEnvironmentView {
+            id: format!("env:{profile_name}"),
+            profile_name: profile_name.clone(),
+            loadout_name: profile.loadout.clone(),
+            builtins: loadout.builtins.clone(),
+            drivers: loadout.drivers.clone(),
+            plugins: loadout.plugins.clone(),
+            browser_profile: profile.browser_profile.clone(),
+            brain_profile: profile.brain_profile.clone(),
+            approval_profile: profile.approval_profile.clone(),
+            active: active_profile.as_deref() == Some(profile_name.as_str()),
+        });
+    }
+
+    Ok(environments)
+}
+
+fn managed_agent_environment_by_id(
+    config: &Config,
+    requested_id: Option<&str>,
+) -> anyhow::Result<ManagedAgentEnvironmentView> {
+    let environments = managed_agent_environments(config)?;
+    if let Some(requested_id) = requested_id.filter(|value| !value.trim().is_empty()) {
+        return environments
+            .into_iter()
+            .find(|environment| environment.id == requested_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Managed agent environment '{}' was not found", requested_id)
+            });
+    }
+
+    if let Some(active) = environments.iter().find(|environment| environment.active) {
+        return Ok(active.clone());
+    }
+
+    environments
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No managed agent environments are available"))
+}
+
+fn managed_agent_runtime_config(
+    session: &crate::storage::ManagedAgentSession,
+) -> anyhow::Result<Config> {
+    let mut config = Config::load_or_create()?;
+    if config.profiles.is_empty() {
+        return Ok(config);
+    }
+
+    if !config.profiles.contains_key(&session.profile_name) {
+        anyhow::bail!(
+            "Managed agent session '{}' references missing profile '{}'",
+            session.id,
+            session.profile_name
+        );
+    }
+
+    config.active_profile = Some(session.profile_name.clone());
+    Ok(config)
+}
+
+fn managed_agent_status_view(
+    status: &crate::storage::ManagedAgentSessionStatus,
+) -> ManagedAgentSessionStatusView {
+    match status {
+        crate::storage::ManagedAgentSessionStatus::Ready => ManagedAgentSessionStatusView::Ready,
+        crate::storage::ManagedAgentSessionStatus::Running => {
+            ManagedAgentSessionStatusView::Running
+        }
+        crate::storage::ManagedAgentSessionStatus::Idle => ManagedAgentSessionStatusView::Idle,
+        crate::storage::ManagedAgentSessionStatus::Failed => ManagedAgentSessionStatusView::Failed,
+    }
+}
+
+fn managed_agent_status_label(status: &crate::storage::ManagedAgentSessionStatus) -> &'static str {
+    match status {
+        crate::storage::ManagedAgentSessionStatus::Ready => "ready",
+        crate::storage::ManagedAgentSessionStatus::Running => "running",
+        crate::storage::ManagedAgentSessionStatus::Idle => "idle",
+        crate::storage::ManagedAgentSessionStatus::Failed => "failed",
+    }
+}
+
+fn managed_agent_session_view(
+    repo: &SpecRepository,
+    session: crate::storage::ManagedAgentSession,
+) -> ManagedAgentSessionView {
+    let agent_name = repo
+        .load_agent(&session.agent_id)
+        .ok()
+        .map(|agent| agent.name);
+    ManagedAgentSessionView {
+        id: session.id,
+        agent_id: session.agent_id,
+        agent_name,
+        environment_id: session.environment_id,
+        profile_name: session.profile_name,
+        loadout_name: session.loadout_name,
+        primary_thread_id: session.primary_thread_id,
+        status: managed_agent_status_view(&session.status),
+        last_task_id: session.last_task_id,
+        created_at: session.created_at,
+        last_active_at: session.last_active_at,
+    }
+}
+
+fn managed_agent_session_event_view(
+    event: crate::storage::ManagedAgentSessionEvent,
+) -> ManagedAgentSessionEventView {
+    ManagedAgentSessionEventView {
+        position: event.position,
+        id: event.id,
+        session_id: event.session_id,
+        event_type: event.event_type,
+        task_id: event.task_id,
+        thread_id: event.thread_id,
+        payload: event.payload,
+        created_at: event.created_at,
+    }
+}
+
+async fn managed_agent_session_detail(
+    state: &AppState,
+    repo: &SpecRepository,
+    session: crate::storage::ManagedAgentSession,
+) -> anyhow::Result<ManagedAgentSessionDetail> {
+    let recent_tasks = state
+        .db
+        .tasks()
+        .get_recent_thread_history(&session.primary_thread_id, None, 20)
+        .await
+        .unwrap_or_default();
+    let shared_callable_threads = state
+        .db
+        .threads()
+        .list_for_agent(&session.agent_id, 20)
+        .await
+        .unwrap_or_default();
+
+    Ok(ManagedAgentSessionDetail {
+        session: managed_agent_session_view(repo, session),
+        recent_tasks,
+        shared_callable_threads,
+    })
+}
+
+// ── Knowledge handlers ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct KnowledgeListQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct KnowledgeSearchQuery {
+    pub q: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct IngestFileRequest {
+    pub path: String,
+    pub domain: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub force: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct IngestFolderRequest {
+    pub path: String,
+    pub domain: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub force: Option<bool>,
+    pub dry_run: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct IngestUrlRequest {
+    pub url: String,
+    pub domain: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub force: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct IngestSitemapRequest {
+    pub url: String,
+    pub domain: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub force: Option<bool>,
+    pub dry_run: Option<bool>,
+}
+
+pub async fn list_knowledge(
+    State(state): State<AppState>,
+    Query(params): Query<KnowledgeListQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(50).min(200);
+    let offset = params.offset.unwrap_or(0);
+    match state.db.knowledge().list(limit, offset).await {
+        Ok(docs) => (StatusCode::OK, Json(docs)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn knowledge_stats(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.knowledge().stats().await {
+        Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn search_knowledge(
+    State(state): State<AppState>,
+    Query(params): Query<KnowledgeSearchQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(20).min(100);
+    match state.db.knowledge().search(&params.q, limit).await {
+        Ok(docs) => (StatusCode::OK, Json(docs)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_knowledge(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.knowledge().get(&id).await {
+        Ok(Some(doc)) => (StatusCode::OK, Json(doc)).into_response(),
+        Ok(None) => json_error_response(
+            StatusCode::NOT_FOUND,
+            anyhow::anyhow!("Knowledge document '{}' not found", id),
+        ),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn remove_knowledge(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.knowledge().remove(&id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => json_error_response(
+            StatusCode::NOT_FOUND,
+            anyhow::anyhow!("Knowledge document '{}' not found", id),
+        ),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn ingest_knowledge_file(
+    State(state): State<AppState>,
+    Json(payload): Json<IngestFileRequest>,
+) -> impl IntoResponse {
+    let config = match Config::load_or_create() {
+        Ok(c) => c,
+        Err(e) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let path = std::path::Path::new(&payload.path);
+    if !path.starts_with(&config.core.workspace) {
+        return json_error_response(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("Path must be inside the configured workspace"),
+        );
+    }
+    let tags: Vec<&str> = payload
+        .tags
+        .as_deref()
+        .map(|t| t.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+    let tags_ref: Option<&[&str]> = if tags.is_empty() { None } else { Some(&tags) };
+    let repo = state.db.knowledge();
+    match crate::system::knowledge::ingest_file(
+        &repo,
+        path,
+        payload.domain.as_deref(),
+        tags_ref,
+        payload.force.unwrap_or(false),
+        Some("api"),
+    )
+    .await
+    {
+        Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn ingest_knowledge_folder(
+    State(state): State<AppState>,
+    Json(payload): Json<IngestFolderRequest>,
+) -> impl IntoResponse {
+    let config = match Config::load_or_create() {
+        Ok(c) => c,
+        Err(e) => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let path_str = payload.path.clone();
+    let path = std::path::PathBuf::from(&path_str);
+    if !path.starts_with(&config.core.workspace) {
+        return json_error_response(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("Path must be inside the configured workspace"),
+        );
+    }
+
+    // dry_run is synchronous — no need for a background job
+    if payload.dry_run.unwrap_or(false) {
+        let tags: Vec<String> = payload.tags.clone().unwrap_or_default();
+        let tags_ref_owned: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+        let tags_ref: Option<&[&str]> = if tags_ref_owned.is_empty() {
+            None
+        } else {
+            Some(&tags_ref_owned)
+        };
+        let repo = state.db.knowledge();
+        return match crate::system::knowledge::ingest_folder(
+            &repo,
+            &path,
+            payload.domain.as_deref(),
+            tags_ref,
+            payload.force.unwrap_or(false),
+            true,
+            Some("api"),
+        )
+        .await
+        {
+            Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        };
+    }
+
+    // Real ingest — spawn background job and return 202 immediately
+    let job_id = format!("kjob_{}", uuid::Uuid::new_v4().simple());
+    let now = chrono::Utc::now().timestamp();
+    if let Err(e) = sqlx::query(
+        "INSERT INTO knowledge_jobs (id, kind, source, status, started_at) VALUES (?, 'folder', ?, 'running', ?)",
+    )
+    .bind(&job_id)
+    .bind(&path_str)
+    .bind(now)
+    .execute(state.db.pool())
+    .await
+    {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!("{}", e));
+    }
+
+    let job_id_clone = job_id.clone();
+    let db = state.db.clone();
+    let domain = payload.domain.clone();
+    let tags = payload.tags.clone().unwrap_or_default();
+    let force = payload.force.unwrap_or(false);
+    tokio::spawn(async move {
+        let repo = db.knowledge();
+        let tags_ref_owned: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+        let tags_ref: Option<&[&str]> = if tags_ref_owned.is_empty() {
+            None
+        } else {
+            Some(&tags_ref_owned)
+        };
+        let result = crate::system::knowledge::ingest_folder(
+            &repo,
+            &path,
+            domain.as_deref(),
+            tags_ref,
+            force,
+            false,
+            Some("api"),
+        )
+        .await;
+
+        let finished_at = chrono::Utc::now().timestamp();
+        match result {
+            Ok(summary) => {
+                let errors_json =
+                    serde_json::to_string(&summary.errors).unwrap_or_else(|_| "[]".into());
+                let _ = sqlx::query(
+                    "UPDATE knowledge_jobs SET status='done', total=?, processed=?, errors_json=?, finished_at=? WHERE id=?",
+                )
+                .bind(summary.total as i64)
+                .bind(summary.ingested.len() as i64)
+                .bind(&errors_json)
+                .bind(finished_at)
+                .bind(&job_id_clone)
+                .execute(db.pool())
+                .await;
+            }
+            Err(e) => {
+                let errors_json = serde_json::to_string(&[e.to_string()]).unwrap_or_default();
+                let _ = sqlx::query(
+                    "UPDATE knowledge_jobs SET status='error', errors_json=?, finished_at=? WHERE id=?",
+                )
+                .bind(&errors_json)
+                .bind(finished_at)
+                .bind(&job_id_clone)
+                .execute(db.pool())
+                .await;
+            }
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "job_id": job_id })),
+    )
+        .into_response()
+}
+
+pub async fn ingest_knowledge_url(
+    State(state): State<AppState>,
+    Json(payload): Json<IngestUrlRequest>,
+) -> impl IntoResponse {
+    let tags: Vec<&str> = payload
+        .tags
+        .as_deref()
+        .map(|t| t.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+    let tags_ref: Option<&[&str]> = if tags.is_empty() { None } else { Some(&tags) };
+    let repo = state.db.knowledge();
+    match crate::system::knowledge::ingest_url(
+        &repo,
+        &payload.url,
+        payload.domain.as_deref(),
+        tags_ref,
+        payload.force.unwrap_or(false),
+        Some("api"),
+    )
+    .await
+    {
+        Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+        Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn ingest_knowledge_sitemap(
+    State(state): State<AppState>,
+    Json(payload): Json<IngestSitemapRequest>,
+) -> impl IntoResponse {
+    if payload.dry_run.unwrap_or(false) {
+        let tags: Vec<String> = payload.tags.clone().unwrap_or_default();
+        let tags_ref_owned: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+        let tags_ref: Option<&[&str]> = if tags_ref_owned.is_empty() {
+            None
+        } else {
+            Some(&tags_ref_owned)
+        };
+        let repo = state.db.knowledge();
+        return match crate::system::knowledge::ingest_sitemap(
+            &repo,
+            &payload.url,
+            payload.domain.as_deref(),
+            tags_ref,
+            payload.force.unwrap_or(false),
+            true,
+            Some("api"),
+        )
+        .await
+        {
+            Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
+            Err(error) => json_error_response(StatusCode::BAD_REQUEST, error),
+        };
+    }
+
+    // Real sitemap ingest — spawn background job
+    let job_id = format!("kjob_{}", uuid::Uuid::new_v4().simple());
+    let now = chrono::Utc::now().timestamp();
+    if let Err(e) = sqlx::query(
+        "INSERT INTO knowledge_jobs (id, kind, source, status, started_at) VALUES (?, 'sitemap', ?, 'running', ?)",
+    )
+    .bind(&job_id)
+    .bind(&payload.url)
+    .bind(now)
+    .execute(state.db.pool())
+    .await
+    {
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!("{}", e));
+    }
+
+    let job_id_clone = job_id.clone();
+    let db = state.db.clone();
+    let url = payload.url.clone();
+    let domain = payload.domain.clone();
+    let tags = payload.tags.clone().unwrap_or_default();
+    let force = payload.force.unwrap_or(false);
+    tokio::spawn(async move {
+        let repo = db.knowledge();
+        let tags_ref_owned: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+        let tags_ref: Option<&[&str]> = if tags_ref_owned.is_empty() {
+            None
+        } else {
+            Some(&tags_ref_owned)
+        };
+        let result = crate::system::knowledge::ingest_sitemap(
+            &repo,
+            &url,
+            domain.as_deref(),
+            tags_ref,
+            force,
+            false,
+            Some("api"),
+        )
+        .await;
+
+        let finished_at = chrono::Utc::now().timestamp();
+        match result {
+            Ok(summary) => {
+                let errors_json =
+                    serde_json::to_string(&summary.errors).unwrap_or_else(|_| "[]".into());
+                let _ = sqlx::query(
+                    "UPDATE knowledge_jobs SET status='done', total=?, processed=?, errors_json=?, finished_at=? WHERE id=?",
+                )
+                .bind(summary.total as i64)
+                .bind(summary.ingested.len() as i64)
+                .bind(&errors_json)
+                .bind(finished_at)
+                .bind(&job_id_clone)
+                .execute(db.pool())
+                .await;
+            }
+            Err(e) => {
+                let errors_json = serde_json::to_string(&[e.to_string()]).unwrap_or_default();
+                let _ = sqlx::query(
+                    "UPDATE knowledge_jobs SET status='error', errors_json=?, finished_at=? WHERE id=?",
+                )
+                .bind(&errors_json)
+                .bind(finished_at)
+                .bind(&job_id_clone)
+                .execute(db.pool())
+                .await;
+            }
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "job_id": job_id })),
+    )
+        .into_response()
+}
+
+pub async fn ingest_knowledge_upload(
+    State(state): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    const MAX_BYTES: usize = 25 * 1024 * 1024;
+
+    let mut results: Vec<crate::storage::knowledge::KnowledgeIngestResult> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let filename = field
+            .file_name()
+            .unwrap_or("upload")
+            .to_string();
+
+        let data = match field.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                errors.push(format!("{}: {}", filename, e));
+                continue;
+            }
+        };
+
+        if data.len() > MAX_BYTES {
+            errors.push(format!(
+                "{}: exceeds 25 MiB limit ({} bytes)",
+                filename,
+                data.len()
+            ));
+            continue;
+        }
+
+        let content = match std::str::from_utf8(&data) {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                errors.push(format!("{}: binary file — only UTF-8 text supported", filename));
+                continue;
+            }
+        };
+
+        let title = std::path::Path::new(&filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| {
+                s.split(&['-', '_', ' '])
+                    .filter(|p| !p.is_empty())
+                    .map(|p| {
+                        let mut c = p.chars();
+                        match c.next() {
+                            Some(first) => format!("{}{}", first.to_uppercase(), c.as_str()),
+                            None => String::new(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            });
+
+        let mime_type = match std::path::Path::new(&filename)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            Some("md") => Some("text/markdown"),
+            Some("json") => Some("application/json"),
+            Some("toml") => Some("application/toml"),
+            Some("yaml") | Some("yml") => Some("application/yaml"),
+            Some("html") | Some("htm") => Some("text/html"),
+            Some("csv") => Some("text/csv"),
+            _ => Some("text/plain"),
+        };
+
+        let repo = state.db.knowledge();
+        match repo
+            .ingest(
+                "upload",
+                &filename,
+                title.as_deref(),
+                &content,
+                mime_type,
+                None,
+                None,
+                Some("api-upload"),
+            )
+            .await
+        {
+            Ok(r) => results.push(r),
+            Err(e) => errors.push(format!("{}: {}", filename, e)),
+        }
+    }
+
+    let total = results.len() + errors.len();
+    let summary = crate::system::knowledge::IngestSummary {
+        total,
+        ingested: results,
+        skipped: vec![],
+        errors,
+    };
+    (StatusCode::OK, Json(summary)).into_response()
+}
+
+// ── Knowledge job handlers ────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct KnowledgeJob {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub source: String,
+    pub total: i64,
+    pub processed: i64,
+    pub errors: Vec<String>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+}
+
+pub async fn list_knowledge_jobs(State(state): State<AppState>) -> impl IntoResponse {
+    let rows = sqlx::query(
+        "SELECT id, kind, status, source, total, processed, errors_json, started_at, finished_at \
+         FROM knowledge_jobs ORDER BY started_at DESC LIMIT 50",
+    )
+    .fetch_all(state.db.pool())
+    .await;
+
+    match rows {
+        Ok(rows) => {
+            let jobs: Vec<KnowledgeJob> = rows
+                .into_iter()
+                .map(|r| {
+                    let errors_json: String = r.get("errors_json");
+                    let errors: Vec<String> =
+                        serde_json::from_str(&errors_json).unwrap_or_default();
+                    KnowledgeJob {
+                        id: r.get("id"),
+                        kind: r.get("kind"),
+                        status: r.get("status"),
+                        source: r.get("source"),
+                        total: r.get("total"),
+                        processed: r.get("processed"),
+                        errors,
+                        started_at: r.get("started_at"),
+                        finished_at: r.get("finished_at"),
+                    }
+                })
+                .collect();
+            (StatusCode::OK, Json(jobs)).into_response()
+        }
+        Err(e) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!("{}", e)),
+    }
+}
+
+pub async fn get_knowledge_job(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let row = sqlx::query(
+        "SELECT id, kind, status, source, total, processed, errors_json, started_at, finished_at \
+         FROM knowledge_jobs WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(state.db.pool())
+    .await;
+
+    match row {
+        Ok(Some(r)) => {
+            let errors_json: String = r.get("errors_json");
+            let errors: Vec<String> = serde_json::from_str(&errors_json).unwrap_or_default();
+            let job = KnowledgeJob {
+                id: r.get("id"),
+                kind: r.get("kind"),
+                status: r.get("status"),
+                source: r.get("source"),
+                total: r.get("total"),
+                processed: r.get("processed"),
+                errors,
+                started_at: r.get("started_at"),
+                finished_at: r.get("finished_at"),
+            };
+            (StatusCode::OK, Json(job)).into_response()
+        }
+        Ok(None) => json_error_response(
+            StatusCode::NOT_FOUND,
+            anyhow::anyhow!("Knowledge job '{}' not found", id),
+        ),
+        Err(e) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!("{}", e)),
     }
 }

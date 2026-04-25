@@ -9,6 +9,7 @@ const tabs = [
   { href: '/audit', label: 'Audit', icon: '⌘' },
   { href: '/hooks', label: 'Hooks', icon: '⎇' },
   { href: '/memory', label: 'Memory', icon: '⛓' },
+  { href: '/knowledge', label: 'Knowledge', icon: '⊕' },
   { href: '/migrate', label: 'Migrate', icon: '⇪' },
   { href: '/starters', label: 'Starters', icon: '✦' },
   { href: '/browser', label: 'Browser', icon: '◎' },

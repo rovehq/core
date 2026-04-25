@@ -166,8 +166,10 @@ pub fn status_view() -> Result<DispatchBrainView> {
 }
 
 fn dispatch_root() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    Ok(home.join(".rove").join("brains").join("dispatch"))
+    dirs::home_dir().context("Could not determine home directory")?;
+    Ok(crate::config::paths::rove_home()
+        .join("brains")
+        .join("dispatch"))
 }
 
 fn current_model_file(root: &Path) -> PathBuf {

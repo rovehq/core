@@ -102,6 +102,37 @@ impl AgentCore {
         task_id: &str,
         tool_call: &ToolCall,
     ) -> Result<ToolExecution> {
+        if tool_call.name == "call_agent" {
+            let args = self.parse_tool_arguments(task_id, tool_call);
+            let callable_agent_id = args
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let prompt = args
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let parent_agent_id = self
+                .current_execution_profile
+                .as_ref()
+                .and_then(|p| p.agent_id.as_deref())
+                .unwrap_or("unknown")
+                .to_string();
+            let parent_task_id = uuid::Uuid::parse_str(task_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+            let roster = self.current_callable_roster.clone();
+            let domain = self.current_domain;
+            let output = self
+                .dispatch_callable_agent(&parent_agent_id, &callable_agent_id, prompt, parent_task_id, &roster, domain)
+                .await?;
+            let result = match output.error {
+                Some(err) => format!("Callable agent '{}' error: {}", callable_agent_id, err),
+                None => output.output,
+            };
+            return Ok(ToolExecution { safe_result: result });
+        }
+
         self.ensure_tool_allowed(&tool_call.name)?;
         let tool_args = self.parse_tool_arguments(task_id, tool_call);
         let tool_tier = self.audit_risk_tier(&tool_call.name, &tool_args)?;

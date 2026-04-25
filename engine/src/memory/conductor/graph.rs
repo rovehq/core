@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::types::{ConductorPlan, RoutePolicy};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum DagNodeState {
+pub enum ApexNodeState {
     #[default]
     Pending,
     Ready,
@@ -15,9 +15,9 @@ pub enum DagNodeState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DagNode {
+pub struct ApexNode {
     pub step_id: String,
-    pub state: DagNodeState,
+    pub state: ApexNodeState,
     pub attempt: u32,
     pub route: Route,
     pub route_policy: RoutePolicy,
@@ -28,14 +28,14 @@ pub struct DagNode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DagWave {
+pub struct ApexWave {
     pub index: u32,
     pub node_ids: Vec<String>,
     pub parallel: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DagGraph {
+pub struct ApexGraph {
     pub plan_id: String,
     pub task_id: String,
     pub goal: String,
@@ -43,13 +43,13 @@ pub struct DagGraph {
     pub complexity: Complexity,
     pub sensitive: bool,
     pub preferred_route: Route,
-    pub nodes: Vec<DagNode>,
-    pub waves: Vec<DagWave>,
+    pub nodes: Vec<ApexNode>,
+    pub waves: Vec<ApexWave>,
     pub created_at: i64,
     pub completed_at: Option<i64>,
 }
 
-impl DagGraph {
+impl ApexGraph {
     pub fn from_plan(
         task_id: impl Into<String>,
         plan: &ConductorPlan,
@@ -61,12 +61,12 @@ impl DagGraph {
         let nodes = plan
             .steps
             .iter()
-            .map(|step| DagNode {
+            .map(|step| ApexNode {
                 step_id: step.id.clone(),
                 state: if step.dependencies.is_empty() {
-                    DagNodeState::Ready
+                    ApexNodeState::Ready
                 } else {
-                    DagNodeState::Pending
+                    ApexNodeState::Pending
                 },
                 attempt: 0,
                 route: preferred_route,
@@ -96,21 +96,21 @@ impl DagGraph {
     pub fn ready_node_ids(&self) -> Vec<String> {
         self.nodes
             .iter()
-            .filter(|node| node.state == DagNodeState::Ready)
+            .filter(|node| node.state == ApexNodeState::Ready)
             .map(|node| node.step_id.clone())
             .collect()
     }
 
-    pub fn node(&self, step_id: &str) -> Option<&DagNode> {
+    pub fn node(&self, step_id: &str) -> Option<&ApexNode> {
         self.nodes.iter().find(|node| node.step_id == step_id)
     }
 
-    pub fn node_mut(&mut self, step_id: &str) -> Option<&mut DagNode> {
+    pub fn node_mut(&mut self, step_id: &str) -> Option<&mut ApexNode> {
         self.nodes.iter_mut().find(|node| node.step_id == step_id)
     }
 
-    pub fn open_wave(&mut self, node_ids: &[String], parallel: bool) -> DagWave {
-        let wave = DagWave {
+    pub fn open_wave(&mut self, node_ids: &[String], parallel: bool) -> ApexWave {
+        let wave = ApexWave {
             index: self.waves.len() as u32,
             node_ids: node_ids.to_vec(),
             parallel,
@@ -121,7 +121,7 @@ impl DagGraph {
 
     pub fn mark_running(&mut self, step_id: &str, started_at: i64, route: Route) {
         if let Some(node) = self.node_mut(step_id) {
-            node.state = DagNodeState::Running;
+            node.state = ApexNodeState::Running;
             node.attempt += 1;
             node.route = route;
             node.started_at = Some(started_at);
@@ -132,7 +132,7 @@ impl DagGraph {
 
     pub fn mark_succeeded(&mut self, step_id: &str, finished_at: i64, output: String) {
         if let Some(node) = self.node_mut(step_id) {
-            node.state = DagNodeState::Succeeded;
+            node.state = ApexNodeState::Succeeded;
             node.finished_at = Some(finished_at);
             node.output = Some(output);
             node.error = None;
@@ -141,7 +141,7 @@ impl DagGraph {
 
     pub fn mark_failed(&mut self, step_id: &str, finished_at: i64, error: String) {
         if let Some(node) = self.node_mut(step_id) {
-            node.state = DagNodeState::Failed;
+            node.state = ApexNodeState::Failed;
             node.finished_at = Some(finished_at);
             node.error = Some(error);
         }
@@ -154,28 +154,28 @@ impl DagGraph {
             let Some(node) = self.node(&step.id) else {
                 continue;
             };
-            if node.state != DagNodeState::Pending {
+            if node.state != ApexNodeState::Pending {
                 continue;
             }
 
             let blocked = step.dependencies.iter().any(|dependency| {
                 self.node(dependency)
-                    .is_some_and(|dependency_node| dependency_node.state == DagNodeState::Failed)
+                    .is_some_and(|dependency_node| dependency_node.state == ApexNodeState::Failed)
             });
             if blocked {
                 if let Some(node) = self.node_mut(&step.id) {
-                    node.state = DagNodeState::Blocked;
+                    node.state = ApexNodeState::Blocked;
                 }
                 continue;
             }
 
             let ready = step.dependencies.iter().all(|dependency| {
                 self.node(dependency)
-                    .is_some_and(|dependency_node| dependency_node.state == DagNodeState::Succeeded)
+                    .is_some_and(|dependency_node| dependency_node.state == ApexNodeState::Succeeded)
             });
             if ready {
                 if let Some(node) = self.node_mut(&step.id) {
-                    node.state = DagNodeState::Ready;
+                    node.state = ApexNodeState::Ready;
                 }
                 promoted.push(step.id.clone());
             }
@@ -188,7 +188,7 @@ impl DagGraph {
         self.nodes.iter().all(|node| {
             matches!(
                 node.state,
-                DagNodeState::Succeeded | DagNodeState::Failed | DagNodeState::Blocked
+                ApexNodeState::Succeeded | ApexNodeState::Failed | ApexNodeState::Blocked
             )
         })
     }
@@ -196,7 +196,7 @@ impl DagGraph {
     pub fn has_failures(&self) -> bool {
         self.nodes
             .iter()
-            .any(|node| matches!(node.state, DagNodeState::Failed | DagNodeState::Blocked))
+            .any(|node| matches!(node.state, ApexNodeState::Failed | ApexNodeState::Blocked))
     }
 }
 
@@ -208,7 +208,7 @@ mod tests {
         ConductorPlan, ExecutionMode, PlanStep, RoutePolicy, StepRole, StepType,
     };
 
-    use super::{DagGraph, DagNodeState};
+    use super::{ApexGraph, ApexNodeState};
 
     fn sample_plan() -> ConductorPlan {
         ConductorPlan {
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn graph_starts_with_dependency_free_steps_ready() {
         let plan = sample_plan();
-        let graph = DagGraph::from_plan(
+        let graph = ApexGraph::from_plan(
             "task-1",
             &plan,
             TaskDomain::Code,
@@ -257,13 +257,13 @@ mod tests {
         );
 
         assert_eq!(graph.ready_node_ids(), vec!["step_1".to_string()]);
-        assert_eq!(graph.node("step_2").unwrap().state, DagNodeState::Pending);
+        assert_eq!(graph.node("step_2").unwrap().state, ApexNodeState::Pending);
     }
 
     #[test]
     fn graph_promotes_dependents_after_success() {
         let plan = sample_plan();
-        let mut graph = DagGraph::from_plan(
+        let mut graph = ApexGraph::from_plan(
             "task-1",
             &plan,
             TaskDomain::Code,
@@ -278,13 +278,13 @@ mod tests {
         let promoted = graph.advance_ready_states(&plan);
 
         assert_eq!(promoted, vec!["step_2".to_string()]);
-        assert_eq!(graph.node("step_2").unwrap().state, DagNodeState::Ready);
+        assert_eq!(graph.node("step_2").unwrap().state, ApexNodeState::Ready);
     }
 
     #[test]
     fn graph_blocks_dependents_after_failure() {
         let plan = sample_plan();
-        let mut graph = DagGraph::from_plan(
+        let mut graph = ApexGraph::from_plan(
             "task-1",
             &plan,
             TaskDomain::Code,
@@ -296,7 +296,7 @@ mod tests {
         graph.mark_failed("step_1", 102, "boom".to_string());
         graph.advance_ready_states(&plan);
 
-        assert_eq!(graph.node("step_2").unwrap().state, DagNodeState::Blocked);
+        assert_eq!(graph.node("step_2").unwrap().state, ApexNodeState::Blocked);
         assert!(graph.has_failures());
         assert!(graph.is_complete());
     }

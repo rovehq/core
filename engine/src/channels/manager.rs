@@ -441,11 +441,13 @@ impl ChannelManager {
                 let execution_profile = sdk::TaskExecutionProfile {
                     agent_id: Some(agent_spec.id.clone()),
                     agent_name: Some(agent_spec.name.clone()),
+                    thread_id: None,
                     worker_preset_id: None,
                     worker_preset_name: None,
                     purpose: Some(agent_spec.purpose.clone()),
                     instructions: agent_spec.instructions.clone(),
                     allowed_tools: allowed_tools(&agent_spec),
+                    callable_agents: agent_spec.callable_agents.clone(),
                     output_contract: agent_spec.output_contract.clone(),
                     outcome_contract: agent_spec.outcome_contract.clone(),
                     max_iterations: None,

@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::storage::knowledge::KnowledgeIngestResult;
-use crate::storage::KnowledgeRepository;
+use crate::storage::{KnowledgeRepository, MAX_INGEST_BYTES};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebFetchResult {
@@ -28,6 +28,7 @@ pub async fn ingest_file(
     domain: Option<&str>,
     tags: Option<&[&str]>,
     force: bool,
+    ingested_by: Option<&str>,
 ) -> Result<KnowledgeIngestResult> {
     let source_path = path.display().to_string();
     let source_type = "file";
@@ -36,12 +37,23 @@ pub async fn ingest_file(
         bail!("Already indexed: {} (use --force to reindex)", source_path);
     }
 
+    let meta = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("Failed to stat {}", source_path))?;
+    if meta.len() as usize > MAX_INGEST_BYTES {
+        bail!(
+            "File too large: {} ({} bytes, limit {} MiB)",
+            source_path,
+            meta.len(),
+            MAX_INGEST_BYTES / 1024 / 1024
+        );
+    }
+
     let content = tokio::fs::read_to_string(path)
         .await
         .with_context(|| format!("Failed to read {}", source_path))?;
 
     let title = path.file_stem().and_then(|s| s.to_str()).map(title_case);
-
     let mime_type = detect_mime(path);
 
     repo.ingest(
@@ -52,6 +64,7 @@ pub async fn ingest_file(
         mime_type.as_deref(),
         domain,
         tags,
+        ingested_by,
     )
     .await
 }
@@ -63,6 +76,7 @@ pub async fn ingest_folder(
     tags: Option<&[&str]>,
     force: bool,
     dry_run: bool,
+    ingested_by: Option<&str>,
 ) -> Result<IngestSummary> {
     let mut summary = IngestSummary {
         total: 0,
@@ -83,7 +97,7 @@ pub async fn ingest_folder(
             continue;
         }
 
-        match ingest_file(repo, &path, domain, tags, force).await {
+        match ingest_file(repo, &path, domain, tags, force, ingested_by).await {
             Ok(result) => summary.ingested.push(result),
             Err(e) => summary.errors.push(format!("{}: {}", path.display(), e)),
         }
@@ -98,6 +112,7 @@ pub async fn ingest_url(
     domain: Option<&str>,
     tags: Option<&[&str]>,
     force: bool,
+    ingested_by: Option<&str>,
 ) -> Result<KnowledgeIngestResult> {
     if !force && repo.exists_by_path("url", url).await? {
         bail!("Already indexed: {} (use --force to reindex)", url);
@@ -114,7 +129,15 @@ pub async fn ingest_url(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    let text = resp.text().await?;
+    let bytes = resp.bytes().await?;
+    if bytes.len() > MAX_INGEST_BYTES {
+        bail!(
+            "URL content too large: {} bytes (limit {} MiB)",
+            bytes.len(),
+            MAX_INGEST_BYTES / 1024 / 1024
+        );
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     let content = if content_type.as_deref().unwrap_or("").contains("text/html") {
         html_to_text(&text)
     } else {
@@ -131,6 +154,7 @@ pub async fn ingest_url(
         content_type.as_deref(),
         domain,
         tags,
+        ingested_by,
     )
     .await
 }
@@ -173,6 +197,7 @@ pub async fn ingest_sitemap(
     tags: Option<&[&str]>,
     force: bool,
     dry_run: bool,
+    ingested_by: Option<&str>,
 ) -> Result<IngestSummary> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -195,7 +220,7 @@ pub async fn ingest_sitemap(
             continue;
         }
 
-        match ingest_url(repo, &url, domain, tags, force).await {
+        match ingest_url(repo, &url, domain, tags, force, ingested_by).await {
             Ok(result) => summary.ingested.push(result),
             Err(e) => summary.errors.push(format!("{}: {}", url, e)),
         }

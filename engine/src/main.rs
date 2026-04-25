@@ -205,9 +205,10 @@ async fn main() -> Result<()> {
         }
         Some(Command::Brain { action }) => rove_engine::cli::brain::execute(action).await?,
         Some(Command::Daemon { port, profile }) => run_daemon(port, profile).await?,
-        Some(Command::Doctor) => {
+        Some(Command::Doctor { json }) => {
             let config = rove_engine::config::Config::load_or_create()?;
-            rove_engine::cli::doctor::handle_doctor(&config, OutputFormat::Text).await?;
+            let fmt = if json { OutputFormat::Json } else { OutputFormat::Text };
+            rove_engine::cli::doctor::handle_doctor(&config, fmt).await?;
         }
         Some(Command::Logs { action }) => {
             rove_engine::cli::logs::handle_logs(action).await?;

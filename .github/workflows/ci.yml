@@ -3,6 +3,7 @@ name: Core — Build, Sign & Deploy
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -18,6 +19,7 @@ jobs:
       engine: ${{ steps.filter.outputs.engine }}
       tools: ${{ steps.filter.outputs.tools }}
       code: ${{ steps.filter.outputs.code }}
+      channel: ${{ steps.channel.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -38,6 +40,18 @@ jobs:
               - 'sdk/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+
+      # Tag push → stable, everything else → dev.
+      # Rove is pre-stable: main branch ships to dev channel only.
+      # A v* tag is the explicit opt-in to push a stable release.
+      - name: Resolve release channel
+        id: channel
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=dev" >> "$GITHUB_OUTPUT"
+          fi
 
   # ── Format (only if code changed) ───────────────
   fmt:
@@ -92,13 +106,16 @@ jobs:
 
   # ── Build engine (only if engine paths changed) ─
   build-engine:
-    name: Build Engine (${{ matrix.platform }})
+    name: Build Engine (${{ needs.changes.outputs.channel }} · ${{ matrix.platform }})
     needs: [changes, check]
     if: |
       always() &&
       (needs.check.result == 'success' || needs.check.result == 'skipped') &&
       needs.changes.outputs.engine == 'true' &&
-      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        startsWith(github.ref, 'refs/tags/v')
+      )
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -124,13 +141,24 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          key: release-${{ matrix.target }}-${{ needs.changes.outputs.channel }}
 
+      # Dev builds enable `channel-dev` feature → engine baked as Dev channel,
+      # uses $HOME/.rove-dev, runs auto_update at UTC 00:00.
+      # Stable tag builds drop the feature → Stable channel, $HOME/.rove,
+      # manual `rove update` only.
       - name: Build engine (release)
-        run: cargo build --release --target ${{ matrix.target }} -p engine
+        run: |
+          if [[ "${{ needs.changes.outputs.channel }}" == "dev" ]]; then
+            FEATURES="--features channel-dev"
+          else
+            FEATURES="--features production"
+          fi
+          cargo build --release --target ${{ matrix.target }} -p engine $FEATURES
         shell: bash
         env:
-          ROVE_TEAM_PUBLIC_KEY: ${{ secrets.ROVE_SIGNING_PUBLIC_KEY }}
+          ROVE_TEAM_OFFICIAL_PUBLIC_KEY: ${{ secrets.ROVE_TEAM_OFFICIAL_PUBLIC_KEY }}
+          ROVE_TEAM_COMMUNITY_PUBLIC_KEY: ${{ secrets.ROVE_TEAM_COMMUNITY_PUBLIC_KEY }}
 
       - name: Stage engine artifact
         run: |
@@ -141,19 +169,22 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: engine-${{ matrix.platform }}
+          name: engine-${{ needs.changes.outputs.channel }}-${{ matrix.platform }}
           path: artifacts/
           retention-days: 1
 
-  # ── Build core tools (only if tools paths changed)
+  # ── Build core tools (only if tools paths changed) ──
   build-tools:
-    name: Build Tools (${{ matrix.platform }})
+    name: Build Tools (${{ needs.changes.outputs.channel }} · ${{ matrix.platform }})
     needs: [changes, check]
     if: |
       always() &&
       (needs.check.result == 'success' || needs.check.result == 'skipped') &&
       needs.changes.outputs.tools == 'true' &&
-      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        startsWith(github.ref, 'refs/tags/v')
+      )
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -182,7 +213,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          key: release-${{ matrix.target }}-${{ needs.changes.outputs.channel }}
 
       - name: Build core tools (release)
         run: |
@@ -202,14 +233,14 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: tools-${{ matrix.platform }}
+          name: tools-${{ needs.changes.outputs.channel }}-${{ matrix.platform }}
           path: artifacts/
           retention-days: 1
 
-  # ── Sign & Deploy to R2 (if any build ran) ──────
+  # ── Sign & Deploy to R2 ─────────────────────────
   deploy:
-    name: Sign & Deploy
-    needs: [build-engine, build-tools]
+    name: Sign & Deploy (${{ needs.changes.outputs.channel }})
+    needs: [changes, build-engine, build-tools]
     if: |
       always() &&
       (needs.build-engine.result == 'success' || needs.build-tools.result == 'success')
@@ -228,29 +259,36 @@ jobs:
       - name: Hash all artifacts
         run: |
           find artifacts/ -type f | while read f; do
-            sha256sum "$f"
+            b3sum "$f" 2>/dev/null || sha256sum "$f"
           done | tee artifacts/checksums.txt
 
-      - name: Prepare R2 directory
+      - name: Install b3sum
+        run: |
+          sudo apt-get update && sudo apt-get install -y b3sum || \
+            cargo install b3sum
+
+      - name: Prepare R2 layout (per-channel)
+        env:
+          CHANNEL: ${{ needs.changes.outputs.channel }}
         run: |
           mkdir -p .r2_upload
           ENGINE_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
 
-          # Copy engine artifacts if present
           if [ -d "artifacts/engine" ]; then
-            mkdir -p ".r2_upload/engine/${ENGINE_VERSION}"
-            cp artifacts/engine/* ".r2_upload/engine/${ENGINE_VERSION}/" 2>/dev/null || true
+            mkdir -p ".r2_upload/${CHANNEL}/engine/${ENGINE_VERSION}"
+            cp artifacts/engine/* ".r2_upload/${CHANNEL}/engine/${ENGINE_VERSION}/" 2>/dev/null || true
           fi
 
-          # Copy tools artifacts if present
           if [ -d "artifacts/core_tools" ]; then
-            cp -r artifacts/core_tools/ .r2_upload/core_tools/ 2>/dev/null || true
+            mkdir -p ".r2_upload/${CHANNEL}/core-tools/${ENGINE_VERSION}"
+            cp -r artifacts/core_tools/* ".r2_upload/${CHANNEL}/core-tools/${ENGINE_VERSION}/" 2>/dev/null || true
           fi
 
+          # Install scripts are channel-agnostic: they read ROVE_CHANNEL at runtime.
           cp scripts/install.sh .r2_upload/install.sh
           cp scripts/install.ps1 .r2_upload/install.ps1
-          cp scripts/uninstall.sh .r2_upload/uninstall.sh
-          cp scripts/uninstall.ps1 .r2_upload/uninstall.ps1
+          cp scripts/uninstall.sh .r2_upload/uninstall.sh 2>/dev/null || true
+          cp scripts/uninstall.ps1 .r2_upload/uninstall.ps1 2>/dev/null || true
           find .r2_upload -type f | sort
 
       - name: Deploy to Cloudflare R2
@@ -266,7 +304,7 @@ jobs:
           SOURCE_DIR: ".r2_upload"
 
       - name: GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -275,10 +313,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Update Registry with build info ─────────────
+  # ── Update Registry (per-channel manifests) ─────
   update-registry:
-    name: Update Registry
-    needs: [build-engine, build-tools]
+    name: Update Registry (${{ needs.changes.outputs.channel }})
+    needs: [changes, build-engine, build-tools]
     if: |
       always() &&
       (needs.build-engine.result == 'success' || needs.build-tools.result == 'success')
@@ -291,130 +329,138 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
-      - name: Update registry with artifacts and manifests
+      - name: Install b3sum
+        run: sudo apt-get update && sudo apt-get install -y b3sum || cargo install b3sum
+
+      - name: Update per-channel manifests
         env:
           REGISTRY_PAT: ${{ secrets.REGISTRY_PAT }}
+          CHANNEL: ${{ needs.changes.outputs.channel }}
         run: |
           set -e
-
-          # ── Clone registry via PAT ──
           git clone https://x-access-token:${REGISTRY_PAT}@github.com/orvislab/rove-registry.git /tmp/registry
 
-
-          # ── Metadata ──
           ENGINE_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           COMMIT=$(git rev-parse --short HEAD)
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           R2_BASE="https://registry.roveai.co"
           GH_RAW="https://raw.githubusercontent.com/orvislab/rove-registry/main"
 
-          # ══════════════════════════════════════════
-          # ENGINE ARTIFACTS
-          # ══════════════════════════════════════════
+          # ══════════════════ ENGINE ══════════════════
           if [ -d "artifacts/engine" ]; then
-            mkdir -p "/tmp/registry/releases/engine/${ENGINE_VERSION}"
+            mkdir -p "/tmp/registry/${CHANNEL}/engine"
+            MANIFEST="/tmp/registry/${CHANNEL}/engine/manifest.json"
+            if [ ! -f "$MANIFEST" ]; then
+              jq -n --arg ch "$CHANNEL" --arg ts "$TIMESTAMP" '{
+                schema_version: 2,
+                channel: $ch,
+                artifact: "engine",
+                issuer: "rove-team",
+                published_at: $ts,
+                entries: { latest: { version: "", platforms: {} } },
+                signature: ""
+              }' > "$MANIFEST"
+            fi
 
             for bin in artifacts/engine/rove-*; do
               [ ! -f "$bin" ] && continue
-              HASH=$(sha256sum "$bin" | cut -d' ' -f1)
+              HASH=$(b3sum "$bin" | cut -d' ' -f1)
               SIZE=$(stat --format=%s "$bin" 2>/dev/null || stat -f%z "$bin" 2>/dev/null)
               FILENAME=$(basename "$bin")
 
               case "$FILENAME" in
-                *linux*)    PLATFORM="linux-x86_64" ;;
-                *darwin*)   PLATFORM="darwin-aarch64" ;;
-                *windows*)  PLATFORM="windows-x86_64" ;;
-                *)          continue ;;
+                *aarch64-apple-darwin*) PLATFORM="darwin-aarch64" ;;
+                *x86_64-apple-darwin*)  PLATFORM="darwin-x86_64" ;;
+                *aarch64-unknown-linux*) PLATFORM="linux-aarch64" ;;
+                *x86_64-unknown-linux*)  PLATFORM="linux-x86_64" ;;
+                *x86_64-pc-windows*)     PLATFORM="windows-x86_64" ;;
+                *aarch64-pc-windows*)    PLATFORM="windows-aarch64" ;;
+                *) continue ;;
               esac
 
-              # Copy artifact to registry releases
-              cp "$bin" "/tmp/registry/releases/engine/${ENGINE_VERSION}/${FILENAME}"
+              REL_DIR="${CHANNEL}/engine/${ENGINE_VERSION}"
+              mkdir -p "/tmp/registry/${REL_DIR}"
+              cp "$bin" "/tmp/registry/${REL_DIR}/${FILENAME}"
 
-              # Update manifest with R2 + GitHub fallback URLs
-              cd /tmp/registry
               jq --arg ver "$ENGINE_VERSION" \
                  --arg plat "$PLATFORM" \
-                 --arg url "$R2_BASE/engine/$ENGINE_VERSION/$FILENAME" \
-                 --arg fallback "$GH_RAW/releases/engine/$ENGINE_VERSION/$FILENAME" \
-                 --arg sha "$HASH" \
+                 --arg url "$R2_BASE/$REL_DIR/$FILENAME" \
+                 --arg fallback "$GH_RAW/$REL_DIR/$FILENAME" \
+                 --arg b3 "$HASH" \
                  --argjson sz "${SIZE:-0}" \
-                 '.engines.latest.version = $ver |
-                  .engines[$plat] = {
-                    "version": $ver,
-                    "url": $url,
-                    "fallback_url": $fallback,
-                    "sha256": $sha,
-                    "size_bytes": $sz
+                 '.entries.latest.version = $ver |
+                  .entries.latest.platforms[$plat] = {
+                    url: $url,
+                    fallback_url: $fallback,
+                    blake3: $b3,
+                    size_bytes: $sz
                   }' \
-                 manifest.json > /tmp/m.json && mv /tmp/m.json manifest.json
-              cd -
+                 "$MANIFEST" > /tmp/m.json && mv /tmp/m.json "$MANIFEST"
             done
 
-            # ── Engine build history ──
-            PLATFORMS_JSON="{}"
-            for bin in artifacts/engine/rove-*; do
-              [ ! -f "$bin" ] && continue
-              HASH=$(sha256sum "$bin" | cut -d' ' -f1)
-              SIZE=$(stat --format=%s "$bin" 2>/dev/null || stat -f%z "$bin" 2>/dev/null)
-              FILENAME=$(basename "$bin")
-              case "$FILENAME" in
-                *linux*)    PLATFORM="linux-x86_64" ;;
-                *darwin*)   PLATFORM="darwin-aarch64" ;;
-                *windows*)  PLATFORM="windows-x86_64" ;;
-                *)          continue ;;
-              esac
-              PLATFORMS_JSON=$(echo "$PLATFORMS_JSON" | jq \
-                --arg p "$PLATFORM" --arg sha "$HASH" --argjson sz "${SIZE:-0}" \
-                '. + {($p): {"sha256": $sha, "size_bytes": $sz}}')
-            done
-
-            jq --arg ver "$ENGINE_VERSION" --arg commit "$COMMIT" --arg ts "$TIMESTAMP" \
-              --argjson platforms "$PLATFORMS_JSON" \
-              '.builds += [{"version": $ver, "commit": $commit, "built_at": $ts, "platforms": $platforms}]' \
-              /tmp/registry/history/engine.json > /tmp/eh.json && mv /tmp/eh.json /tmp/registry/history/engine.json
+            # Update published_at on every push for this channel
+            jq --arg ts "$TIMESTAMP" '.published_at = $ts' "$MANIFEST" > /tmp/m.json && mv /tmp/m.json "$MANIFEST"
           fi
 
-          # ══════════════════════════════════════════
-          # CORE TOOLS ARTIFACTS
-          # ══════════════════════════════════════════
+          # ══════════════════ CORE-TOOLS ══════════════════
           if [ -d "artifacts/core_tools" ]; then
-            TOOLS_VERSION=$ENGINE_VERSION
+            mkdir -p "/tmp/registry/${CHANNEL}/core-tools"
+            TMANIFEST="/tmp/registry/${CHANNEL}/core-tools/manifest.json"
+            if [ ! -f "$TMANIFEST" ]; then
+              jq -n --arg ch "$CHANNEL" --arg ts "$TIMESTAMP" --arg min "$ENGINE_VERSION" '{
+                schema_version: 2,
+                channel: $ch,
+                artifact: "core-tools",
+                issuer: "rove-team",
+                published_at: $ts,
+                min_engine: $min,
+                entries: {},
+                signature: ""
+              }' > "$TMANIFEST"
+            fi
 
             for platform_dir in artifacts/core_tools/*/; do
               [ ! -d "$platform_dir" ] && continue
               PLATFORM=$(basename "$platform_dir")
-              mkdir -p "/tmp/registry/releases/core-tools/${TOOLS_VERSION}/${PLATFORM}"
+              REL_DIR="${CHANNEL}/core-tools/${ENGINE_VERSION}/${PLATFORM}"
+              mkdir -p "/tmp/registry/${REL_DIR}"
 
               for lib in "$platform_dir"*; do
                 [ ! -f "$lib" ] && continue
-                HASH=$(sha256sum "$lib" | cut -d' ' -f1)
+                HASH=$(b3sum "$lib" | cut -d' ' -f1)
+                SIZE=$(stat --format=%s "$lib" 2>/dev/null || stat -f%z "$lib" 2>/dev/null)
                 FILENAME=$(basename "$lib")
                 TOOL_NAME=$(echo "$FILENAME" | sed 's/^lib//' | sed 's/\..*//' | tr '_' '-')
 
-                cp "$lib" "/tmp/registry/releases/core-tools/${TOOLS_VERSION}/${PLATFORM}/${FILENAME}"
+                cp "$lib" "/tmp/registry/${REL_DIR}/${FILENAME}"
 
-                cd /tmp/registry
-                jq --arg tool "$TOOL_NAME" --arg plat "$PLATFORM" \
-                   --arg url "$R2_BASE/core_tools/$PLATFORM/$FILENAME" \
-                   --arg fallback "$GH_RAW/releases/core-tools/$TOOLS_VERSION/$PLATFORM/$FILENAME" \
-                   --arg sha "$HASH" \
-                   '.core_tools[$tool].platforms[$plat] = {"url": $url, "fallback_url": $fallback, "sha256": $sha}' \
-                   manifest.json > /tmp/m.json && mv /tmp/m.json manifest.json
-                cd -
+                jq --arg tool "$TOOL_NAME" \
+                   --arg ver "$ENGINE_VERSION" \
+                   --arg plat "$PLATFORM" \
+                   --arg url "$R2_BASE/$REL_DIR/$FILENAME" \
+                   --arg fallback "$GH_RAW/$REL_DIR/$FILENAME" \
+                   --arg b3 "$HASH" \
+                   --argjson sz "${SIZE:-0}" \
+                   '.entries[$tool] = (.entries[$tool] // {version: $ver, trust_tier: 0, platforms: {}}) |
+                    .entries[$tool].version = $ver |
+                    .entries[$tool].trust_tier = 0 |
+                    .entries[$tool].platforms[$plat] = {
+                      url: $url, fallback_url: $fallback, blake3: $b3, size_bytes: $sz
+                    }' \
+                   "$TMANIFEST" > /tmp/m.json && mv /tmp/m.json "$TMANIFEST"
               done
             done
+
+            jq --arg ts "$TIMESTAMP" '.published_at = $ts' "$TMANIFEST" > /tmp/m.json && mv /tmp/m.json "$TMANIFEST"
           fi
 
-          # ── Update timestamp + commit ──
           cd /tmp/registry
-          jq --arg ts "$TIMESTAMP" '.last_updated = $ts' manifest.json > /tmp/m.json && mv /tmp/m.json manifest.json
-
           git config user.name "rove-ci"
           git config user.email "ci@roveai.co"
           git add -A
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "No manifest changes."
           else
-            git commit -m "release: engine v${ENGINE_VERSION} (${COMMIT}) — $(date -u +%Y-%m-%d)"
+            git commit -m "release(${CHANNEL}): engine v${ENGINE_VERSION} (${COMMIT})"
             git push
           fi

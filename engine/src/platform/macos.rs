@@ -5,10 +5,7 @@ use std::path::PathBuf;
 
 /// Default transport path for brain communication (Unix Domain Socket)
 pub fn default_transport_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".rove")
-        .join("brain.sock")
+    crate::config::paths::rove_home().join("brain.sock")
 }
 
 /// Known llama-server installation paths on macOS

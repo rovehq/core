@@ -2,8 +2,6 @@
 
 mod call;
 mod lifecycle;
-#[cfg(test)]
-mod tests;
 
 use super::sandbox::SandboxProfile;
 use serde::{Deserialize, Serialize};

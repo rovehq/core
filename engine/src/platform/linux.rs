@@ -1,14 +1,12 @@
 //! Linux-specific platform functions
 
+use keyring;
 use sdk::errors::EngineError;
 use std::path::PathBuf;
 
 /// Default transport path for brain communication (Unix Domain Socket)
 pub fn default_transport_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".rove")
-        .join("brain.sock")
+    crate::config::paths::rove_home().join("brain.sock")
 }
 
 /// Known llama-server installation paths on Linux
@@ -54,20 +52,24 @@ pub fn cpu_load_percent() -> Option<u32> {
     Some(normalized.clamp(0.0, 999.0).round() as u32)
 }
 
-/// Get a secret from Linux Secret Service (libsecret)
-pub fn keychain_get(_key: &str) -> Result<String, EngineError> {
-    // TODO: Implement using secret-service crate
-    // For now, return error indicating not implemented
-    Err(EngineError::KeyringError(
-        "Linux keychain support requires secret-service crate (Phase 5)".to_string(),
-    ))
+/// Get a secret from Linux Secret Service (libsecret / keyutils fallback)
+pub fn keychain_get(key: &str) -> Result<String, EngineError> {
+    keyring::Entry::new("rove", key)
+        .map_err(|e| EngineError::KeyringError(e.to_string()))
+        .and_then(|entry| {
+            entry
+                .get_password()
+                .map_err(|e| EngineError::KeyringError(e.to_string()))
+        })
 }
 
-/// Set a secret in Linux Secret Service (libsecret)
-pub fn keychain_set(_key: &str, _value: &str) -> Result<(), EngineError> {
-    // TODO: Implement using secret-service crate
-    // For now, return error indicating not implemented
-    Err(EngineError::KeyringError(
-        "Linux keychain support requires secret-service crate (Phase 5)".to_string(),
-    ))
+/// Set a secret in Linux Secret Service (libsecret / keyutils fallback)
+pub fn keychain_set(key: &str, value: &str) -> Result<(), EngineError> {
+    keyring::Entry::new("rove", key)
+        .map_err(|e| EngineError::KeyringError(e.to_string()))
+        .and_then(|entry| {
+            entry
+                .set_password(value)
+                .map_err(|e| EngineError::KeyringError(e.to_string()))
+        })
 }

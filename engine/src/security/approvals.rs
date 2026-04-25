@@ -318,6 +318,7 @@ fn rule_matches(
             TaskSource::Cli => "cli".to_string(),
             TaskSource::WebUI => "webui".to_string(),
             TaskSource::Remote(node) => format!("remote:{}", node),
+            TaskSource::Subagent(parent_id) => format!("subagent:{}", parent_id),
         };
         if !rule
             .channels

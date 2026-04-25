@@ -16,9 +16,12 @@ use std::time::UNIX_EPOCH;
 use serde::Deserialize;
 use tokio::sync::Mutex as TokioMutex;
 
+use async_trait::async_trait;
+use sdk::brain::{Brain, BrainResponse, Message as BrainMessage, ToolSchema as BrainToolSchema};
 use sdk::errors::EngineError;
 use sdk::manifest::Manifest as SdkManifest;
 use sdk::manifest::{PluginEntry, PluginPermissions};
+use serde_json::json;
 use tokio::sync::Mutex;
 use tracing::warn;
 
@@ -38,6 +41,74 @@ pub use native::NativeRuntime;
 pub use registry::ToolRegistry;
 pub use wasm::WasmRuntime;
 
+struct NativeBrainDriverBackend {
+    backend_id: String,
+    lib_path: String,
+    completion_fn: String,
+    runtime: Arc<Mutex<NativeRuntime>>,
+}
+
+#[async_trait]
+impl Brain for NativeBrainDriverBackend {
+    fn name(&self) -> &str {
+        &self.backend_id
+    }
+
+    async fn complete(
+        &self,
+        system: &str,
+        messages: &[BrainMessage],
+        tools: &[BrainToolSchema],
+    ) -> Result<BrainResponse, EngineError> {
+        let args = json!({
+            "system": system,
+            "messages": serde_json::to_value(messages).unwrap_or_default(),
+            "tools": serde_json::to_value(tools).unwrap_or_default(),
+        });
+        let mut runtime = self.runtime.lock().await;
+        let raw = runtime.call_registered_tool(&self.lib_path, &self.completion_fn, args)?;
+        serde_json::from_value::<BrainResponse>(raw).map_err(|e| {
+            EngineError::ToolError(format!(
+                "Brain plugin '{}' response parse error: {}",
+                self.backend_id, e
+            ))
+        })
+    }
+}
+
+async fn find_plugin_brain(
+    config: &Config,
+    native_runtime: Option<&Arc<Mutex<NativeRuntime>>>,
+    installed_plugins: &[InstalledPlugin],
+) -> Option<Arc<dyn Brain>> {
+    let native_runtime = native_runtime?;
+    let requested_id = config.brains.plugin_backend.as_deref();
+    for plugin in installed_plugins {
+        if plugin.plugin_type != PluginType::Brain.as_str() {
+            continue;
+        }
+        let Some(lib_path) = plugin.binary_path.as_deref() else {
+            continue;
+        };
+        let catalog = ToolCatalog::from_json(plugin.config.as_deref()).ok()?;
+        let Some(brain_backend) = catalog.brain_backend else {
+            continue;
+        };
+        if let Some(requested) = requested_id {
+            if !brain_backend.id.eq_ignore_ascii_case(requested) {
+                continue;
+            }
+        }
+        return Some(Arc::new(NativeBrainDriverBackend {
+            backend_id: brain_backend.id,
+            lib_path: lib_path.to_string(),
+            completion_fn: brain_backend.completion_fn,
+            runtime: Arc::clone(native_runtime),
+        }));
+    }
+    None
+}
+
 pub struct RuntimeManager {
     pub registry: Arc<ToolRegistry>,
     #[allow(dead_code)]
@@ -49,6 +120,10 @@ pub struct RuntimeManager {
 }
 
 impl RuntimeManager {
+    pub fn plugin_brain(&self) -> Option<Arc<dyn Brain>> {
+        self.registry.plugin_brain()
+    }
+
     pub async fn build(database: &Database, config: &Config) -> Result<Self, EngineError> {
         let resolved_loadout = config.resolved_loadout()?;
         let installed_plugins = database
@@ -127,6 +202,15 @@ impl RuntimeManager {
         .await?;
 
         register_installed_plugin_schemas(&mut registry, native.as_ref(), &installed_plugins).await;
+
+        if config.brains.enabled || config.brains.plugin_backend.is_some() {
+            if let Some(plugin_brain) =
+                find_plugin_brain(config, native.as_ref(), &installed_plugins).await
+            {
+                tracing::info!(backend = %plugin_brain.name(), "Registered plugin brain backend");
+                registry.register_plugin_brain_backend(plugin_brain);
+            }
+        }
 
         // Wire browser tool when browser control is enabled and a profile is configured
         if config.browser.enabled {

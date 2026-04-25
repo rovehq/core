@@ -1,11 +1,16 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use tempfile::TempDir;
 
-use super::{DaemonManager, Result};
-use crate::config::Config;
+use rove_engine::system::daemon::{DaemonManager, Result};
+use rove_engine::config::Config;
 use sdk::errors::EngineError;
+
+// Daemon tests call start() which writes the current process PID. Serialise
+// so parallel tests don't share PID files for the same PID.
+static DAEMON_LOCK: Mutex<()> = Mutex::new(());
 
 fn create_test_config(temp_dir: &TempDir) -> Config {
     let config_path = temp_dir.path().join("config.toml");
@@ -56,26 +61,30 @@ async fn test_daemon_manager_creation() {
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
-    assert!(manager.pid_file.to_string_lossy().contains("rove.pid"));
+    assert!(manager.pid_file_path().to_string_lossy().contains("rove.pid"));
 }
 
 #[tokio::test]
 async fn test_write_and_read_pid_file() {
+    let _guard = DAEMON_LOCK.lock().unwrap();
     let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
-    manager.write_pid_file().unwrap();
+    manager.write_pid_file_test().unwrap();
 
-    assert!(manager.pid_file.exists());
+    assert!(manager.pid_file_path().exists());
 
-    let pid = DaemonManager::read_pid_file(&manager.pid_file).unwrap();
-    assert_eq!(pid, std::process::id());
+    let expected_pid = std::process::id();
+    let written = fs::read_to_string(manager.pid_file_path()).unwrap();
+    let pid: u32 = written.trim().parse().unwrap();
+    assert_eq!(pid, expected_pid);
 }
 
 #[tokio::test]
 #[cfg(unix)]
 async fn test_daemon_already_running() {
+    let _guard = DAEMON_LOCK.lock().unwrap();
     let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
@@ -88,12 +97,14 @@ async fn test_daemon_already_running() {
 
 #[tokio::test]
 async fn test_stale_pid_file_handling() {
+    let _guard = DAEMON_LOCK.lock().unwrap();
     let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
-    fs::create_dir_all(manager.pid_file.parent().unwrap()).unwrap();
-    fs::write(&manager.pid_file, "999999").unwrap();
+    let pid_path = manager.pid_file_path().clone();
+    fs::create_dir_all(pid_path.parent().unwrap()).unwrap();
+    fs::write(&pid_path, "999999").unwrap();
 
     let result = manager.start().await;
     assert!(result.is_ok());
@@ -102,6 +113,7 @@ async fn test_stale_pid_file_handling() {
 #[tokio::test]
 #[cfg(unix)]
 async fn test_daemon_status() {
+    let _guard = DAEMON_LOCK.lock().unwrap();
     let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
@@ -119,14 +131,16 @@ async fn test_daemon_status() {
 
 #[tokio::test]
 async fn test_pid_file_cleanup_on_drop() {
+    let _guard = DAEMON_LOCK.lock().unwrap();
     let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
 
     let pid_file = {
         let manager = DaemonManager::new(&config).unwrap();
-        manager.write_pid_file().unwrap();
-        assert!(manager.pid_file.exists());
-        manager.pid_file.clone()
+        manager.write_pid_file_test().unwrap();
+        let path = manager.pid_file_path().clone();
+        assert!(path.exists());
+        path
     };
 
     assert!(!pid_file.exists());

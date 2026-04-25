@@ -4,6 +4,8 @@ use sha2::Digest;
 use sqlx::{FromRow, Row, SqlitePool};
 use uuid::Uuid;
 
+pub const MAX_INGEST_BYTES: usize = 25 * 1024 * 1024; // 25 MiB
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct KnowledgeDocument {
     pub id: String,
@@ -29,6 +31,12 @@ pub struct KnowledgeIngestResult {
     pub source_type: String,
     pub source_path: String,
     pub word_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeSearchHit {
+    pub doc: KnowledgeDocument,
+    pub snippet: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +79,7 @@ impl KnowledgeRepository {
         mime_type: Option<&str>,
         domain: Option<&str>,
         tags: Option<&[&str]>,
+        ingested_by: Option<&str>,
     ) -> Result<KnowledgeIngestResult> {
         let id = Uuid::new_v4().to_string();
         let content_hash = format!("{:x}", sha2::Sha256::digest(content.as_bytes()));
@@ -81,12 +90,13 @@ impl KnowledgeRepository {
             .unwrap()
             .as_secs() as i64;
         let tags_json = tags.map(|t| serde_json::to_string(t).unwrap_or_default());
+        let ingested_by = ingested_by.unwrap_or("cli");
 
         sqlx::query(
             "INSERT INTO knowledge_documents \
              (id, source_type, source_path, title, content, content_hash, \
-              mime_type, size_bytes, word_count, domain, tags, indexed_at, access_count) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+              mime_type, size_bytes, word_count, domain, tags, indexed_at, access_count, ingested_by) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
         )
         .bind(&id)
         .bind(source_type)
@@ -100,6 +110,7 @@ impl KnowledgeRepository {
         .bind(domain)
         .bind(tags_json)
         .bind(now)
+        .bind(ingested_by)
         .execute(&self.pool)
         .await?;
 
@@ -149,18 +160,53 @@ impl KnowledgeRepository {
         Ok(docs)
     }
 
-    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<KnowledgeDocument>> {
-        let docs = sqlx::query_as::<_, KnowledgeDocument>(
-            "SELECT * FROM knowledge_documents \
-             WHERE id IN (SELECT rowid FROM knowledge_fts WHERE knowledge_fts MATCH ? LIMIT ?) \
-             ORDER BY indexed_at DESC",
+    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<KnowledgeSearchHit>> {
+        // Join on rowid (FTS content_rowid=rowid). Order by FTS rank (lower = better match).
+        // snippet() args: table, col_index (-1 = best col), start, end, ellipsis, fragment_tokens.
+        let sanitized = sanitize_fts5_query(query);
+        let rows = sqlx::query(
+            "SELECT kd.id, kd.source_type, kd.source_path, kd.title, kd.content, \
+                    kd.content_hash, kd.mime_type, kd.size_bytes, kd.word_count, \
+                    kd.domain, kd.tags, kd.indexed_at, kd.last_accessed, kd.access_count, \
+                    snippet(knowledge_fts, -1, '**', '**', '…', 24) AS snippet \
+             FROM knowledge_fts \
+             JOIN knowledge_documents kd ON knowledge_fts.rowid = kd.rowid \
+             WHERE knowledge_fts MATCH ? \
+             ORDER BY rank \
+             LIMIT ?",
         )
-        .bind(query)
+        .bind(sanitized)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(docs)
+        let hits = rows
+            .into_iter()
+            .map(|row| {
+                let doc = KnowledgeDocument {
+                    id: row.get("id"),
+                    source_type: row.get("source_type"),
+                    source_path: row.get("source_path"),
+                    title: row.get("title"),
+                    content: row.get("content"),
+                    content_hash: row.get("content_hash"),
+                    mime_type: row.get("mime_type"),
+                    size_bytes: row.get("size_bytes"),
+                    word_count: row.get("word_count"),
+                    domain: row.get("domain"),
+                    tags: row.get("tags"),
+                    indexed_at: row.get("indexed_at"),
+                    last_accessed: row.get("last_accessed"),
+                    access_count: row.get("access_count"),
+                };
+                KnowledgeSearchHit {
+                    doc,
+                    snippet: row.get("snippet"),
+                }
+            })
+            .collect();
+
+        Ok(hits)
     }
 
     pub async fn remove(&self, id: &str) -> Result<bool> {
@@ -232,4 +278,20 @@ impl KnowledgeRepository {
 
         Ok(count > 0)
     }
+}
+
+/// Wrap each whitespace-delimited token in double-quotes so FTS5 treats them
+/// as literal phrase terms. This prevents apostrophes, hyphens, and other
+/// FTS5 metacharacters from causing syntax errors.
+fn sanitize_fts5_query(query: &str) -> String {
+    let tokens: Vec<String> = query
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .map(|t| {
+            // Escape any double-quotes inside the token by doubling them.
+            let escaped = t.replace('"', "\"\"");
+            format!("\"{escaped}\"")
+        })
+        .collect();
+    tokens.join(" ")
 }

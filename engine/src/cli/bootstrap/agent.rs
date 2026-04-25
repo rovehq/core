@@ -65,13 +65,15 @@ async fn build_task_agent_with_role(
 
     let db_pool = database.pool().clone();
 
+    let tools = plugins::build(&database, &config).await?;
+    let plugin_brain = tools.plugin_brain();
+
     let (providers, local_brain) =
         providers::build_for_execution_role(&config, execution_role).await?;
-    let router = Arc::new(LLMRouter::with_local_brain(
-        providers,
-        Arc::new(config.llm.clone()),
-        local_brain,
-    ));
+    let router = Arc::new(
+        LLMRouter::with_local_brain(providers, Arc::new(config.llm.clone()), local_brain)
+            .with_plugin_brain(plugin_brain),
+    );
     let rate_limiter = Arc::new(RateLimiter::new(db_pool.clone()));
     let risk_assessor = RiskAssessor::new();
     let task_repo = Arc::new(TaskRepository::new(db_pool.clone()));
@@ -84,7 +86,6 @@ async fn build_task_agent_with_role(
         base_sys
     });
 
-    let tools = plugins::build(&database, &config).await?;
     let policy_engine = load_policy_engine(&config).await?;
     let workspace_locks = Arc::new(WorkspaceLocks::new());
 

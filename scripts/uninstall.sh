@@ -7,14 +7,31 @@
 # ─────────────────────────────────────────────
 set -e
 
-BINARY="rove"
+CHANNEL="stable"
 FORCE=false
 
 for arg in "$@"; do
   case "$arg" in
     --yes|-y) FORCE=true ;;
+    --channel=*) CHANNEL="${arg#--channel=}" ;;
   esac
 done
+
+case "$CHANNEL" in
+  stable)
+    BINARY="rove"
+    PLUGIN_DIR="${HOME}/.rove"
+    ;;
+  dev|nightly)
+    CHANNEL="dev"
+    BINARY="rove-dev"
+    PLUGIN_DIR="${HOME}/.rove-dev"
+    ;;
+  *)
+    echo "Error: unknown channel '$CHANNEL' (expected 'stable' or 'dev')"
+    exit 1
+    ;;
+esac
 
 # Auto-confirm when piped (stdin is not a terminal)
 if [ ! -t 0 ]; then
@@ -138,7 +155,6 @@ fi
 
 # ── Remove plugins & WASM cache ──
 
-PLUGIN_DIR="${HOME}/.rove"
 if [ -d "$PLUGIN_DIR" ]; then
   printf "  Removing plugins %s... " "$PLUGIN_DIR"
   rm -rf "$PLUGIN_DIR"

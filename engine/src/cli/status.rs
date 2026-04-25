@@ -1,15 +1,22 @@
 use anyhow::Result;
 
+use crate::config::channel::Channel;
 use crate::config::metadata::{APP_DISPLAY_NAME, VERSION};
 use crate::config::Config;
 use crate::system::health;
+use crate::system::update_status;
 
 pub async fn show() -> Result<()> {
     let config = Config::load_or_create()?;
     let snapshot = health::collect_snapshot(&config).await?;
 
     println!();
-    println!("  {} v{}", APP_DISPLAY_NAME, VERSION);
+    println!(
+        "  {} v{} ({})",
+        APP_DISPLAY_NAME,
+        VERSION,
+        Channel::current().as_str()
+    );
     println!(
         "  Daemon: {}",
         if snapshot.daemon_running {
@@ -109,6 +116,17 @@ pub async fn show() -> Result<()> {
         path_label(snapshot.database.exists, snapshot.database.writable),
         path_label(snapshot.log_file.exists, snapshot.log_file.writable)
     );
+
+    if let Ok(update) = update_status::check_update_available().await {
+        if update.update_available {
+            println!(
+                "  Update: v{} → v{} available · run `rove update`",
+                update.current, update.latest
+            );
+        } else {
+            println!("  Update: up to date (v{})", update.current);
+        }
+    }
 
     if !snapshot.issues.is_empty() {
         println!();

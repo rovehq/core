@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rove_engine::conductor::memory::{HitType, MemorySystem};
 use rove_engine::conductor::types::TaskDomain;
+use rove_engine::config::{MemoryConfig, MemoryMode};
 use rove_engine::llm::ollama::OllamaProvider;
 use rove_engine::llm::router::LLMRouter;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -8,6 +9,17 @@ use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn memory_system_for_test(pool: SqlitePool, router: Arc<LLMRouter>) -> MemorySystem {
+    MemorySystem::new_with_config(
+        pool,
+        router,
+        MemoryConfig {
+            mode: MemoryMode::AlwaysOn,
+            ..MemoryConfig::default()
+        },
+    )
+}
 
 #[tokio::test]
 async fn test_memory_pipeline_mock_llm() -> Result<()> {
@@ -58,7 +70,7 @@ async fn test_memory_pipeline_mock_llm() -> Result<()> {
     let pool = setup_test_db().await?;
 
     // 4. Initialize MemorySystem
-    let memory_system = MemorySystem::new(pool.clone(), router.clone());
+    let memory_system = memory_system_for_test(pool.clone(), router.clone());
 
     // 5. Test Ingest
     let result = memory_system
@@ -83,9 +95,9 @@ async fn test_memory_pipeline_mock_llm() -> Result<()> {
     // We must flush FTS triggers and force a second ingest to test consolidation threshold
     // Insert dummy records to hit the >= 3 consolidation threshold
     let now = chrono::Utc::now().timestamp();
-    sqlx::query("INSERT INTO episodic_memory (id, task_id, summary, entities, topics, importance, consolidated, created_at, domain) VALUES ('id1', 'task2', 'summary1', '[]', '[]', 0.5, 0, ?, 'Code')").bind(now).execute(&pool).await?;
-    sqlx::query("INSERT INTO episodic_memory (id, task_id, summary, entities, topics, importance, consolidated, created_at, domain) VALUES ('id2', 'task3', 'summary2', '[]', '[]', 0.5, 0, ?, 'Code')").bind(now).execute(&pool).await?;
-    sqlx::query("INSERT INTO episodic_memory (id, task_id, summary, entities, topics, importance, consolidated, created_at, domain) VALUES ('id3', 'task4', 'summary3', '[]', '[]', 0.5, 0, ?, 'Code')").bind(now).execute(&pool).await?;
+    sqlx::query("INSERT INTO episodic_memory (id, task_id, summary, entities, topics, importance, consolidated, created_at, domain) VALUES ('id1', 'task2', 'summary1', '[]', '[]', 0.5, 0, ?, 'code')").bind(now).execute(&pool).await?;
+    sqlx::query("INSERT INTO episodic_memory (id, task_id, summary, entities, topics, importance, consolidated, created_at, domain) VALUES ('id2', 'task3', 'summary2', '[]', '[]', 0.5, 0, ?, 'code')").bind(now).execute(&pool).await?;
+    sqlx::query("INSERT INTO episodic_memory (id, task_id, summary, entities, topics, importance, consolidated, created_at, domain) VALUES ('id3', 'task4', 'summary3', '[]', '[]', 0.5, 0, ?, 'code')").bind(now).execute(&pool).await?;
 
     // Reset Mock for Consolidation response
     mock_server.reset().await;
@@ -232,7 +244,7 @@ async fn test_roundtrip_summary_preserved() -> Result<()> {
 
     let (_mock_server, router) =
         setup_mock_llm(ingest_response.clone(), serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest
     let result = memory_system
@@ -271,7 +283,7 @@ async fn test_roundtrip_entities_preserved() -> Result<()> {
 
     let (_mock_server, router) =
         setup_mock_llm(ingest_response.clone(), serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest
     let result = memory_system
@@ -315,7 +327,7 @@ async fn test_roundtrip_topics_preserved() -> Result<()> {
 
     let (_mock_server, router) =
         setup_mock_llm(ingest_response.clone(), serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest
     let result = memory_system
@@ -362,7 +374,7 @@ async fn test_roundtrip_importance_preserved() -> Result<()> {
 
     let (_mock_server, router) =
         setup_mock_llm(ingest_response.clone(), serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest
     let result = memory_system
@@ -401,7 +413,7 @@ async fn test_roundtrip_domain_preserved() -> Result<()> {
 
     let (_mock_server, router) =
         setup_mock_llm(ingest_response.clone(), serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest with Git domain
     memory_system
@@ -421,7 +433,7 @@ async fn test_roundtrip_domain_preserved() -> Result<()> {
         .await?;
 
     let domain: String = row.get("domain");
-    assert_eq!(domain, "Git");
+    assert_eq!(domain, "git");
 
     // Query with Git domain should find it
     let hits = memory_system
@@ -445,7 +457,7 @@ async fn test_roundtrip_sensitive_flag_preserved() -> Result<()> {
 
     let (_mock_server, router) =
         setup_mock_llm(ingest_response.clone(), serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest with sensitive=true
     memory_system
@@ -495,7 +507,7 @@ async fn test_end_to_end_workflow_ingest_consolidate_query_decay() -> Result<()>
     ]);
 
     let (mock_server, router) = setup_mock_llm(ingest_response, consolidate_response).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Step 1: Ingest multiple memories
     for i in 1..=4 {
@@ -600,7 +612,7 @@ async fn test_domain_gated_context_assembly_code_domain() -> Result<()> {
     });
 
     let (_mock_server, router) = setup_mock_llm(ingest_response, serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest with Code domain
     memory_system
@@ -633,7 +645,7 @@ async fn test_domain_gated_context_assembly_shell_domain() -> Result<()> {
     });
 
     let (_mock_server, router) = setup_mock_llm(ingest_response, serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest with Shell domain
     memory_system
@@ -677,7 +689,7 @@ async fn test_domain_gated_context_assembly_git_domain() -> Result<()> {
     });
 
     let (_mock_server, router) = setup_mock_llm(ingest_response, serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest with Git domain
     memory_system
@@ -711,7 +723,7 @@ async fn test_domain_gated_context_assembly_general_domain() -> Result<()> {
     });
 
     let (_mock_server, router) = setup_mock_llm(ingest_response, serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest with General domain
     memory_system
@@ -745,7 +757,7 @@ async fn test_domain_gated_context_assembly_browser_domain() -> Result<()> {
     });
 
     let (_mock_server, router) = setup_mock_llm(ingest_response, serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest with Browser domain
     memory_system
@@ -779,7 +791,7 @@ async fn test_domain_gated_context_assembly_data_domain() -> Result<()> {
     });
 
     let (_mock_server, router) = setup_mock_llm(ingest_response, serde_json::json!([])).await;
-    let memory_system = MemorySystem::new(pool.clone(), router);
+    let memory_system = memory_system_for_test(pool.clone(), router);
 
     // Ingest with Data domain
     memory_system

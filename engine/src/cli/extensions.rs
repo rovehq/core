@@ -442,7 +442,7 @@ pub(crate) async fn inventory(config: &Config) -> Result<Vec<ExtensionInventoryI
 
     let mut items = installed
         .iter()
-        .map(|plugin| inventory_item_from_plugin(plugin, &catalog))
+        .map(|plugin| inventory_item_from_plugin(plugin, &catalog, &config.wasm))
         .collect::<Result<Vec<_>>>()?;
     items.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(items)
@@ -800,6 +800,7 @@ fn parse_public_kind(kind: &str) -> Option<PluginType> {
 fn inventory_item_from_plugin(
     plugin: &InstalledPlugin,
     catalog: &[CatalogExtensionRecord],
+    wasm_defaults: &crate::config::wasm::WasmConfig,
 ) -> Result<ExtensionInventoryItem> {
     let catalog_entry = catalog.iter().find(|entry| entry.id == plugin.id);
     let manifest = Manifest::from_json(&plugin.manifest).ok();
@@ -843,7 +844,7 @@ fn inventory_item_from_plugin(
         },
     };
 
-    let wasm_limits = installed_plugin_wasm_limit_report(plugin)?.map(|report| WasmLimitView {
+    let wasm_limits = installed_plugin_wasm_limit_report(plugin, Some(wasm_defaults))?.map(|report| WasmLimitView {
         timeout_secs: report.timeout_secs,
         max_memory_mb: report.max_memory_mb,
         fuel_limit: report.fuel_limit,

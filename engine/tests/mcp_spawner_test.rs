@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use super::{McpServer, McpServerConfig, McpSpawner};
-use crate::runtime::mcp::SandboxProfile;
+use rove_engine::runtime::mcp::{McpServer, McpServerConfig, McpSpawner};
+use rove_engine::runtime::mcp::SandboxProfile;
 
 #[test]
 fn test_spawner_creation() {

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::crypto::CryptoModule;
-use crate::runtime::native::NativeRuntime;
+use rove_engine::crypto::CryptoModule;
+use rove_engine::runtime::native::NativeRuntime;
 use sdk::errors::EngineError;
 use sdk::manifest::Manifest;
 use serde_json::json;
