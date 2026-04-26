@@ -22,8 +22,9 @@ resolver = "2"
 [workspace.package]
 version = "0.0.3"
 edition = "2021"
-authors = ["Rove Team"]
-license = "MIT"
+authors = ["Rove HQ"]
+# BUSL-1.1 is not on the SPDX license list yet; using a license-file reference.
+license-file = "LICENSE"
 
 [workspace.dependencies]
 # Async runtime

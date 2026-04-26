@@ -1,84 +1,53 @@
-<div align="center">
-
 <a name="readme-top"></a>
 
 # Rove Core
 
-Local-first, self-hosted AI infrastructure. A single signed daemon runs your<br/>
-tasks, memory, brains, and remote mesh — on your machine, under your keys.
+<div align="center">
 
-[![License][repo_license_img]][repo_license_url]
+<img src="./assets/logo/Demo_logo.png" alt="Rove" width="160" />
+
+</div>
+
+Rove is a daemon-first, self-hosted AI infrastructure platform. One signed daemon runs your agents, workflows, memory, brains, and remote mesh — on your machine, under your keys. Not a chat shell. Not a cloud broker. **The Nginx of AI agents.**
+
+[![License: BUSL-1.1][license_img]][license_url]
 [![Channel: dev][channel_dev_img]][channel_dev_url]
 [![Channel: stable][channel_stable_img]][channel_stable_url]
 
-**&searr;&nbsp;&nbsp;Install in one line, pick your channel&nbsp;&nbsp;&swarr;**
-
-</div>
-
-## ✨ Features
-
-- **Local-first by default.** The daemon listens on `127.0.0.1:47630` and never phones home.
-- **Two release channels.** `dev` auto-updates at 00:00 UTC from the latest nightly; `stable` is manual-update only.
-- **Signed everything.** Engine, core-tools, plugins, drivers, brains — each manifest is Ed25519-signed with BLAKE3 hashes.
-- **Dual trust tiers.** Official artifacts are signed by the Rove team key; community WASM plugins are signed by a separate community key with its own blast radius.
-- **One daemon, two profiles.** `desktop` for local interactive use, `headless` for servers and agents.
-- **Remote mesh.** Stable node identity, signed remote requests, replay protection, optional ZeroTier transport hints.
-- **Hosted WebUI shell.** Ship the UI from `app.roveai.co` — daemon stays lean, UI updates independently.
-- **Cross-platform.** Linux (x86_64), macOS (aarch64), Windows (x86_64). More targets as they stabilize.
-
 ## ⚡️ Quick start
 
-No package managers, no installer wizards. One line.
+One line. No package managers. Pick a channel.
 
 ### 🐧 Linux / macOS
 
-Install the **dev** channel (default for now, since Rove is pre-stable):
-
 ```console
+# Dev channel (default for now — Rove is pre-stable)
 curl -fsSL https://rove.sh/install.sh | ROVE_CHANNEL=dev sh
-```
 
-Install the **stable** channel (empty until `v*` tags ship):
-
-```console
+# Stable channel (empty until v* tags ship)
 curl -fsSL https://rove.sh/install.sh | sh
 ```
 
-The binary lands in `/usr/local/bin/rove-dev` (dev) or `/usr/local/bin/rove` (stable), and the daemon root is `$HOME/.rove-dev` or `$HOME/.rove` respectively — so both channels can coexist on one machine.
-
-<div align="right">
-
-[&nwarr; Back to top](#readme-top)
-
-</div>
-
-### 🪟 Windows
-
-Install via PowerShell:
+### 🪟 Windows (PowerShell)
 
 ```powershell
-# dev channel
+# Dev
 $env:ROVE_CHANNEL="dev"; irm https://rove.sh/install.ps1 | iex
 
-# stable channel
+# Stable
 irm https://rove.sh/install.ps1 | iex
 ```
 
-<div align="right">
+### 🧭 What you get
 
-[&nwarr; Back to top](#readme-top)
+| Channel | Binary | Daemon root | Update policy |
+| --- | --- | --- | --- |
+| `stable` | `rove` | `$HOME/.rove` | Manual (`rove update`) |
+| `dev`    | `rove-dev` | `$HOME/.rove-dev` | Auto at **00:00 UTC** daily |
 
-</div>
+Both channels can coexist on one machine. Dev CI pre-builds at **22:00 UTC** so signed manifests are on R2 by the 00:00 UTC auto-update window.
 
-### 📦 Package installers
-
-Homebrew, MSI, `.deb`, `.rpm`, and Arch packages are on the roadmap but not shipped yet. For now, the install scripts above are the only supported path.
-
-<div align="right">
-
-[&nwarr; Back to top](#readme-top)
-
-</div>
+> Homebrew, MSI, `.deb`, `.rpm`, Arch and winget are on the roadmap. Install scripts above are the only supported path today.
 
 ### 🗑️ Uninstall
 
@@ -90,7 +59,79 @@ curl -fsSL https://rove.sh/uninstall.sh | sh
 irm https://rove.sh/uninstall.ps1 | iex
 ```
 
-Removes the binary, config, data, cache, plugins, database, and any daemon service.
+<div align="right">
+
+[&nwarr; Back to top](#readme-top)
+
+</div>
+
+## ✨ Features
+
+Every item below is live in `core/` today — each with a concrete file reference.
+
+### 🏛️ Daemon + control plane
+- **Single daemon, two profiles** (`desktop`, `headless`). Shared runtime, one PID, double-start guard, self-healing PID file.
+  `core/engine/src/system/daemon/`
+- **273 API routes** on a unified control plane — CLI, TUI, Telegram, WebUI, and remote mesh all read the same tables.
+  `core/engine/src/api/server/mod.rs`
+- **Interactive TUI + REPL**, hosted WebUI shell served from `app.roveai.co`, and a `rove` CLI with 40+ subcommands (`task`, `brain`, `policy`, `extension`, `service`, `remote`, `hook`, `memory`, `knowledge`, `workflow`, `mcp`, …).
+  `core/engine/src/cli/`
+
+### 🤖 Agents + workflows
+- **APEX multi-agent wave executor** — 1021-line executor orchestrating Researcher → Executor → Verifier waves with preset-driven bounded workers.
+  `core/engine/src/agent/core/apex.rs`
+- **AgentSpec + WorkflowSpec** as canonical specs. Durable workflow orchestration with variables, conditional branches, cancel semantics, and cron/webhook/file-watch triggers.
+  `core/engine/src/system/workflow_runtime.rs`, `workflow_triggers.rs`
+- **Lifecycle hooks** — 7 event types with a circuit breaker for runaway handlers.
+  `core/engine/src/hooks/mod.rs`
+- **Agent factory** generates and previews spec bundles before they execute.
+
+### 🧠 Memory + knowledge
+- **Working memory + knowledge graph conductor** with FTS5 full-text search and provenance.
+  `core/engine/src/memory/conductor/`, `system/knowledge.rs`
+- **CLI + API + WebUI** for ingest, query, export, and management — one source of truth across surfaces.
+  `core/engine/src/cli/knowledge.rs`
+
+### 🧩 Plugins + extensions
+- **WASM sandbox** (extism) with fuel, memory, and timeout limits.
+  `core/engine/src/runtime/wasm/{call,host,inspect,load,restart}.rs`
+- **Native tools as dynamic libraries** — `filesystem`, `file-watcher`, `app-launcher`, `screenshot`, `terminal`, `ui-server`, `notification`, `voice-native`, `telegram`.
+  `core/tools/`
+- **Credential zero-exposure injection** — secrets resolved into WASM calls, scrubbed from outputs before they touch logs.
+  `core/engine/src/runtime/wasm/call.rs`
+- **Builtin tools are authoritative** — native plugins require `Official` or `Reviewed` trust before they can shadow a builtin.
+  `core/engine/src/cli/plugins/validate.rs`
+
+### 🔐 Security + trust
+- **Dual-key Ed25519 signing.** Official key signs engine, core-tools, drivers, brains, official plugins. Community key signs community WASM plugins only. Cross-signing rejected.
+  `core/engine/src/security/crypto/mod.rs` — 27/27 tests pass
+- **BLAKE3 content hashing** for every artifact; SHA-256 emergency fallback.
+- **Keychain-backed secrets** on macOS, Linux (libsecret), and Windows.
+  `core/engine/src/security/secrets/`
+- **Approvals layer** with tier-1 / tier-2 risk gates.
+  `core/engine/src/security/approvals.rs`
+- **Queryable audit log** via `rove logs security` + `GET /v1/audit`.
+- **Signed remote execution** — HMAC headers, nonce, TTL, replay protection.
+
+### 📡 Remote + channels
+- **Remote mesh** with stable node identity, signed requests, optional ZeroTier transport hints.
+- **Telegram as primary channel** — inbound verification, `telegram_audit_log`, admin IDs, 5-minute approval timeout.
+  `core/engine/src/channels/telegram/`
+- **Rove as MCP server** — JSON-RPC 2.0 stdio, `rove.execute_agent` meta-tool, protocol version `2024-11-05`.
+  `core/engine/src/cli/mcp/serve.rs`
+- **Browser automation via CDP** — 2035-line plugin with full Chrome DevTools Protocol, smart tools, session management.
+  `core/plugins/browser-cdp/`
+
+### 🧰 Ops + observability
+- **Prometheus metrics** (`/metrics`) + **OpenTelemetry traces** (`TaskTraceContext`).
+  `core/engine/src/system/metrics.rs`
+- **Service install/uninstall/upgrade parity** — launchd, systemd, `sc.exe`, `schtasks.exe`.
+  `core/engine/src/system/service_install.rs`
+- **Migration wedge** — `--dry-run` and `migrate status` with adapters for OpenClaw, ZeroClaw, Moltis.
+  `core/engine/src/cli/migrate.rs`
+
+### 🧱 LLM providers
+- Anthropic, OpenAI, Gemini, NVIDIA NIM, Ollama, and fully custom endpoints. Provider router + parser at `core/engine/src/llm/`.
 
 <div align="right">
 
@@ -105,52 +146,24 @@ Removes the binary, config, data, cache, plugins, database, and any daemon servi
 | `engine/` | Runtime core: daemon, CLI, TUI, storage, policy, security, services, remote mesh |
 | `brain/` | Dispatch and reasoning runtimes, adapters, local-model helpers |
 | `sdk/` | Shared contracts: tools, extensions, brains, policy, services, remote control |
-| `tools/` | Core Rust tools built as dynamic libraries (`filesystem`, `screenshot`, `terminal`, `ui-server`, …) |
+| `tools/` | Core Rust tools built as dynamic libraries |
 | `webui/` | Hosted-shell WebUI client for `app.roveai.co` + local daemon dev |
 | `scripts/` | Install, uninstall, key generation, release helpers |
 | `manifest/` | Embedded public keys resolved at build time (official + community) |
+| `assets/` | Logos, icons, static media |
 | `docs/` | Developer docs and reports |
-
-## 🧭 Channels
-
-Rove ships two channels in parallel. Each has its own binary name, its own daemon root, its own registry prefix, and its own update policy.
-
-| Channel | Binary | Daemon root | Registry prefix | Auto-update |
-| --- | --- | --- | --- | --- |
-| `stable` | `rove` | `$HOME/.rove` | `registry.roveai.co/stable/...` | Manual only (`rove update`) |
-| `dev` | `rove-dev` | `$HOME/.rove-dev` | `registry.roveai.co/dev/...` | Daily at **00:00 UTC** |
-
-CI builds pre-fetch nightly dev artifacts at **22:00 UTC** (2 hours before the auto-update window), so by 00:00 UTC, signed manifests are already on R2 and ready to serve.
-
-Pre-stable note: while no `v*` tag has been cut, every push to `main` ships to the `dev` channel. Tag-based stable releases are gated on the checklist in [`.report/STATUS.md`](../.report/STATUS.md).
-
-<div align="right">
-
-[&nwarr; Back to top](#readme-top)
-
-</div>
-
-## 🏗️ Current architecture
-
-- One daemon binary, two profiles: `desktop` and `headless`.
-- Control surface: `task`, `brain`, `policy`, `extension`, `service`, `remote`.
-- Local daemon auth with bearer sessions and reauth windows.
-- Installable system extensions (no legacy built-in tools).
-- Remote mesh with stable node identity, signed requests, replay protection.
-- Signed artifacts verified at install + update time via the embedded public keys.
-- Hosted WebUI shell — no daemon-served UI bundle.
 
 ## 🧪 Development
 
 ```bash
-# Build the workspace
+# Build + test
 cargo check --all-targets
 cargo test --workspace
 
-# Run the daemon locally (desktop profile, default port)
+# Run daemon (desktop profile, default port)
 cargo run -p engine --bin rove -- daemon --profile desktop --port 47630
 
-# Build the WebUI shell
+# WebUI shell
 (cd webui && npm ci && npm run build)
 ```
 
@@ -162,18 +175,20 @@ Useful entry points:
 - [`../.report/STATUS.md`](../.report/STATUS.md) — current verified feature state
 - [`../.docs/agent-playbook.md`](../.docs/agent-playbook.md) — how agents work in this repo
 
-## 🔐 Security model
+## 📄 License
 
-- Every manifest is Ed25519-signed over the canonicalized JSON (signature field and timestamps excluded from canonical form).
-- Official signatures are produced by the Rove team key, held in Infisical; community signatures by a separate community key.
-- Community authors do not hold keys — CI signs with the community key only after PR merge.
-- Public keys are pinned into the engine at build time via `build.rs` and resolved from either GitHub secrets (CI) or the `manifest/*.bin` files (local).
-- BLAKE3 is the content hash for all artifacts; SHA-256 is the emergency fallback.
+Rove Core is released under the **[Business Source License 1.1](./LICENSE)** (BUSL-1.1).
+
+- ✅ **Free for non-commercial use** — personal, academic, research, evaluation, hobby projects, and non-profit internal use.
+- 💼 **Commercial use requires a license.** If you want to sell, host, or operate Rove as part of a paid product or service, contact **team.rovehq@gmail.com**.
+- 🔓 **Auto-converts to Apache 2.0** on the Change Date (**2030-04-26**) — four years after first release.
+
+This is not an OSI-approved open-source license, but the source is fully open and modifiable. Full terms in [`LICENSE`](./LICENSE).
 
 ## 🤝 Contributing
 
 - [Issues][repo_issues_url] — bugs and feature requests
-- [Pull requests][repo_pull_request_url] — send improvements against `main`
+- [Pull requests][repo_pull_request_url] — improvements against `main`
 - [Discussions][repo_discussions_url] — questions and ideas
 
 Agents (Claude, Codex, Cursor, etc.) should read [`AGENTS.md`](../AGENTS.md) and [`.docs/agent-playbook.md`](../.docs/agent-playbook.md) before making changes.
@@ -185,8 +200,8 @@ Agents (Claude, Codex, Cursor, etc.) should read [`AGENTS.md`](../AGENTS.md) and
 </div>
 
 <!-- Links -->
-[repo_license_url]: https://github.com/rovehq/core/blob/main/LICENSE
-[repo_license_img]: https://img.shields.io/badge/license-Apache_2.0-blue
+[license_img]: https://img.shields.io/badge/license-BUSL--1.1-orange
+[license_url]: ./LICENSE
 [channel_dev_img]: https://img.shields.io/badge/channel-dev-yellow
 [channel_dev_url]: https://registry.roveai.co/dev/engine/manifest.json
 [channel_stable_img]: https://img.shields.io/badge/channel-stable-green
