@@ -148,21 +148,20 @@ jobs:
       # Stable tag builds drop the feature → Stable channel, $HOME/.rove,
       # manual `rove update` only.
       - name: Build engine (release)
-        run: |
-          if [[ "${{ needs.changes.outputs.channel }}" == "dev" ]]; then
-            FEATURES="--features channel-dev"
-          else
-            FEATURES="--features production"
-          fi
-          cargo build --release --target ${{ matrix.target }} -p engine $FEATURES
+        run: scripts/release/build-release.sh
         shell: bash
         env:
+          ROVE_CHANNEL: ${{ needs.changes.outputs.channel }}
+          TARGET: ${{ matrix.target }}
           ROVE_TEAM_OFFICIAL_PUBLIC_KEY: ${{ secrets.ROVE_TEAM_OFFICIAL_PUBLIC_KEY }}
           ROVE_TEAM_COMMUNITY_PUBLIC_KEY: ${{ secrets.ROVE_TEAM_COMMUNITY_PUBLIC_KEY }}
 
       - name: Stage engine artifact
         run: |
           mkdir -p artifacts/engine
+          # build-release.sh staged binary under target/release-builds/
+          cp target/release-builds/rove-*${{ matrix.engine_ext }} \
+             artifacts/engine/rove-${{ matrix.target }}${{ matrix.engine_ext }} 2>/dev/null || \
           cp target/${{ matrix.target }}/release/rove${{ matrix.engine_ext }} \
              artifacts/engine/rove-${{ matrix.target }}${{ matrix.engine_ext }} 2>/dev/null || true
         shell: bash

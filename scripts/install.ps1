@@ -1,135 +1,99 @@
-# Rove installer script for Windows
+# Rove installer (Windows / PowerShell).
 # Usage:
-#   irm https://raw.githubusercontent.com/orvislab/rove/main/scripts/install.ps1 | iex
-#   irm https://raw.githubusercontent.com/orvislab/rove/main/scripts/install.ps1 | iex -Channel dev
-param(
-    [ValidateSet("stable", "dev")]
-    [string]$Channel = "stable"
-)
+#   irm https://rove.sh/install.ps1 | iex
+#   $env:ROVE_CHANNEL='dev'; irm https://rove.sh/install.ps1 | iex
+#
+# Env:
+#   ROVE_CHANNEL       stable (default) | dev
+#   ROVE_REGISTRY_BASE override registry URL
+#   ROVE_INSTALL_DIR   override install dir (default %LOCALAPPDATA%\Rove)
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 
-$Repo = "orvislab/rove"
-$R2Base = "https://registry.roveai.co"
-
-if ($Channel -eq "dev") {
-    $Binary = "rove-dev"
-    $HomeDir = Join-Path $env:USERPROFILE ".rove-dev"
-} else {
-    $Binary = "rove"
-    $HomeDir = Join-Path $env:USERPROFILE ".rove"
+$Channel = if ($env:ROVE_CHANNEL) { $env:ROVE_CHANNEL } else { 'stable' }
+if ($Channel -notin @('stable', 'dev')) {
+    throw "ROVE_CHANNEL must be 'stable' or 'dev' (got '$Channel')"
 }
 
-Write-Host "Rove Installer" -ForegroundColor Cyan
-Write-Host "==============" -ForegroundColor Cyan
-Write-Host "  Channel: $Channel"
-Write-Host "  Binary:  $Binary.exe"
-Write-Host "  Home:    $HomeDir"
+$RegistryBase = if ($env:ROVE_REGISTRY_BASE) { $env:ROVE_REGISTRY_BASE.TrimEnd('/') } else { 'https://registry.roveai.co' }
+$BinName = if ($Channel -eq 'dev') { 'rove-dev.exe' } else { 'rove.exe' }
 
-# Detect architecture
-$Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-switch ($Arch) {
-    "X64"   { $Target = "windows-x86_64" }
-    "Arm64" { $Target = "windows-aarch64" }
-    default {
-        Write-Host "Error: Unsupported architecture: $Arch" -ForegroundColor Red
-        exit 1
+# --- platform detect ---
+$arch = if ([Environment]::Is64BitOperatingSystem) { 'x86_64' } else { throw 'unsupported: 32-bit Windows' }
+if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { $arch = 'aarch64' }
+$target = "windows-$arch"
+$asset = switch ($target) {
+    'windows-x86_64'  { 'rove-x86_64-pc-windows-msvc.exe' }
+    'windows-aarch64' { 'rove-aarch64-pc-windows-msvc.exe' }
+    default { throw "no published build for $target" }
+}
+
+$tmp = Join-Path $env:TEMP "rove-install-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+
+try {
+    # --- fetch manifest ---
+    $manifestUrl = "$RegistryBase/$Channel/engine/manifest.json"
+    $sigUrl      = "$RegistryBase/$Channel/engine/manifest.sig"
+    Write-Host "Fetching manifest: $manifestUrl"
+    $manifestJson = Invoke-WebRequest -UseBasicParsing -Uri $manifestUrl | Select-Object -ExpandProperty Content
+    try { Invoke-WebRequest -UseBasicParsing -Uri $sigUrl -OutFile (Join-Path $tmp 'manifest.sig') | Out-Null } catch { Write-Warning "signature fetch failed" }
+
+    $manifest = $manifestJson | ConvertFrom-Json
+    if ($manifest.channel -ne $Channel) {
+        throw "manifest channel mismatch (expected $Channel got '$($manifest.channel)')"
     }
-}
 
-Write-Host "  Arch:    $Arch ($Target)"
-Write-Host ""
+    $latest = $manifest.entries.latest
+    $plat = $latest.platforms.$target
+    if (-not $plat) { throw "no build for target $target in manifest" }
 
-# Fetch channel-scoped manifest from R2.
-$ManifestUrl = "$R2Base/$Channel/engine/manifest.json"
-Write-Host "Fetching $Channel manifest..."
-try {
-    $Manifest = Invoke-RestMethod -Uri $ManifestUrl -UseBasicParsing
-} catch {
-    Write-Host "Error: Failed to fetch $ManifestUrl" -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    exit 1
-}
+    $url = $plat.url
+    $fallback = $plat.fallback_url
+    $expectedHash = $plat.blake3
 
-$Engine = $Manifest.engines.$Target
-if (-not $Engine) {
-    Write-Host "Error: manifest has no release for target '$Target'" -ForegroundColor Red
-    exit 1
-}
+    # --- download ---
+    $payload = Join-Path $tmp $asset
+    Write-Host "Downloading $asset ($($latest.version), $Channel channel)..."
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $payload
+    } catch {
+        if ($fallback) {
+            Write-Warning "primary download failed, trying fallback"
+            Invoke-WebRequest -UseBasicParsing -Uri $fallback -OutFile $payload
+        } else { throw }
+    }
 
-$Version = $Engine.version
-if (-not $Version) { $Version = $Manifest.engines.latest.version }
-$Url = $Engine.url
-$Fallback = $Engine.fallback_url
-$ExpectedHash = $Engine.sha256
-
-if (-not $Url) {
-    Write-Host "Error: manifest entry for '$Target' missing 'url'" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "  Latest version: $Version"
-Write-Host ""
-
-# Download
-$TempFile = Join-Path $env:TEMP "$Binary-$Target.exe"
-Write-Host "Downloading from R2: $Url"
-try {
-    Invoke-WebRequest -Uri $Url -OutFile $TempFile -UseBasicParsing
-} catch {
-    if ($Fallback) {
-        Write-Host "R2 download failed, trying GitHub fallback: $Fallback" -ForegroundColor Yellow
-        Invoke-WebRequest -Uri $Fallback -OutFile $TempFile -UseBasicParsing
+    # --- verify (best-effort; BLAKE3 requires external tool) ---
+    if ($expectedHash -and (Get-Command b3sum -ErrorAction SilentlyContinue)) {
+        $actual = (& b3sum $payload).Split(' ')[0]
+        if ($actual -ne $expectedHash) {
+            throw "BLAKE3 mismatch. expected=$expectedHash actual=$actual"
+        }
+        Write-Host "BLAKE3 verified."
     } else {
-        Write-Host "Error: download failed and manifest has no fallback_url." -ForegroundColor Red
-        exit 1
+        Write-Warning "b3sum not available, skipping payload hash verification"
     }
-}
 
-# Verify SHA-256 (BLAKE3-hex in practice — matches cli/update.rs)
-if ($ExpectedHash) {
-    Write-Host "Verifying SHA-256..."
-    $Actual = (Get-FileHash -Algorithm SHA256 -Path $TempFile).Hash.ToLower()
-    if ($Actual -ne $ExpectedHash.ToLower()) {
-        Remove-Item $TempFile -ErrorAction SilentlyContinue
-        Write-Host "Error: hash mismatch" -ForegroundColor Red
-        Write-Host "  Expected: $ExpectedHash"
-        Write-Host "  Got:      $Actual"
-        exit 1
+    # --- install ---
+    $destDir = if ($env:ROVE_INSTALL_DIR) { $env:ROVE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Rove' }
+    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    $dest = Join-Path $destDir $BinName
+    Copy-Item -Path $payload -Destination $dest -Force
+
+    # --- PATH hint ---
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userPath -notlike "*$destDir*") {
+        [Environment]::SetEnvironmentVariable('Path', "$userPath;$destDir", 'User')
+        Write-Host "Added $destDir to user PATH (restart shell to pick up)."
     }
-    Write-Host "  verified."
-}
 
-# Install to user local bin
-$InstallDir = Join-Path $env:LOCALAPPDATA "Rove\bin"
-if (-not (Test-Path $InstallDir)) {
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-}
-
-$InstallPath = Join-Path $InstallDir "$Binary.exe"
-Move-Item -Path $TempFile -Destination $InstallPath -Force
-
-# Channel marker so the binary can detect a hand-configured home dir.
-if (-not (Test-Path $HomeDir)) {
-    New-Item -ItemType Directory -Path $HomeDir -Force | Out-Null
-}
-Set-Content -Path (Join-Path $HomeDir "channel") -Value $Channel -NoNewline
-
-Write-Host ""
-Write-Host "Installed to $InstallPath" -ForegroundColor Green
-
-# Add to PATH if not already there
-$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($UserPath -notlike "*$InstallDir*") {
-    [Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallDir", "User")
-    Write-Host "Added $InstallDir to user PATH" -ForegroundColor Green
-    Write-Host "Restart your terminal for PATH changes to take effect." -ForegroundColor Yellow
-}
-
-Write-Host ""
-Write-Host "Run '$Binary setup' to configure." -ForegroundColor Cyan
-Write-Host "Run '$Binary doctor' to verify installation." -ForegroundColor Cyan
-if ($Channel -eq "dev") {
+    $dataDir = if ($Channel -eq 'dev') { Join-Path $env:USERPROFILE '.rove-dev' } else { Join-Path $env:USERPROFILE '.rove' }
     Write-Host ""
-    Write-Host "Dev channel: engine auto-updates daily at UTC 00:00." -ForegroundColor Cyan
+    Write-Host "Installed: $dest (v$($latest.version), $Channel)"
+    Write-Host "Data dir:  $dataDir"
+    Write-Host ""
+    Write-Host "Next: $BinName init"
+} finally {
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

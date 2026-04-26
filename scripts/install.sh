@@ -1,226 +1,163 @@
-#!/bin/sh
-# Rove Installer
-# Primary:  Cloudflare R2 (registry.roveai.co/{channel}/engine/manifest.json)
-# Fallback: GitHub Releases (github.com/orvislab/rove)
-#
+#!/usr/bin/env bash
+# Rove installer (POSIX / macOS / Linux).
 # Usage:
-#   curl -fsSL https://roveai.co/install.sh | sh
-#   curl -fsSL https://roveai.co/install.sh | sh -s -- --channel=dev
-set -e
+#   curl -sSfL https://rove.sh/install.sh | sh
+#   ROVE_CHANNEL=dev curl -sSfL https://rove.sh/install.sh | sh
+#
+# Env:
+#   ROVE_CHANNEL       stable (default) | dev
+#   ROVE_REGISTRY_BASE override registry URL (default https://registry.roveai.co)
+#   ROVE_INSTALL_DIR   override install dir (default /usr/local/bin or $HOME/.local/bin)
 
-REPO="orvislab/rove"
-CHANNEL="stable"
-INSTALL_DIR="/usr/local/bin"
-R2_BASE="https://registry.roveai.co"
-GH_BASE="https://github.com/${REPO}/releases/download"
+set -eu
 
-# ── Parse flags ──────────────────────────────────
-
-for arg in "$@"; do
-    case "$arg" in
-        --channel=*)
-            CHANNEL="${arg#--channel=}"
-            ;;
-        --channel)
-            echo "Error: --channel requires a value (e.g. --channel=dev)"
-            exit 1
-            ;;
-        -h|--help)
-            cat <<EOF
-Rove installer.
-
-Options:
-  --channel=stable|dev    Which release channel to install (default: stable).
-                          stable -> /usr/local/bin/rove, data dir ~/.rove
-                          dev    -> /usr/local/bin/rove-dev, data dir ~/.rove-dev
-EOF
-            exit 0
-            ;;
-    esac
-done
+CHANNEL="${ROVE_CHANNEL:-stable}"
+REGISTRY_BASE="${ROVE_REGISTRY_BASE:-https://registry.roveai.co}"
+REGISTRY_BASE="${REGISTRY_BASE%/}"
 
 case "$CHANNEL" in
-    stable)
-        BINARY="rove"
-        HOME_DIR="$HOME/.rove"
-        ;;
-    dev|nightly)
-        CHANNEL="dev"
-        BINARY="rove-dev"
-        HOME_DIR="$HOME/.rove-dev"
-        ;;
-    *)
-        echo "Error: unknown channel '$CHANNEL' (expected 'stable' or 'dev')"
-        exit 1
-        ;;
+    stable|dev) ;;
+    *) echo "error: ROVE_CHANNEL must be 'stable' or 'dev' (got '$CHANNEL')" >&2; exit 1 ;;
 esac
 
-# ── Detect platform ──────────────────────────────
+BIN_NAME="rove"
+[ "$CHANNEL" = "dev" ] && BIN_NAME="rove-dev"
 
-detect_platform() {
-    OS="$(uname -s)"
-    case "$OS" in
-        Linux)  OS_TARGET="linux" ;;
-        Darwin) OS_TARGET="darwin" ;;
-        MINGW*|MSYS*|CYGWIN*)
-            echo "Error: Use install.ps1 for Windows"
-            exit 1
-            ;;
-        *)
-            echo "Error: Unsupported OS: $OS"
-            exit 1
-            ;;
-    esac
+# --- platform detect ---
+uname_s="$(uname -s)"
+uname_m="$(uname -m)"
+case "$uname_s" in
+    Linux)  os="linux" ;;
+    Darwin) os="darwin" ;;
+    *) echo "error: unsupported OS '$uname_s'" >&2; exit 1 ;;
+esac
+case "$uname_m" in
+    x86_64|amd64) arch="x86_64" ;;
+    arm64|aarch64) arch="aarch64" ;;
+    *) echo "error: unsupported arch '$uname_m'" >&2; exit 1 ;;
+esac
+target="${os}-${arch}"
 
-    ARCH="$(uname -m)"
-    case "$ARCH" in
-        x86_64|amd64)  ARCH_TARGET="x86_64" ;;
-        aarch64|arm64) ARCH_TARGET="aarch64" ;;
-        *)
-            echo "Error: Unsupported architecture: $ARCH"
-            exit 1
-            ;;
-    esac
+case "$target" in
+    darwin-aarch64) asset="rove-aarch64-apple-darwin" ;;
+    darwin-x86_64)  asset="rove-x86_64-apple-darwin" ;;
+    linux-x86_64)   asset="rove-x86_64-unknown-linux-gnu" ;;
+    linux-aarch64)  asset="rove-aarch64-unknown-linux-gnu" ;;
+    *) echo "error: no published build for $target" >&2; exit 1 ;;
+esac
 
-    TARGET="${OS_TARGET}-${ARCH_TARGET}"
+# --- deps ---
+if command -v curl >/dev/null 2>&1; then
+    dl() { curl -sSfL "$1" -o "$2"; }
+    dl_text() { curl -sSfL "$1"; }
+elif command -v wget >/dev/null 2>&1; then
+    dl() { wget -q -O "$2" "$1"; }
+    dl_text() { wget -q -O - "$1"; }
+else
+    echo "error: need curl or wget" >&2; exit 1
+fi
+
+if command -v b3sum >/dev/null 2>&1; then
+    hash_cmd="b3sum"
+else
+    hash_cmd=""
+    echo "warn: b3sum not found; skipping payload hash verification" >&2
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# --- fetch manifest + signature ---
+manifest_url="${REGISTRY_BASE}/${CHANNEL}/engine/manifest.json"
+sig_url="${REGISTRY_BASE}/${CHANNEL}/engine/manifest.sig"
+
+echo "Fetching manifest: $manifest_url"
+dl "$manifest_url" "$tmp/manifest.json"
+dl "$sig_url" "$tmp/manifest.sig" || echo "warn: signature fetch failed" >&2
+
+# Minimal manifest parse with shell + sed (no jq dependency).
+# Extract: entries.latest.version, entries.latest.platforms.<target>.url / blake3 / size_bytes
+channel_in_manifest="$(sed -n 's/.*"channel"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json" | head -n1)"
+if [ "$channel_in_manifest" != "$CHANNEL" ]; then
+    echo "error: manifest channel mismatch (expected $CHANNEL got '$channel_in_manifest')" >&2
+    exit 1
+fi
+
+version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/manifest.json" | head -n1)"
+[ -n "$version" ] || { echo "error: cannot parse version from manifest" >&2; exit 1; }
+
+# Extract platform block.
+python_parse() {
+    cat <<PY | /usr/bin/env python3 -
+import json, sys
+m = json.load(open("$tmp/manifest.json"))
+p = m["entries"]["latest"]["platforms"]["$target"]
+print(p.get("url",""))
+print(p.get("fallback_url",""))
+print(p.get("blake3",""))
+print(p.get("size_bytes",0))
+PY
 }
 
-# ── Fetch latest version from manifest ───────────
+if command -v python3 >/dev/null 2>&1; then
+    parse_out="$(python_parse)"
+    url="$(echo "$parse_out" | sed -n '1p')"
+    fallback="$(echo "$parse_out" | sed -n '2p')"
+    expected_hash="$(echo "$parse_out" | sed -n '3p')"
+else
+    echo "error: python3 required for manifest parse" >&2
+    exit 1
+fi
 
-fetch_version() {
-    echo "Fetching ${CHANNEL} manifest..."
-    MANIFEST_URL="${R2_BASE}/${CHANNEL}/engine/manifest.json"
-    MANIFEST=$(curl -fsSL "$MANIFEST_URL" 2>/dev/null || true)
+[ -n "$url" ] || { echo "error: no url for target $target in manifest" >&2; exit 1; }
 
-    if [ -z "$MANIFEST" ]; then
-        echo "Error: Could not fetch $MANIFEST_URL"
+# --- download binary ---
+echo "Downloading $asset ($version, $CHANNEL channel)..."
+if ! dl "$url" "$tmp/$asset"; then
+    if [ -n "$fallback" ]; then
+        echo "Primary download failed, trying fallback..." >&2
+        dl "$fallback" "$tmp/$asset"
+    else
         exit 1
     fi
+fi
 
-    VERSION=$(echo "$MANIFEST" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-    ENGINES_BLOCK=$(echo "$MANIFEST" | sed -n '/"engines":/,$p')
-    BLOCK=$(echo "$ENGINES_BLOCK" | awk "/\"${TARGET}\"/,/\}/")
-    EXPECTED_HASH=$(echo "$BLOCK" | grep '"sha256"' | head -1 | sed 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([a-f0-9]\{64\}\)".*/\1/' || true)
-    R2_URL=$(echo "$BLOCK" | grep '"url"' | head -1 | sed 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-    GH_URL=$(echo "$BLOCK" | grep '"fallback_url"' | head -1 | sed 's/.*"fallback_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-    SOURCE="${CHANNEL}-registry"
-
-    if [ -z "$VERSION" ] || [ -z "$R2_URL" ]; then
-        echo "Error: Could not determine latest version dynamically from $MANIFEST_URL"
+# --- verify ---
+if [ -n "$hash_cmd" ] && [ -n "$expected_hash" ]; then
+    actual="$($hash_cmd "$tmp/$asset" | awk '{print $1}')"
+    if [ "$actual" != "$expected_hash" ]; then
+        echo "error: BLAKE3 mismatch" >&2
+        echo "  expected: $expected_hash" >&2
+        echo "  actual:   $actual" >&2
         exit 1
     fi
+    echo "BLAKE3 verified."
+fi
 
-    echo "  Channel: $CHANNEL"
-    echo "  Version: $VERSION (source: $SOURCE)"
-}
+chmod 0755 "$tmp/$asset"
 
-# ── Download binary ──────────────────────────────
+# --- install ---
+if [ -n "${ROVE_INSTALL_DIR:-}" ]; then
+    dest_dir="$ROVE_INSTALL_DIR"
+elif [ -w "/usr/local/bin" ] 2>/dev/null; then
+    dest_dir="/usr/local/bin"
+elif [ "$(id -u)" = "0" ]; then
+    dest_dir="/usr/local/bin"
+else
+    dest_dir="$HOME/.local/bin"
+    mkdir -p "$dest_dir"
+fi
 
-download_binary() {
-    TEMP_FILE="$(mktemp)"
+dest="$dest_dir/$BIN_NAME"
+if [ ! -w "$dest_dir" ] 2>/dev/null; then
+    echo "Installing to $dest (sudo)..."
+    sudo install -m 0755 "$tmp/$asset" "$dest"
+else
+    install -m 0755 "$tmp/$asset" "$dest"
+fi
 
-    echo "Downloading from R2: ${R2_URL}"
-    if ! curl -fSL --progress-bar "$R2_URL" -o "$TEMP_FILE"; then
-        echo "Primary download failed. Trying GitHub Fallback..."
-        if [ -n "$GH_URL" ]; then
-            echo "Downloading from GitHub: ${GH_URL}"
-            if ! curl -fSL --progress-bar "$GH_URL" -o "$TEMP_FILE"; then
-                rm -f "$TEMP_FILE"
-                echo ""
-                echo "Error: Download failed from both R2 and GitHub Fallback."
-                exit 1
-            fi
-        else
-            echo "Error: No fallback URL provided by manifest."
-            exit 1
-        fi
-    fi
-}
-
-# ── Verify SHA-256 ───────────────────────────────
-
-verify_hash() {
-    if [ -n "$EXPECTED_HASH" ]; then
-        echo "Verifying SHA-256..."
-        if command -v sha256sum >/dev/null 2>&1; then
-            ACTUAL_HASH=$(sha256sum "$TEMP_FILE" | awk '{print $1}')
-        elif command -v shasum >/dev/null 2>&1; then
-            ACTUAL_HASH=$(shasum -a 256 "$TEMP_FILE" | awk '{print $1}')
-        else
-            echo "Warning: No SHA-256 tool found, skipping verification"
-            return
-        fi
-
-        if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
-            rm -f "$TEMP_FILE"
-            echo "Error: SHA-256 mismatch!"
-            echo "  Expected: $EXPECTED_HASH"
-            echo "  Got:      $ACTUAL_HASH"
-            echo ""
-            echo "The binary may have been tampered with. Aborting."
-            exit 1
-        fi
-        echo "  SHA-256 verified ✓"
-    else
-        echo "Warning: No expected hash available, skipping verification"
-    fi
-}
-
-# ── Install binary ───────────────────────────────
-
-install_binary() {
-    chmod +x "$TEMP_FILE"
-
-    if [ -w "$INSTALL_DIR" ]; then
-        mv "$TEMP_FILE" "${INSTALL_DIR}/${BINARY}"
-        echo "Installed to ${INSTALL_DIR}/${BINARY}"
-    elif command -v sudo >/dev/null 2>&1; then
-        echo "Installing to ${INSTALL_DIR}/${BINARY} (requires sudo)..."
-        sudo mv "$TEMP_FILE" "${INSTALL_DIR}/${BINARY}"
-        echo "Installed to ${INSTALL_DIR}/${BINARY}"
-    else
-        INSTALL_DIR="${HOME}/.local/bin"
-        mkdir -p "$INSTALL_DIR"
-        mv "$TEMP_FILE" "${INSTALL_DIR}/${BINARY}"
-        echo "Installed to ${INSTALL_DIR}/${BINARY}"
-        echo "Make sure ${INSTALL_DIR} is in your PATH"
-    fi
-
-    # Channel marker so the binary can detect a hand-configured home dir.
-    mkdir -p "$HOME_DIR"
-    printf '%s\n' "$CHANNEL" > "${HOME_DIR}/channel"
-}
-
-# ── Main ─────────────────────────────────────────
-
-main() {
-    echo ""
-    echo "  ╭──────────────────────────╮"
-    echo "  │     Rove Installer       │"
-    echo "  ╰──────────────────────────╯"
-    echo ""
-
-    detect_platform
-    echo "  OS:       $(uname -s)"
-    echo "  Arch:     $(uname -m)"
-    echo "  Target:   $TARGET"
-    echo "  Binary:   $BINARY"
-    echo "  Home:     $HOME_DIR"
-    echo ""
-
-    fetch_version
-    download_binary
-    verify_hash
-    install_binary
-
-    echo ""
-    echo "Run '${BINARY} setup' to configure."
-    echo "Run '${BINARY} doctor' to verify installation."
-    if [ "$CHANNEL" = "dev" ]; then
-        echo ""
-        echo "Dev channel: engine auto-updates daily at UTC 00:00."
-    fi
-    echo ""
-}
-
-main
+echo ""
+echo "Installed: $dest (v$version, $CHANNEL)"
+echo "Data dir:  $HOME/.rove$( [ "$CHANNEL" = "dev" ] && echo "-dev" )"
+echo ""
+echo "Next: $BIN_NAME init"
