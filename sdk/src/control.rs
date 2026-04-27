@@ -303,6 +303,9 @@ pub struct RemoteTransportRecord {
     pub last_checked_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// iroh node id (base32 public key) for QUIC/UDP-hole-punch transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh_node_id: Option<String>,
 }
 
 /// Persisted discovery candidate for remote transports such as ZeroTier.

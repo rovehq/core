@@ -209,6 +209,7 @@ mod tests {
                 latency_ms: Some(12),
                 last_checked_at: Some(1_700_000_000),
                 last_error: None,
+                iroh_node_id: None,
             }],
         })
         .await

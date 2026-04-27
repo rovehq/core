@@ -58,6 +58,13 @@ pub enum RemoteAction {
         node: Option<String>,
         dry_run: bool,
     },
+    /// Phase 2: show all live peers with presence scores.
+    PresenceList,
+    /// Phase 3: open an interactive PTY terminal on a remote node.
+    Terminal {
+        node: String,
+        shell: Option<String>,
+    },
 }
 
 pub async fn handle(action: RemoteAction, config: &Config) -> Result<()> {
@@ -136,6 +143,10 @@ pub async fn handle(action: RemoteAction, config: &Config) -> Result<()> {
         }
         RemoteAction::SyncDrivers { node, dry_run } => {
             sync_drivers(config, node.as_deref(), dry_run).await
+        }
+        RemoteAction::PresenceList => presence_list(&manager),
+        RemoteAction::Terminal { node, shell } => {
+            terminal(&manager, &node, shell.as_deref()).await
         }
     }
 }
@@ -253,6 +264,9 @@ fn status(manager: &RemoteManager) -> Result<()> {
 }
 
 async fn zerotier_install(config: &Config) -> Result<()> {
+    println!(
+        "Note: ZeroTier is available as an optional transport. Iroh is recommended for most users."
+    );
     let status = ZeroTierManager::new(config.clone()).install().await?;
     print_zerotier_status(&status);
     Ok(())
@@ -573,6 +587,31 @@ async fn send(
         println!("{}", message);
     }
     Ok(())
+}
+
+fn presence_list(manager: &RemoteManager) -> Result<()> {
+    let entries = manager.presence_list();
+    if entries.is_empty() {
+        println!("No live peers in the presence cache (wait up to 30s for heartbeats).");
+        return Ok(());
+    }
+    println!("Live peers (presence score, descending):");
+    for (entry, score) in entries {
+        println!(
+            "- {} score={:.2} load={:.0}% active_tui={} last_seen={}s ago",
+            entry.node_id,
+            score,
+            entry.load * 100.0,
+            entry.active_tui,
+            entry.last_seen.elapsed().as_secs(),
+        );
+    }
+    Ok(())
+}
+
+async fn terminal(manager: &RemoteManager, node: &str, shell: Option<&str>) -> Result<()> {
+    println!("Opening remote terminal on '{}'...", node);
+    manager.open_terminal(node, shell).await
 }
 
 async fn sync_drivers(config: &Config, node: Option<&str>, dry_run: bool) -> Result<()> {

@@ -677,6 +677,7 @@ impl ZeroTierManager {
                 latency_ms: None,
                 last_checked_at: None,
                 last_error: None,
+                iroh_node_id: None,
             })
             .collect()
     }
@@ -980,6 +981,7 @@ mod tests {
                 latency_ms: Some(40),
                 last_checked_at: Some(2),
                 last_error: None,
+                iroh_node_id: None,
             },
             RemoteTransportRecord {
                 kind: "zerotier".to_string(),
@@ -990,6 +992,7 @@ mod tests {
                 latency_ms: Some(12),
                 last_checked_at: Some(3),
                 last_error: None,
+                iroh_node_id: None,
             },
         ]);
 

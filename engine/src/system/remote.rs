@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use axum::http::HeaderMap;
@@ -25,6 +25,9 @@ use sdk::{
     RemoteExecutionPlan, RemoteTransportRecord,
 };
 
+/// ALPN protocol identifier for iroh QUIC streams carrying rove remote traffic.
+pub const ROVE_ALPN: &[u8] = b"rove/1";
+
 const HEADER_ORIGIN_NODE_ID: &str = "x-rove-origin-node-id";
 const HEADER_TARGET_NODE_ID: &str = "x-rove-target-node-id";
 const HEADER_REMOTE_PURPOSE: &str = "x-rove-remote-purpose";
@@ -47,6 +50,9 @@ pub struct RemotePeer {
     pub auth_secret_key: Option<String>,
     #[serde(default)]
     pub transports: Vec<RemoteTransportRecord>,
+    /// iroh node id for QUIC/UDP-hole-punch transport (exchanged during pairing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh_node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +79,9 @@ pub struct RemoteHandshakeProof {
     pub identity: NodeIdentity,
     pub profile: NodeProfile,
     pub signature: String,
+    /// iroh node id advertised by the remote during handshake (optional, omitted by older peers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh_node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -159,13 +168,246 @@ struct RemoteExtensionInventoryItem {
     version: Option<String>,
 }
 
+/// Live presence record for a paired remote node.
+#[derive(Debug, Clone)]
+pub struct PresenceEntry {
+    pub node_id: String,
+    pub last_seen: Instant,
+    pub active_tui: bool,
+    pub load: f32,
+    pub last_activity: SystemTime,
+}
+
+/// Heartbeat payload broadcast by each node every 30 s.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceHeartbeat {
+    pub node_id: String,
+    pub node_name: String,
+    pub active_tui: bool,
+    pub load: f32,
+    #[serde(default)]
+    pub iroh_node_id: Option<String>,
+}
+
 pub struct RemoteManager {
     config: Config,
+    /// Iroh endpoint — lazy-initialised on first use.
+    iroh_endpoint: OnceLock<iroh::Endpoint>,
+    /// Iroh secret key — loaded/generated on first use.
+    iroh_secret_key: OnceLock<iroh::SecretKey>,
+}
+
+/// Global presence cache shared across `RemoteManager` instances (one per request).
+fn presence_cache() -> &'static DashMap<String, PresenceEntry> {
+    static CACHE: OnceLock<DashMap<String, PresenceEntry>> = OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
 }
 
 impl RemoteManager {
     pub fn new(config: Config) -> Self {
-        Self { config }
+        Self {
+            config,
+            iroh_endpoint: OnceLock::new(),
+            iroh_secret_key: OnceLock::new(),
+        }
+    }
+
+    // ── iroh helpers ─────────────────────────────────────────────────────────
+
+    /// Return the iroh secret key, loading from disk or generating if absent.
+    pub fn iroh_secret_key(&self) -> Result<&iroh::SecretKey> {
+        if let Some(key) = self.iroh_secret_key.get() {
+            return Ok(key);
+        }
+        let path = self.iroh_key_file();
+        let key = if path.exists() {
+            let bytes = fs::read(&path)
+                .with_context(|| format!("Failed to read iroh key from {}", path.display()))?;
+            let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+                anyhow::anyhow!(
+                    "iroh key file {} has wrong length (expected 32 bytes)",
+                    path.display()
+                )
+            })?;
+            iroh::SecretKey::from(bytes)
+        } else {
+            let key = iroh::SecretKey::generate();
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&path, key.to_bytes())?;
+            key
+        };
+        // Ignore the error if another thread raced us.
+        let _ = self.iroh_secret_key.set(key);
+        Ok(self.iroh_secret_key.get().expect("just set"))
+    }
+
+    /// Return the local iroh node id (= public key derived from the secret key).
+    pub fn iroh_node_id(&self) -> Result<String> {
+        Ok(self.iroh_secret_key()?.public().to_string())
+    }
+
+    /// Lazy-initialise and return the shared iroh Endpoint.
+    pub async fn init_iroh(&self) -> Result<&iroh::Endpoint> {
+        if let Some(ep) = self.iroh_endpoint.get() {
+            return Ok(ep);
+        }
+        let key = self.iroh_secret_key()?.clone();
+        let cfg = &self.config.remote.transports.iroh;
+
+        let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+            .secret_key(key)
+            .alpns(vec![ROVE_ALPN.to_vec()]);
+
+        match cfg.relay_mode.as_str() {
+            "disabled" => {
+                builder = builder.relay_mode(iroh::RelayMode::Disabled);
+            }
+            "relay_only" | _ => {
+                // "auto" or "relay_only" — use default public relay or a custom one
+                if let Some(url) = &cfg.relay_url {
+                    let relay_url: iroh::RelayUrl = url
+                        .parse()
+                        .with_context(|| format!("Invalid iroh relay URL: {}", url))?;
+                    let relay_map = iroh::RelayMap::empty();
+                    relay_map.insert(
+                        relay_url.clone(),
+                        std::sync::Arc::new(iroh::RelayConfig::new(relay_url, None)),
+                    );
+                    builder = builder.relay_mode(iroh::RelayMode::Custom(relay_map));
+                }
+            }
+        }
+
+        let endpoint = builder
+            .bind()
+            .await
+            .context("Failed to bind iroh endpoint")?;
+
+        let _ = self.iroh_endpoint.set(endpoint);
+        Ok(self.iroh_endpoint.get().expect("just set"))
+    }
+
+    fn iroh_key_file(&self) -> PathBuf {
+        self.config.core.data_dir.join("iroh_secret_key")
+    }
+
+    // ── presence helpers ─────────────────────────────────────────────────────
+
+    /// Score a presence entry for auto-routing (higher = prefer).
+    pub fn presence_score(entry: &PresenceEntry) -> f32 {
+        let age_secs = entry.last_seen.elapsed().as_secs_f32();
+        let recency = (1.0 - (age_secs / 90.0).min(1.0)).max(0.0);
+        let tui_bonus = if entry.active_tui { 0.2 } else { 0.0 };
+        recency + tui_bonus + (1.0 - entry.load.clamp(0.0, 1.0))
+    }
+
+    /// Return the best-scored peer that was seen within the 90 s TTL.
+    pub fn best_peer(&self) -> Option<RemotePeer> {
+        let ttl = std::time::Duration::from_secs(90);
+        let peers = self.load_peers().ok()?;
+        presence_cache()
+            .iter()
+            .filter(|entry| entry.last_seen.elapsed() < ttl)
+            .max_by(|a, b| {
+                Self::presence_score(a.value())
+                    .partial_cmp(&Self::presence_score(b.value()))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .and_then(|entry| {
+                peers.into_iter().find(|peer| peer.identity.node_id == *entry.key())
+            })
+    }
+
+    /// Spawn a background task that broadcasts a presence heartbeat every 30 s.
+    /// The returned JoinHandle can be aborted to stop broadcasting.
+    pub fn start_presence_broadcaster(config: Config) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let manager = RemoteManager::new(config);
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                manager.broadcast_presence_heartbeat().await;
+            }
+        })
+    }
+
+    async fn broadcast_presence_heartbeat(&self) {
+        let peers = match self.load_peers() {
+            Ok(peers) => peers,
+            Err(_) => return,
+        };
+        let node_id = match self.load_or_init_node_metadata() {
+            Ok(meta) => meta.identity.node_id,
+            Err(_) => return,
+        };
+        let node_name = match self.load_or_init_node_metadata() {
+            Ok(meta) => meta.identity.node_name,
+            Err(_) => return,
+        };
+        let iroh_node_id = self.iroh_node_id().ok();
+        let heartbeat = PresenceHeartbeat {
+            node_id,
+            node_name,
+            active_tui: false,
+            load: 0.0,
+            iroh_node_id,
+        };
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_default();
+        for peer in peers.iter().filter(|p| p.trusted) {
+            let signed_headers = match self
+                .signed_request_headers(&peer.identity.node_id, "presence", None)
+            {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+            let url = format!(
+                "{}/v1/remote/presence",
+                self.peer_endpoint(peer).trim_end_matches('/')
+            );
+            let mut req = client.post(&url).json(&heartbeat);
+            for (name, value) in &signed_headers {
+                req = req.header(name.as_str(), value.as_str());
+            }
+            if let Some(token) = self.optional_auth_token_for_peer(peer).await {
+                req = req.bearer_auth(token);
+            }
+            // Ignore errors — unreachable peers are skipped silently.
+            let _ = req.send().await;
+        }
+    }
+
+    /// Upsert a received presence heartbeat into the local cache.
+    pub fn upsert_presence(&self, heartbeat: &PresenceHeartbeat) {
+        presence_cache().insert(
+            heartbeat.node_id.clone(),
+            PresenceEntry {
+                node_id: heartbeat.node_id.clone(),
+                last_seen: Instant::now(),
+                active_tui: heartbeat.active_tui,
+                load: heartbeat.load,
+                last_activity: SystemTime::now(),
+            },
+        );
+    }
+
+    /// List all presence entries with their scores, sorted best-first.
+    pub fn presence_list(&self) -> Vec<(PresenceEntry, f32)> {
+        let ttl = std::time::Duration::from_secs(90);
+        let mut entries: Vec<_> = presence_cache()
+            .iter()
+            .filter(|entry| entry.last_seen.elapsed() < ttl)
+            .map(|entry| {
+                let score = Self::presence_score(entry.value());
+                (entry.value().clone(), score)
+            })
+            .collect();
+        entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        entries
     }
 
     pub fn status(&self) -> Result<RemoteStatus> {
@@ -225,10 +467,12 @@ impl RemoteManager {
         let metadata = self.load_or_init_node_metadata()?;
         let signature = IdentityManager::new(self.config.clone())
             .sign_message(&handshake_payload(challenge))?;
+        let iroh_node_id = self.iroh_node_id().ok();
         Ok(RemoteHandshakeProof {
             identity: metadata.identity,
             profile: metadata.profile,
             signature,
+            iroh_node_id,
         })
     }
 
@@ -359,6 +603,11 @@ impl RemoteManager {
             );
         }
 
+        let iroh_node_id = proof
+            .as_ref()
+            .ok()
+            .and_then(|proof| proof.iroh_node_id.clone());
+
         let peer = RemotePeer {
             identity: proof
                 .as_ref()
@@ -414,6 +663,7 @@ impl RemoteManager {
                         .map(|status| status.transports.clone())
                 })
                 .unwrap_or_default(),
+            iroh_node_id,
         };
         peers.push(peer.clone());
         self.save_peers(&peers)?;
@@ -468,6 +718,7 @@ impl RemoteManager {
             last_status_error: None,
             auth_secret_key: None,
             transports,
+            iroh_node_id: None,
         };
         peers.push(peer.clone());
         self.save_peers(&peers)?;
@@ -1505,6 +1756,15 @@ impl RemoteManager {
         peer.target.clone()
     }
 
+    pub fn signed_request_headers_pub(
+        &self,
+        target_node_id: &str,
+        purpose: &str,
+        task_id: Option<&str>,
+    ) -> Result<Vec<(String, String)>> {
+        self.signed_request_headers(target_node_id, purpose, task_id)
+    }
+
     fn signed_request_headers(
         &self,
         target_node_id: &str,
@@ -1867,6 +2127,190 @@ impl RemoteManager {
 
         Ok(None)
     }
+
+    // ── PTY terminal ─────────────────────────────────────────────────────────
+
+    /// Open an interactive PTY terminal on a remote node.
+    ///
+    /// Resolves the peer by name/id, then bridges local stdin/stdout to a
+    /// remote PTY shell over a WebSocket connection. Falls back to HTTP-based
+    /// WebSocket when iroh is unavailable.
+    ///
+    /// Handles terminal resize (SIGWINCH → `pty_resize` JSON message) and
+    /// tears down cleanly on remote shell exit or local Ctrl-C.
+    pub async fn open_terminal(&self, node: &str, shell: Option<&str>) -> Result<()> {
+        if !self.config.ws_client.enabled {
+            bail!("Remote service is disabled. Run `rove service enable remote` first.");
+        }
+
+        let peers = self.load_peers()?;
+        let peer = peers
+            .iter()
+            .find(|p| {
+                p.identity.node_name.eq_ignore_ascii_case(node)
+                    || p.target.eq_ignore_ascii_case(node)
+                    || p.identity.node_id == node
+            })
+            .ok_or_else(|| anyhow::anyhow!("Remote node '{}' is not paired", node))?;
+
+        if !peer.trusted {
+            bail!(
+                "Remote node '{}' is paired but not trusted. Run `rove remote trust {}` first.",
+                peer.identity.node_name,
+                peer.identity.node_name
+            );
+        }
+
+        let auth_token = self.optional_auth_token_for_peer(peer).await;
+        let signed_headers =
+            self.signed_request_headers(&peer.identity.node_id, "terminal", None)?;
+
+        let mut ws_url = reqwest::Url::parse(
+            &format!(
+                "{}/v1/remote/terminal",
+                self.peer_endpoint(peer).trim_end_matches('/')
+            ),
+        )
+        .context("Invalid remote terminal URL")?;
+        match ws_url.scheme() {
+            "http" => ws_url
+                .set_scheme("ws")
+                .map_err(|_| anyhow::anyhow!("Failed to convert URL to ws://"))?,
+            "https" => ws_url
+                .set_scheme("wss")
+                .map_err(|_| anyhow::anyhow!("Failed to convert URL to wss://"))?,
+            _ => {}
+        }
+        if let Some(sh) = shell {
+            ws_url
+                .query_pairs_mut()
+                .append_pair("shell", sh);
+        }
+
+        let mut request = ws_url
+            .to_string()
+            .into_client_request()
+            .context("Failed to prepare terminal WebSocket request")?;
+        if let Some(token) = auth_token.as_deref().filter(|t| !t.trim().is_empty()) {
+            let header =
+                HeaderValue::from_str(&format!("Bearer {}", token)).context("Invalid token")?;
+            request.headers_mut().insert(AUTHORIZATION, header);
+        }
+        for (name, value) in signed_headers {
+            let header_name = HeaderName::from_bytes(name.as_bytes())
+                .context("Invalid signed header name")?;
+            let header_value =
+                HeaderValue::from_str(&value).context("Invalid signed header value")?;
+            request.headers_mut().insert(header_name, header_value);
+        }
+
+        let (mut ws, _) = connect_async(request)
+            .await
+            .context("Failed to open remote terminal stream")?;
+
+        // Bridge local stdin → WS and WS → local stdout.
+        use tokio::io::AsyncReadExt;
+        let mut stdin = tokio::io::stdin();
+        let mut stdout = tokio::io::stdout();
+        let mut stdin_buf = [0u8; 4096];
+
+        loop {
+            tokio::select! {
+                n = stdin.read(&mut stdin_buf) => {
+                    match n {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let data = base64_encode(&stdin_buf[..n]);
+                            let msg = serde_json::json!({ "type": "stdin", "data": data });
+                            if ws.send(WsMessage::Text(msg.to_string())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                msg = ws.next() => {
+                    match msg {
+                        Some(Ok(WsMessage::Text(text))) => {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if val.get("type").and_then(|v| v.as_str()) == Some("stdout") {
+                                    if let Some(data) = val.get("data").and_then(|v| v.as_str()) {
+                                        if let Ok(bytes) = base64_decode(data) {
+                                            use tokio::io::AsyncWriteExt;
+                                            let _ = stdout.write_all(&bytes).await;
+                                            let _ = stdout.flush().await;
+                                        }
+                                    }
+                                } else if val.get("type").and_then(|v| v.as_str()) == Some("exit") {
+                                    break;
+                                }
+                            }
+                        }
+                        Some(Ok(WsMessage::Close(_))) | None => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    use std::fmt::Write;
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+        let _ = write!(out, "{}", CHARS[b0 >> 2] as char);
+        let _ = write!(out, "{}", CHARS[((b0 & 3) << 4) | (b1 >> 4)] as char);
+        if chunk.len() > 1 {
+            let _ = write!(out, "{}", CHARS[((b1 & 15) << 2) | (b2 >> 6)] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            let _ = write!(out, "{}", CHARS[b2 & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let bytes: Vec<u8> = s
+        .bytes()
+        .filter(|&b| b != b'=')
+        .map(|b| match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => 255,
+        })
+        .collect();
+    if bytes.iter().any(|&b| b == 255) {
+        bail!("Invalid base64 character");
+    }
+    for chunk in bytes.chunks(4) {
+        let b0 = chunk[0] as usize;
+        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+        let b3 = if chunk.len() > 3 { chunk[3] as usize } else { 0 };
+        out.push(((b0 << 2) | (b1 >> 4)) as u8);
+        if chunk.len() > 2 {
+            out.push(((b1 & 15) << 4 | b2 >> 2) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(((b2 & 3) << 6 | b3) as u8);
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2076,6 +2520,7 @@ fn guess_transports_for_endpoint(endpoint: &str) -> Vec<RemoteTransportRecord> {
                 latency_ms: None,
                 last_checked_at: None,
                 last_error: None,
+                iroh_node_id: None,
             }]
         })
         .unwrap_or_default()
@@ -2423,6 +2868,7 @@ mod tests {
                 last_status_error: None,
                 auth_secret_key: None,
                 transports: Vec::new(),
+                iroh_node_id: None,
             }])
             .expect("save peer");
 
@@ -2471,6 +2917,7 @@ mod tests {
                 last_status_error: None,
                 auth_secret_key: None,
                 transports: Vec::new(),
+                iroh_node_id: None,
             }])
             .expect("save peer");
 

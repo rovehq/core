@@ -23,8 +23,7 @@ resolver = "2"
 version = "0.0.3"
 edition = "2021"
 authors = ["Rove HQ"]
-# BUSL-1.1 is not on the SPDX license list yet; using a license-file reference.
-license-file = "LICENSE"
+license = "BUSL-1.1"
 
 [workspace.dependencies]
 # Async runtime

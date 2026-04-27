@@ -4075,6 +4075,26 @@ pub async fn remote_handshake(Json(payload): Json<RemoteHandshakeRequest>) -> im
     }
 }
 
+/// Receives a presence heartbeat from a paired remote node.
+/// Verifies the signed request using the existing HMAC+replay protection,
+/// then upserts the entry into the in-process presence cache.
+pub async fn handle_remote_presence(
+    headers: HeaderMap,
+    Json(payload): Json<crate::remote::PresenceHeartbeat>,
+) -> impl IntoResponse {
+    match Config::load_or_create() {
+        Ok(config) => {
+            let manager = RemoteManager::new(config);
+            if let Err(error) = manager.verify_signed_request(&headers, "presence", None) {
+                return json_error_response(StatusCode::UNAUTHORIZED, error);
+            }
+            manager.upsert_presence(&payload);
+            (StatusCode::NO_CONTENT, ()).into_response()
+        }
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn zerotier_status() -> impl IntoResponse {
     match Config::load_or_create() {
         Ok(config) => match ZeroTierManager::new(config).status().await {

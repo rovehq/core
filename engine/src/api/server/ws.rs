@@ -277,3 +277,156 @@ async fn handle_start_task(socket: &mut WebSocket, state: &AppState, input: Stri
     .to_string();
     let _ = socket.send(Message::Text(accepted)).await;
 }
+
+// ── Remote PTY terminal ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct TerminalQuery {
+    pub token: Option<String>,
+    pub shell: Option<String>,
+}
+
+/// WebSocket handler for remote PTY terminal sessions (`GET /v1/remote/terminal`).
+///
+/// Verifies the signed remote request headers, then spawns a PTY using the
+/// requested shell (default: sh). Bridges WS ↔ PTY bidirectionally.
+///
+/// Protocol (client → server):
+/// ```json
+/// { "type": "stdin", "data": "<base64>" }
+/// { "type": "resize", "cols": 80, "rows": 24 }
+/// ```
+///
+/// Protocol (server → client):
+/// ```json
+/// { "type": "stdout", "data": "<base64>" }
+/// { "type": "exit", "code": 0 }
+/// ```
+pub async fn handle_remote_terminal(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    Query(query): Query<TerminalQuery>,
+) -> impl IntoResponse {
+    // Verify signed remote request.
+    let config = match Config::load_or_create() {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let manager = RemoteManager::new(config);
+    if let Err(error) = manager.verify_signed_request(&headers, "terminal", None) {
+        return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+    }
+
+    let shell = query.shell.clone().unwrap_or_else(|| {
+        std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
+    });
+
+    ws.on_upgrade(move |socket| async move {
+        if let Err(error) = run_terminal_session(socket, &shell).await {
+            warn!(error = %error, "Remote terminal session error");
+        }
+    })
+}
+
+async fn run_terminal_session(mut socket: WebSocket, shell: &str) -> anyhow::Result<()> {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    let pty_system = native_pty_system();
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+
+    let cmd = CommandBuilder::new(shell);
+    let _child = pair.slave.spawn_command(cmd)?;
+
+    let mut pty_reader = pair.master.try_clone_reader()?;
+    let pty_writer = pair.master.take_writer()?;
+
+    // Spawn a blocking thread to read PTY output and forward it to WS.
+    let (pty_tx, mut pty_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match std::io::Read::read(&mut pty_reader, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if pty_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Spawn a blocking thread for PTY writes.
+    let (stdin_tx, stdin_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut writer = pty_writer;
+        for data in stdin_rx {
+            if std::io::Write::write_all(&mut writer, &data).is_err() {
+                break;
+            }
+        }
+    });
+
+    loop {
+        tokio::select! {
+            // PTY output → WS
+            data = pty_rx.recv() => {
+                match data {
+                    Some(bytes) => {
+                        use base64::Engine;
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        let msg = serde_json::json!({ "type": "stdout", "data": encoded });
+                        if socket.send(Message::Text(msg.to_string())).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => {
+                        // PTY closed
+                        let exit_msg = serde_json::json!({ "type": "exit", "code": 0 });
+                        let _ = socket.send(Message::Text(exit_msg.to_string())).await;
+                        break;
+                    }
+                }
+            }
+            // WS input → PTY
+            msg = socket.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                            match val.get("type").and_then(|v| v.as_str()) {
+                                Some("stdin") => {
+                                    if let Some(data) = val.get("data").and_then(|v| v.as_str()) {
+                                        use base64::Engine;
+                                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+                                            let _ = stdin_tx.send(bytes);
+                                        }
+                                    }
+                                }
+                                Some("resize") => {
+                                    let cols = val.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
+                                    let rows = val.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+                                    let _ = pair.master.resize(PtySize {
+                                        rows,
+                                        cols,
+                                        pixel_width: 0,
+                                        pixel_height: 0,
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    Ok(())
+}

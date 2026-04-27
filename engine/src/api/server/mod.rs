@@ -134,6 +134,8 @@ pub async fn start_daemon(
         .route("/v1/remote/execute", post(api::execute_remote_task))
         .route("/v1/remote/tasks/:task_id", get(api::remote_task_status))
         .route("/v1/remote/events/ws", get(ws::task_ws_handler))
+        .route("/v1/remote/presence", post(api::handle_remote_presence))
+        .route("/v1/remote/terminal", get(ws::handle_remote_terminal))
         .route(
             "/v1/workflows/webhooks/:webhook_id",
             post(api::invoke_workflow_webhook),

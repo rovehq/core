@@ -12,8 +12,41 @@ pub struct RemoteConfig {
 pub struct RemoteTransportsConfig {
     #[serde(default)]
     pub zerotier: ZeroTierConfig,
+    #[serde(default)]
+    pub iroh: IrohConfig,
 }
 
+/// Configuration for iroh QUIC/UDP-hole-punch transport.
+/// Iroh is the recommended zero-config cross-NAT transport — no OS-level VPN,
+/// no kernel tap, no VPN icon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrohConfig {
+    /// Whether the iroh transport is enabled (default: true).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Custom relay server URL. None = iroh public relay (free).
+    #[serde(default)]
+    pub relay_url: Option<String>,
+    /// Relay mode: "auto" | "relay_only" | "disabled"
+    #[serde(default = "default_relay_mode")]
+    pub relay_mode: String,
+}
+
+impl Default for IrohConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            relay_url: None,
+            relay_mode: default_relay_mode(),
+        }
+    }
+}
+
+fn default_relay_mode() -> String {
+    "auto".to_string()
+}
+
+/// ZeroTier is opt-in. Use iroh for zero-config cross-NAT instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZeroTierConfig {
     #[serde(default = "default_false")]

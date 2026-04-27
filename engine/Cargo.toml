@@ -83,6 +83,9 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 urlencoding = "2.1"
 webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation"] }
 cron = "0.16"
+base64 = "0.22"
+iroh = "0.98"
+portable-pty = "0.9"
 
 # Unix-specific dependencies for daemon management
 [target.'cfg(unix)'.dependencies]
