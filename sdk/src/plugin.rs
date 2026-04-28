@@ -177,9 +177,10 @@ mod tests {
     use crate::permission::PluginPermissions;
 
     fn plugin_with_domains(domains: &[&str]) -> PluginEntry {
-        let mut permissions = PluginPermissions::default();
-        permissions.allowed_network_domains =
-            domains.iter().map(|value| value.to_string()).collect();
+        let permissions = PluginPermissions {
+            allowed_network_domains: domains.iter().map(|value| value.to_string()).collect(),
+            ..Default::default()
+        };
         PluginEntry {
             name: "test".to_string(),
             version: "0.1.0".to_string(),
@@ -208,9 +209,11 @@ mod tests {
 
     #[test]
     fn secret_permissions_require_declared_key_and_host() {
-        let mut permissions = PluginPermissions::default();
-        permissions.allowed_secret_keys = vec!["OPENAI_API_KEY".to_string()];
-        permissions.secret_host_patterns = vec!["api.openai.com".to_string()];
+        let permissions = PluginPermissions {
+            allowed_secret_keys: vec!["OPENAI_API_KEY".to_string()],
+            secret_host_patterns: vec!["api.openai.com".to_string()],
+            ..Default::default()
+        };
         let plugin = PluginEntry {
             name: "test".to_string(),
             version: "0.1.0".to_string(),
