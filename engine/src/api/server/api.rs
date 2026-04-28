@@ -1653,6 +1653,27 @@ pub async fn list_agent_threads_all(State(state): State<AppState>) -> impl IntoR
     }
 }
 
+pub async fn list_threads(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.threads().list_all(100).await {
+        Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
+pub async fn get_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.threads().get(&thread_id).await {
+        Ok(Some(thread)) => (StatusCode::OK, Json(thread)).into_response(),
+        Ok(None) => json_error_response(
+            StatusCode::NOT_FOUND,
+            anyhow::anyhow!("Thread '{}' not found", thread_id),
+        ),
+        Err(error) => json_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+
 pub async fn get_agent_thread(
     State(state): State<AppState>,
     Path(id): Path<String>,

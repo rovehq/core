@@ -11,6 +11,15 @@ pub enum ExecutionStrategy {
     Apex,
 }
 
+impl ExecutionStrategy {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ExecutionStrategy::Linear => "linear",
+            ExecutionStrategy::Apex => "apex",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationDecision {
     pub strategy: ExecutionStrategy,
@@ -21,6 +30,10 @@ pub struct OrchestrationDecision {
 impl OrchestrationDecision {
     pub(super) fn use_apex(&self) -> bool {
         matches!(self.strategy, ExecutionStrategy::Apex)
+    }
+
+    pub(super) fn execution_mode(&self) -> &ExecutionStrategy {
+        &self.strategy
     }
 
     pub(super) fn summary(&self) -> String {

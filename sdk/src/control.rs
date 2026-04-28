@@ -434,6 +434,8 @@ pub struct BrowserProfileInput {
     pub name: String,
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     #[serde(default)]
     pub mode: BrowserProfileMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -454,6 +456,8 @@ pub struct BrowserProfileRecord {
     pub name: String,
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     #[serde(default)]
     pub mode: BrowserProfileMode,
     #[serde(default)]
@@ -476,6 +480,20 @@ pub struct BrowserProfileRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BrowserRuntimeStatus {
+    #[serde(default)]
+    pub registered: bool,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BrowserSurfaceStatus {
     #[serde(default)]
     pub enabled: bool,
@@ -483,6 +501,8 @@ pub struct BrowserSurfaceStatus {
     pub default_profile_id: Option<String>,
     #[serde(default)]
     pub controls: BrowserApprovalControls,
+    #[serde(default)]
+    pub runtime: BrowserRuntimeStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<BrowserProfileRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

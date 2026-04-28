@@ -310,7 +310,7 @@ impl CoreTool for GeneratedSystemTool {{
 }}
 
 #[no_mangle]
-pub extern "C" fn create_tool() -> *mut dyn CoreTool {{
+pub fn create_tool() -> *mut dyn CoreTool {{
     Box::into_raw(Box::new(GeneratedSystemTool::default()))
 }}
 "#

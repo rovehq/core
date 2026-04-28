@@ -362,6 +362,9 @@ pub struct WorkflowStepSpec {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_preset: Option<String>,
+    /// Groups steps into a shared conversation thread so context persists across steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome_contract: Option<OutcomeContract>,
     #[serde(default)]

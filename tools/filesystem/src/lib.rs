@@ -853,10 +853,9 @@ impl CoreTool for FilesystemTool {
     }
 }
 
-#[allow(improper_ctypes_definitions)]
 #[no_mangle]
 #[cfg(feature = "native-tool-entry")]
-pub extern "C" fn create_tool() -> *mut dyn CoreTool {
+pub fn create_tool() -> *mut dyn CoreTool {
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let tool = FilesystemTool::new(workspace).expect("filesystem tool");
     Box::into_raw(Box::new(tool))

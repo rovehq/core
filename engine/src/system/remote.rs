@@ -293,6 +293,51 @@ impl RemoteManager {
         self.config.core.data_dir.join("iroh_secret_key")
     }
 
+    /// Attempt to deliver `request` to `peer` via an iroh QUIC bidirectional stream.
+    ///
+    /// The caller sends a newline-terminated JSON payload; the remote node reads it, processes
+    /// it, and writes back a JSON `RemoteExecuteResponse`.  Falls back to `None` when the peer
+    /// has no recorded iroh node id or the connection attempt fails.
+    async fn send_via_iroh(
+        &self,
+        peer: &RemotePeer,
+        request: &RemoteExecuteRequest,
+        signed_headers: &[(String, String)],
+    ) -> Option<RemoteExecuteResponse> {
+        let iroh_node_id_str = peer.iroh_node_id.as_deref()?;
+
+        let node_id: iroh::PublicKey = iroh_node_id_str.parse().ok()?;
+        let endpoint = self.init_iroh().await.ok()?;
+
+        let addr = iroh::EndpointAddr::from(node_id);
+        let conn = endpoint
+            .connect(addr, ROVE_ALPN)
+            .await
+            .inspect_err(|err| tracing::debug!(peer = %iroh_node_id_str, error = %err, "iroh connect failed"))
+            .ok()?;
+
+        let (mut send, mut recv) = conn.open_bi().await.ok()?;
+
+        // Envelope: signed headers + request body, newline-delimited JSON.
+        let envelope = serde_json::json!({
+            "headers": signed_headers.iter().map(|(k, v)| serde_json::json!({"name": k, "value": v})).collect::<Vec<_>>(),
+            "body": request,
+        });
+        let mut payload = serde_json::to_vec(&envelope).ok()?;
+        payload.push(b'\n');
+        send.write_all(&payload).await.ok()?;
+        send.finish().ok()?;
+
+        let raw = recv
+            .read_to_end(4 * 1024 * 1024)
+            .await
+            .inspect_err(|err| tracing::debug!(error = %err, "iroh recv failed"))
+            .ok()?;
+        serde_json::from_slice(&raw)
+            .inspect_err(|err| tracing::debug!(error = %err, "iroh response parse failed"))
+            .ok()
+    }
+
     // ── presence helpers ─────────────────────────────────────────────────────
 
     /// Score a presence entry for auto-routing (higher = prefer).
@@ -881,10 +926,6 @@ impl RemoteManager {
         )?;
         let client = Client::new();
         let auth_token = self.optional_auth_token_for_peer(&peer).await;
-        let endpoint = format!(
-            "{}/v1/remote/execute",
-            self.peer_endpoint(&peer).trim_end_matches('/')
-        );
         let request = RemoteExecuteRequest {
             task_id: Some(envelope.task_id.clone()),
             input: Some(prompt.to_string()),
@@ -897,20 +938,33 @@ impl RemoteManager {
             plan: execution_plan,
         };
 
-        let mut execute = client.post(endpoint);
-        if let Some(auth_token) = auth_token.as_deref() {
-            execute = execute.bearer_auth(auth_token);
-        }
-        for (name, value) in signed_headers {
-            execute = execute.header(&name, value);
-        }
-        let execute = execute
-            .json(&request)
-            .send()
+        // Prefer iroh QUIC when the peer advertises an iroh node id; fall back to HTTP.
+        let execute = if let Some(iroh_response) = self
+            .send_via_iroh(&peer, &request, &signed_headers)
             .await
-            .context("Failed to reach remote daemon")?;
-
-        let execute = parse_remote_response(execute).await?;
+        {
+            iroh_response
+        } else {
+            let http_endpoint = format!(
+                "{}/v1/remote/execute",
+                self.peer_endpoint(&peer).trim_end_matches('/')
+            );
+            let mut execute = client.post(http_endpoint);
+            if let Some(token) = auth_token.as_deref() {
+                execute = execute.bearer_auth(token);
+            }
+            for (name, value) in &signed_headers {
+                execute = execute.header(name, value);
+            }
+            parse_remote_response(
+                execute
+                    .json(&request)
+                    .send()
+                    .await
+                    .context("Failed to reach remote daemon")?,
+            )
+            .await?
+        };
         if execute.status == "completed" {
             return Ok(RemoteSendResult {
                 envelope,
@@ -3554,5 +3608,148 @@ auto_tag = ["office-workspace"]
         assert_eq!(steps[0].tool_name, "read_file");
         assert_eq!(steps[1].tool_name, "run_command");
         assert_eq!(steps[2].tool_name, "run_command");
+    }
+
+    /// 2-node E2E: node A signs a remote execution request; node B's HTTP handler
+    /// validates the signature with its own `verify_signed_request` before responding.
+    /// This exercises the full sign → transmit → verify → respond path without a
+    /// full daemon, using two in-process `RemoteManager` instances backed by real
+    /// on-disk identity files.
+    #[tokio::test]
+    async fn two_node_signed_execution_e2e() {
+        use axum::{extract::Json as AJson, extract::State, response::IntoResponse};
+        use std::sync::{Arc, Mutex};
+
+        // ── Build two separate node configs ─────────────────────────────────
+        let temp = TempDir::new().expect("temp dir");
+        let config_a = secondary_config(&temp, "node-a");
+        let config_b = secondary_config(&temp, "node-b");
+
+        let node_a = RemoteManager::new(config_a.clone());
+        let node_b = Arc::new(RemoteManager::new(config_b.clone()));
+
+        // ── Node B serves /v1/remote/handshake + /v1/remote/execute ─────────
+        #[derive(Clone)]
+        struct NodeBState {
+            manager: Arc<RemoteManager>,
+            received: Arc<Mutex<Vec<(bool, String)>>>,
+        }
+
+        async fn handshake_handler(
+            State(state): State<NodeBState>,
+            AJson(body): AJson<serde_json::Value>,
+        ) -> impl IntoResponse {
+            let challenge = body
+                .get("challenge")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let proof = state.manager.sign_handshake(challenge).expect("sign");
+            AJson(proof)
+        }
+
+        async fn execute_handler(
+            State(state): State<NodeBState>,
+            headers: axum::http::HeaderMap,
+            AJson(payload): AJson<serde_json::Value>,
+        ) -> impl IntoResponse {
+            let task_id = payload
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let verified = state
+                .manager
+                .verify_signed_request(&headers, "execute", Some(task_id))
+                .is_ok();
+            let input = payload
+                .get("input")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            state
+                .received
+                .lock()
+                .expect("lock")
+                .push((verified, input));
+            AJson(serde_json::json!({
+                "success": true,
+                "task_id": task_id,
+                "status": "completed",
+                "answer": "e2e-result",
+                "provider": "test",
+                "duration_ms": 1,
+                "message": null
+            }))
+        }
+
+        let received: Arc<Mutex<Vec<(bool, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let b_state = NodeBState {
+            manager: Arc::clone(&node_b),
+            received: Arc::clone(&received),
+        };
+
+        let app = axum::Router::new()
+            .route(
+                "/v1/remote/handshake",
+                axum::routing::post(handshake_handler),
+            )
+            .route(
+                "/v1/remote/execute",
+                axum::routing::post(execute_handler),
+            )
+            .with_state(b_state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        // ── A pairs with B and trusts it ────────────────────────────────────
+        // Register B's public key in A's peer list so signature verification works.
+        let paired = node_a
+            .pair(
+                "node-b",
+                Some(&format!("http://{}", addr)),
+                None,
+                false,
+                &[],
+                &[],
+            )
+            .await
+            .expect("pair");
+        let b_actual_name = paired.identity.node_name.clone();
+        node_a.trust(&b_actual_name).expect("trust");
+
+        // Also register A's public key in B's peer list so B can verify A's sig.
+        let status_a = node_a.status().expect("status a");
+        node_b
+            .upsert_verified_peer(
+                status_a.node.clone(),
+                status_a.profile.clone(),
+                &format!("http://{}", addr),
+                vec![],
+                true,
+            )
+            .expect("register a on b");
+
+        // ── A sends a task to B ──────────────────────────────────────────────
+        let result = node_a
+            .send(&b_actual_name, "list files in workspace")
+            .await
+            .expect("send");
+
+        // ── Assertions ───────────────────────────────────────────────────────
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.answer.as_deref(), Some("e2e-result"));
+
+        let calls = received.lock().expect("lock");
+        assert_eq!(calls.len(), 1, "exactly one execute call reached node B");
+        let (sig_ok, input) = &calls[0];
+        assert!(sig_ok, "node B must verify node A's signature");
+        assert_eq!(input, "list files in workspace");
+
+        server.abort();
     }
 }

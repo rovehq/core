@@ -32,6 +32,7 @@ const EMPTY_WORKFLOW: WorkflowSpec = {
       name: 'Step 1',
       prompt: '',
       worker_preset: null,
+      thread_key: null,
       outcome_contract: null,
       continue_on_error: false,
       branches: [],
@@ -768,6 +769,7 @@ export default function WorkflowsPage() {
                         name: `Step ${current.steps.length + 1}`,
                         prompt: '',
                         worker_preset: null,
+                        thread_key: null,
                         outcome_contract: null,
                         continue_on_error: false,
                         branches: [],
@@ -829,7 +831,21 @@ export default function WorkflowsPage() {
                         {preset.name} ({preset.id})
                       </option>
                     ))}
-                  </select>
+                    </select>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <input
+                    value={step.thread_key ?? ''}
+                    onChange={(event) => updateStep(index, { thread_key: event.target.value || null })}
+                    className="rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                    placeholder="Optional persistent thread key (for example: research)"
+                  />
+                  <div className="rounded-lg border border-surface bg-background/60 px-3 py-2 text-xs text-gray-400">
+                    Reuse thread context across workflow runs with
+                    {' '}
+                    <code>{'workflow:<workflow-id>:thread:<thread_key>'}</code>
+                    .
+                  </div>
                 </div>
                 <textarea
                   value={step.prompt}
@@ -1137,6 +1153,7 @@ export default function WorkflowsPage() {
                           </p>
                           <p className="text-xs text-gray-500">
                             {step.agent_id ? `agent:${step.agent_id}` : step.worker_preset ? `worker:${step.worker_preset}` : 'direct'}
+                            {step.thread_key ? ` · thread:${step.thread_key}` : ''}
                             {step.attempt_count > 1 ? ` · attempts:${step.attempt_count}` : ''}
                             {step.task_id ? ` · task:${step.task_id}` : ''}
                           </p>
@@ -1171,6 +1188,7 @@ function cloneWorkflow(spec: WorkflowSpec): WorkflowSpec {
     steps: spec.steps.map((step) => ({
       ...step,
       worker_preset: step.worker_preset ?? null,
+      thread_key: step.thread_key ?? null,
       outcome_contract: step.outcome_contract ? { ...step.outcome_contract } : null,
       branches: [...(step.branches ?? [])],
     })),
@@ -1220,6 +1238,7 @@ function normalizeWorkflow(spec: WorkflowSpec): WorkflowSpec {
         prompt: step.prompt.trim(),
         agent_id: emptyToNull(step.agent_id),
         worker_preset: emptyToNull(step.worker_preset),
+        thread_key: emptyToNull(step.thread_key),
         outcome_contract:
           step.outcome_contract?.success_criteria.trim()
             ? {

@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────
 # 🗑️  Rove Uninstaller (Windows)
-# Usage: irm https://roveai.co/uninstall.ps1 | iex
+# Usage: irm https://get.roveai.co/uninstall.ps1 | iex
 # ─────────────────────────────────────────────
 
 param(

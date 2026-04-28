@@ -8,6 +8,7 @@ import {
   BrowserProfileInput,
   BrowserProfileMode,
   BrowserProfileRecord,
+  BrowserRuntimeStatus,
   BrowserSurfaceStatus,
   DaemonError,
   RoveDaemonClient,
@@ -24,6 +25,7 @@ const EMPTY_PROFILE: ProfileDraft = {
   id: '',
   name: '',
   enabled: true,
+  backend: '',
   mode: 'managed_local',
   browser: '',
   user_data_dir: '',
@@ -36,6 +38,7 @@ type ProfileDraft = {
   id: string;
   name: string;
   enabled: boolean;
+  backend: string;
   mode: BrowserProfileMode;
   browser: string;
   user_data_dir: string;
@@ -100,6 +103,7 @@ export default function BrowserPage() {
       id: profile.id,
       name: profile.name,
       enabled: profile.enabled,
+      backend: profile.backend ?? '',
       mode: profile.mode,
       browser: profile.browser ?? '',
       user_data_dir: profile.user_data_dir ?? '',
@@ -183,8 +187,8 @@ export default function BrowserPage() {
           <StatCard label="Profiles" value={String(profiles.length)} />
           <StatCard label="Default" value={defaultProfileId || 'not selected'} />
           <StatCard
-            label="High-trust modes"
-            value={`${profiles.filter((profile) => profile.mode !== 'managed_local').length} warning profiles`}
+            label="Runtime"
+            value={runtimeLabel(surface?.runtime)}
           />
         </section>
 
@@ -207,7 +211,7 @@ export default function BrowserPage() {
                 <div className="space-y-2">
                   <h2 className="text-lg font-semibold">Operator Controls</h2>
                   <p className="text-sm text-gray-400 max-w-3xl">
-                    Managed-local profiles keep browser lifecycle under the daemon. Attach-existing and remote-CDP profiles are still official, but they are explicitly higher-trust modes and should stay approval-gated.
+                    Managed-local profiles keep browser lifecycle under the daemon. Browser execution now loads from an installed backend such as `browser-cdp`; use `builtin-compat` only as a temporary fallback when you intentionally need the old in-core browser shim.
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
@@ -225,6 +229,33 @@ export default function BrowserPage() {
                     {saving ? 'Saving...' : 'Save Browser Surface'}
                   </button>
                 </div>
+              </div>
+
+              <div className="rounded-lg border border-surface2 bg-background/40 px-4 py-3 text-sm text-gray-300">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <span>
+                    Runtime backend:{' '}
+                    <strong className="text-gray-100">
+                      {surface?.runtime.backend_name ?? 'not loaded'}
+                    </strong>
+                  </span>
+                  <span>source: {surface?.runtime.source ?? 'n/a'}</span>
+                  <span>
+                    state:{' '}
+                    {surface?.runtime.connected
+                      ? 'connected'
+                      : surface?.runtime.registered
+                        ? 'idle'
+                        : 'not loaded'}
+                  </span>
+                </div>
+                {surface?.runtime.warnings.length ? (
+                  <div className="mt-2 space-y-1 text-amber-200">
+                    {surface.runtime.warnings.map((warning) => (
+                      <p key={warning}>{warning}</p>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <label className="flex items-center gap-3 rounded-lg border border-surface2 bg-background/50 px-4 py-3 text-sm text-gray-200">
@@ -318,6 +349,7 @@ export default function BrowserPage() {
                             <div className="flex flex-wrap items-center gap-2">
                               <h3 className="text-base font-semibold">{profile.name}</h3>
                               <Badge>{profile.mode.replace('_', ' ')}</Badge>
+                              {profile.backend ? <Badge>backend {profile.backend}</Badge> : null}
                               <Badge tone={profile.readiness === 'ready' ? 'success' : 'warning'}>
                                 {profile.readiness.replace('_', ' ')}
                               </Badge>
@@ -344,6 +376,7 @@ export default function BrowserPage() {
 
                         <div className="grid gap-3 md:grid-cols-2 text-sm text-gray-300">
                           <Detail label="Approval" value={profile.approval_required ? 'required' : 'not required'} />
+                          <Detail label="Backend" value={profile.backend ?? 'not selected'} />
                           <Detail label="Browser" value={profile.browser ?? 'not specified'} />
                           <Detail label="User data" value={profile.user_data_dir ?? 'not specified'} />
                           <Detail label="Startup URL" value={profile.startup_url ?? 'not specified'} />
@@ -392,6 +425,15 @@ export default function BrowserPage() {
                     onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
                     className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
                     placeholder="Ops Browser"
+                  />
+                </Field>
+
+                <Field label="Backend">
+                  <input
+                    value={draft.backend}
+                    onChange={(event) => setDraft((current) => ({ ...current, backend: event.target.value }))}
+                    className="w-full rounded-lg border border-surface bg-background px-3 py-2 outline-none focus:border-primary"
+                    placeholder="cdp or builtin-compat"
                   />
                 </Field>
 
@@ -491,11 +533,22 @@ export default function BrowserPage() {
   );
 }
 
+function runtimeLabel(runtime: BrowserRuntimeStatus | null | undefined): string {
+  if (!runtime?.registered) {
+    return 'not loaded';
+  }
+  if (runtime.connected) {
+    return `${runtime.backend_name ?? 'loaded'} connected`;
+  }
+  return `${runtime.backend_name ?? 'loaded'} idle`;
+}
+
 function profileToInput(profile: BrowserProfileRecord): BrowserProfileInput {
   return {
     id: profile.id,
     name: profile.name,
     enabled: profile.enabled,
+    backend: profile.backend,
     mode: profile.mode,
     browser: profile.browser,
     user_data_dir: profile.user_data_dir,
@@ -537,9 +590,19 @@ function toDisplayProfile(
   if ((profile.mode === 'attach_existing' || profile.mode === 'remote_cdp') && !profile.cdp_url) {
     warnings.push('This profile needs a CDP endpoint before it can be used.');
   }
+  if (!profile.backend) {
+    warnings.push(
+      "No explicit backend selected. Install and select 'browser-cdp' or set backend to 'builtin-compat' if you intentionally need the temporary shim.",
+    );
+  } else if (profile.backend === 'builtin-compat' || profile.backend === 'builtin') {
+    warnings.push(
+      "Uses the temporary builtin-compat browser backend. Prefer the official 'browser-cdp' driver.",
+    );
+  }
 
   return {
     ...profile,
+    backend: profile.backend ?? null,
     browser: profile.browser ?? null,
     user_data_dir: profile.user_data_dir ?? null,
     startup_url: profile.startup_url ?? null,
@@ -557,6 +620,7 @@ function draftToInput(draft: ProfileDraft): BrowserProfileInput {
     id: draft.id.trim(),
     name: draft.name.trim(),
     enabled: draft.enabled,
+    backend: normalizeOptionalString(draft.backend),
     mode: draft.mode,
     browser: normalizeOptionalString(draft.browser),
     user_data_dir: normalizeOptionalString(draft.user_data_dir),

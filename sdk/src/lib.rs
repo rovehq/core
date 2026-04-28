@@ -55,7 +55,8 @@ pub use config_handle::{
 };
 pub use control::{
     AuthState, AuthStatus, BrainFamily, BrowserApprovalControls, BrowserProfileInput,
-    BrowserProfileMode, BrowserProfileReadiness, BrowserProfileRecord, BrowserSurfaceStatus,
+    BrowserProfileMode, BrowserProfileReadiness, BrowserProfileRecord, BrowserRuntimeStatus,
+    BrowserSurfaceStatus,
     BrowserSurfaceUpdate, CatalogExtensionRecord, CatalogVersionRecord, DaemonCapabilities,
     DaemonHello, ExtensionKind, ExtensionProvenance, ExtensionTrustBadge, ExtensionUpdateRecord,
     ManagedAgentEnvironment, ManagedAgentSession, ManagedAgentSessionEvent,

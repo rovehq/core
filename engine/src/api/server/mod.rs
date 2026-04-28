@@ -255,6 +255,42 @@ pub async fn start_daemon(
         .route("/v1/tasks/:task_id/events", get(api::get_task_events))
         .route("/v1/tasks/:task_id/stream", get(api::stream_task_events))
         .route("/v1/agents", get(api::list_agents).post(api::create_agent))
+        .route(
+            "/v1/managed-agents/agents",
+            get(api::list_managed_agents).post(api::create_managed_agent),
+        )
+        .route(
+            "/v1/managed-agents/agents/:id",
+            get(api::get_managed_agent),
+        )
+        .route(
+            "/v1/managed-agents/environments",
+            get(api::list_managed_agent_environments),
+        )
+        .route(
+            "/v1/managed-agents/environments/:id",
+            get(api::get_managed_agent_environment),
+        )
+        .route(
+            "/v1/managed-agents/sessions",
+            get(api::list_managed_agent_sessions).post(api::create_managed_agent_session),
+        )
+        .route(
+            "/v1/managed-agents/sessions/:id",
+            get(api::get_managed_agent_session),
+        )
+        .route(
+            "/v1/managed-agents/sessions/:id/wake",
+            post(api::wake_managed_agent_session),
+        )
+        .route(
+            "/v1/managed-agents/sessions/:id/messages",
+            post(api::send_managed_agent_session_message),
+        )
+        .route(
+            "/v1/managed-agents/sessions/:id/events",
+            get(api::list_managed_agent_session_events),
+        )
         .route("/v1/agents/templates", get(api::list_agent_templates))
         .route(
             "/v1/agents/factory/preview",
@@ -275,6 +311,9 @@ pub async fn start_daemon(
                 .delete(api::remove_agent),
         )
         .route("/v1/agents/:id/run", post(api::run_agent))
+        .route("/v1/agents/:id/threads", get(api::list_agent_threads))
+        .route("/v1/threads", get(api::list_threads))
+        .route("/v1/threads/:thread_id", get(api::get_thread))
         .route(
             "/v1/workflows",
             get(api::list_workflows).post(api::create_workflow),

@@ -25,6 +25,7 @@ export default function TasksPage() {
   const [selectedTask, setSelectedTask] = useState<TaskEventsResponse | null>(null);
   const [statusFilter, setStatusFilter] = useState<TaskStatusFilter>('all');
   const [agentFilter, setAgentFilter] = useState('all');
+  const [threadFilter, setThreadFilter] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [loading, setLoading] = useState(true);
@@ -79,6 +80,7 @@ export default function TasksPage() {
     return {
       status: statusFilter === 'all' ? undefined : statusFilter,
       agent_id: agentFilter === 'all' ? undefined : agentFilter,
+      thread_id: threadFilter.trim() || undefined,
       date_from: dateFrom ? startOfDayUnix(dateFrom) : undefined,
       date_to: dateTo ? endOfDayUnix(dateTo) : undefined,
       limit: DEFAULT_LIMIT,
@@ -189,6 +191,16 @@ export default function TasksPage() {
               />
             </FilterField>
 
+            <FilterField label="Thread Id">
+              <input
+                type="text"
+                value={threadFilter}
+                onChange={(event) => setThreadFilter(event.target.value)}
+                className={inputClassName}
+                placeholder="workflow:release:thread:research"
+              />
+            </FilterField>
+
             <div className="flex items-end gap-3">
               <button
                 type="button"
@@ -203,6 +215,7 @@ export default function TasksPage() {
                 onClick={() => {
                   setStatusFilter('all');
                   setAgentFilter('all');
+                  setThreadFilter('');
                   setDateFrom('');
                   setDateTo('');
                 }}
@@ -249,6 +262,16 @@ export default function TasksPage() {
                             <span className="rounded-full border border-surface2 bg-background/60 px-2 py-0.5 text-[11px] uppercase tracking-wide text-gray-300">
                               {task.agent_name || task.agent_id || 'unattributed'}
                             </span>
+                            {task.thread_id ? (
+                              <span className="rounded-full border border-surface2 bg-background/60 px-2 py-0.5 text-[11px] text-gray-300">
+                                {task.thread_id}
+                              </span>
+                            ) : null}
+                            {task.worker_preset_name ? (
+                              <span className="rounded-full border border-surface2 bg-background/60 px-2 py-0.5 text-[11px] uppercase tracking-wide text-gray-300">
+                                {task.worker_preset_name}
+                              </span>
+                            ) : null}
                             <span className="rounded-full border border-surface2 bg-background/60 px-2 py-0.5 text-[11px] uppercase tracking-wide text-gray-400">
                               {task.source}
                             </span>
@@ -288,6 +311,11 @@ export default function TasksPage() {
                       label="Agent"
                       value={selectedTask.task.agent_name || selectedTask.task.agent_id || 'n/a'}
                     />
+                    <StatCard
+                      label="Thread"
+                      value={selectedTask.task.thread_id || 'n/a'}
+                      detail={selectedTask.task.worker_preset_name || undefined}
+                    />
                     <StatCard label="Source" value={selectedTask.task.source} />
                     <StatCard
                       label="Trace Events"
@@ -315,6 +343,9 @@ export default function TasksPage() {
                     </DetailBlock>
                     <DetailBlock label="Provider" mono={false}>
                       {selectedTask.task.provider_used || 'n/a'}
+                    </DetailBlock>
+                    <DetailBlock label="Worker Preset" mono={false}>
+                      {selectedTask.task.worker_preset_name || selectedTask.task.worker_preset_id || 'n/a'}
                     </DetailBlock>
                     <DetailBlock label="Duration" mono={false}>
                       {formatDuration(selectedTask.task.duration_ms)}

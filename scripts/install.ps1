@@ -1,7 +1,7 @@
 # Rove installer (Windows / PowerShell).
 # Usage:
-#   irm https://rove.sh/install.ps1 | iex
-#   $env:ROVE_CHANNEL='dev'; irm https://rove.sh/install.ps1 | iex
+#   irm https://get.roveai.co/install.ps1 | iex
+#   $env:ROVE_CHANNEL='dev'; irm https://get.roveai.co/install.ps1 | iex
 #
 # Env:
 #   ROVE_CHANNEL       stable (default) | dev

@@ -90,6 +90,7 @@ impl CdpSession {
 
 pub struct BrowserTool {
     profile: BrowserProfileConfig,
+    managed_data_root: PathBuf,
     /// Live CDP session; `None` until first use.
     session: Option<CdpSession>,
     /// Chrome child process kept alive in ManagedLocal mode.
@@ -97,9 +98,10 @@ pub struct BrowserTool {
 }
 
 impl BrowserTool {
-    pub fn new(profile: BrowserProfileConfig) -> Self {
+    pub fn new(profile: BrowserProfileConfig, managed_data_root: PathBuf) -> Self {
         Self {
             profile,
+            managed_data_root,
             session: None,
             chrome_process: None,
         }
@@ -172,13 +174,14 @@ impl BrowserTool {
             )
         })?;
 
-        let port: u16 = 9222;
-        let user_data_dir = self.profile.user_data_dir.clone().unwrap_or_else(|| {
-            std::env::temp_dir()
-                .join("rove-browser")
-                .to_string_lossy()
-                .into_owned()
-        });
+        let port = allocate_debug_port().context("Failed to allocate an ephemeral CDP port")?;
+        let user_data_dir = self.resolved_user_data_dir();
+        std::fs::create_dir_all(&user_data_dir).with_context(|| {
+            format!(
+                "Failed to create browser profile data dir at {}",
+                user_data_dir.display()
+            )
+        })?;
 
         let mut args = vec![
             format!("--remote-debugging-port={}", port),
@@ -186,7 +189,9 @@ impl BrowserTool {
             "--no-sandbox".to_string(),
             "--disable-gpu".to_string(),
             "--disable-dev-shm-usage".to_string(),
-            format!("--user-data-dir={}", user_data_dir),
+            "--no-first-run".to_string(),
+            "--no-default-browser-check".to_string(),
+            format!("--user-data-dir={}", user_data_dir.display()),
         ];
         if let Some(url) = &self.profile.startup_url {
             args.push(url.clone());
@@ -222,6 +227,21 @@ impl BrowserTool {
             "Chrome did not respond on port {} within 5 seconds",
             port
         ))
+    }
+
+    fn resolved_user_data_dir(&self) -> PathBuf {
+        self.profile
+            .user_data_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.default_managed_profile_dir())
+    }
+
+    fn default_managed_profile_dir(&self) -> PathBuf {
+        self.managed_data_root
+            .join("browser")
+            .join("profiles")
+            .join(sanitize_profile_id(&self.profile.id))
     }
 
     // ------------------------------------------------------------------
@@ -522,6 +542,33 @@ fn resolve_chrome_binary(override_path: Option<&str>) -> Option<PathBuf> {
     None
 }
 
+fn allocate_debug_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .context("Failed to bind an ephemeral localhost port")?;
+    let port = listener
+        .local_addr()
+        .context("Failed to read ephemeral port allocation")?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+fn sanitize_profile_id(profile_id: &str) -> String {
+    let sanitized = profile_id
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => ch,
+            _ => '_',
+        })
+        .collect::<String>();
+
+    if sanitized.is_empty() {
+        "default".to_string()
+    } else {
+        sanitized
+    }
+}
+
 /// Extract `result.value` as `&str` from a `Runtime.evaluate` response.
 fn extract_string_value(res: &serde_json::Value) -> Option<&str> {
     res.get("result")?.get("value")?.as_str()
@@ -540,6 +587,7 @@ fn ready_state_value(res: &serde_json::Value) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::config::BrowserProfileConfig;
+    use tempfile::TempDir;
 
     #[test]
     fn browser_tool_constructs_without_panic() {
@@ -550,7 +598,7 @@ mod tests {
             cdp_url: Some("http://127.0.0.1:9222".to_string()),
             ..Default::default()
         };
-        let tool = BrowserTool::new(profile);
+        let tool = BrowserTool::new(profile, std::env::temp_dir());
         assert!(tool.session.is_none());
         assert!(tool.chrome_process.is_none());
     }
@@ -579,5 +627,48 @@ mod tests {
         let res = serde_json::json!({"result": {"type": "number", "value": 42}});
         // value is a number, as_str() returns None
         assert!(extract_string_value(&res).is_none());
+    }
+
+    #[test]
+    fn managed_profiles_get_isolated_default_user_data_dirs() {
+        let temp = TempDir::new().expect("temp dir");
+        let profile = BrowserProfileConfig {
+            id: "ops/main".to_string(),
+            name: "Ops".to_string(),
+            mode: BrowserProfileMode::ManagedLocal,
+            ..Default::default()
+        };
+
+        let tool = BrowserTool::new(profile, temp.path().to_path_buf());
+
+        assert_eq!(
+            tool.resolved_user_data_dir(),
+            temp.path().join("browser/profiles/ops_main")
+        );
+    }
+
+    #[test]
+    fn explicit_user_data_dir_overrides_default_profile_dir() {
+        let temp = TempDir::new().expect("temp dir");
+        let profile = BrowserProfileConfig {
+            id: "ops".to_string(),
+            name: "Ops".to_string(),
+            mode: BrowserProfileMode::ManagedLocal,
+            user_data_dir: Some("/tmp/custom-profile".to_string()),
+            ..Default::default()
+        };
+
+        let tool = BrowserTool::new(profile, temp.path().to_path_buf());
+
+        assert_eq!(
+            tool.resolved_user_data_dir(),
+            PathBuf::from("/tmp/custom-profile")
+        );
+    }
+
+    #[test]
+    fn allocate_debug_port_returns_ephemeral_port() {
+        let port = allocate_debug_port().expect("ephemeral port");
+        assert!(port > 0);
     }
 }

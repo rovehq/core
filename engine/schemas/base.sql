@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source TEXT NOT NULL DEFAULT 'cli',
     agent_id TEXT,
     agent_name TEXT,
+    thread_id TEXT,
     worker_preset_id TEXT,
     worker_preset_name TEXT,
     status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_agent_created_at ON tasks(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_thread_created_at ON tasks(thread_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS task_steps (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

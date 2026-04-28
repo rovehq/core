@@ -18,6 +18,19 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 fn create_test_config(temp_dir: &TempDir) -> Config {
+    // Each call creates a unique data_dir subdir so parallel tests don't share
+    // the same PID-file path when ROVE_DATA_DIR is set in the environment.
+    let unique_id = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+    );
+    let data_dir = temp_dir.path().join(format!("data-{}", unique_id));
+    std::fs::create_dir_all(&data_dir).expect("data_dir");
+
     let config_content = format!(
         r#"
 [core]
@@ -47,12 +60,16 @@ confirm_tier1_delay = 10
 require_explicit_tier2 = true
 "#,
         temp_dir.path().display(),
-        temp_dir.path().display()
+        data_dir.display()
     );
 
     let config_path = temp_dir.path().join("config.toml");
     std::fs::write(&config_path, config_content).unwrap();
-    Config::load_from_path(&config_path).unwrap()
+    let mut config = Config::load_from_path(&config_path).unwrap();
+    // Override data_dir after loading to bypass ROVE_DATA_DIR env var override
+    // so parallel tests each have their own PID file path.
+    config.core.data_dir = data_dir;
+    config
 }
 
 fn create_safe_temp_dir() -> TempDir {

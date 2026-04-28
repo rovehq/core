@@ -72,7 +72,7 @@ impl NativeRuntime {
         name: &str,
         tool_path: &Path,
     ) -> Result<Box<dyn CoreTool>, EngineError> {
-        let create_tool: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn CoreTool> =
+        let create_tool: libloading::Symbol<unsafe fn() -> *mut dyn CoreTool> =
             library.get(b"create_tool").map_err(|error| {
                 tracing::error!(
                     "Symbol 'create_tool' not found in {}: {}",

@@ -22,6 +22,7 @@ use rove_engine::risk_assessor::RiskAssessor;
 use rove_engine::risk_assessor::RiskTier;
 use sdk::{
     Complexity, OutcomeContract, RemoteExecutionPlan, Route, TaskDomain, TaskExecutionProfile,
+    TaskSource,
 };
 
 async fn setup_test_agent() -> (TempDir, AgentCore) {
@@ -176,6 +177,66 @@ fn test_task_result_creation() {
 async fn test_agent_core_creation() {
     let (_temp_dir, agent) = setup_test_agent().await;
     assert_eq!(agent.memory.messages().len(), 0);
+}
+
+#[tokio::test]
+async fn initialize_task_context_injects_recent_thread_history() {
+    let (_temp_dir, mut agent) = setup_test_agent_with_providers(vec![], true).await;
+    let thread_id = "workflow:release:thread:research".to_string();
+    let profile = TaskExecutionProfile {
+        agent_id: Some("agent.release".to_string()),
+        agent_name: Some("Release Agent".to_string()),
+        thread_id: Some(thread_id.clone()),
+        worker_preset_id: None,
+        worker_preset_name: None,
+        purpose: Some("Investigate release state".to_string()),
+        instructions: String::new(),
+        allowed_tools: Vec::new(),
+        callable_agents: Vec::new(),
+        output_contract: None,
+        outcome_contract: None,
+        max_iterations: None,
+    };
+
+    let prior_task_id = uuid::Uuid::new_v4();
+    agent
+        .task_repo
+        .create_task_with_metadata(
+            &prior_task_id,
+            "inspect the last rollout",
+            Some(&TaskSource::Cli),
+            Some(&profile),
+        )
+        .await
+        .unwrap();
+    agent
+        .task_repo
+        .update_task_status(&prior_task_id, TaskStatus::Completed)
+        .await
+        .unwrap();
+    agent
+        .task_repo
+        .insert_agent_event(
+            &prior_task_id,
+            "answer",
+            r#"{"answer":"Found a regression in the checklist"}"#,
+            1,
+            Some("general"),
+        )
+        .await
+        .unwrap();
+
+    let task = Task::build_from_cli("prepare a release summary").with_execution_profile(profile);
+    let _context = agent
+        .initialize_task_context(&task, RiskTier::Tier0)
+        .await
+        .expect("task context");
+
+    let system_prompt = &agent.memory.messages()[0].content;
+    assert!(system_prompt.contains("Persistent execution thread context"));
+    assert!(system_prompt.contains(&thread_id));
+    assert!(system_prompt.contains("inspect the last rollout"));
+    assert!(system_prompt.contains("Found a regression in the checklist"));
 }
 
 #[tokio::test]

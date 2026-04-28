@@ -385,6 +385,7 @@ mod tests {
                     prompt: "inspect".to_string(),
                     agent_id: None,
                     worker_preset: None,
+                    thread_key: None,
                     outcome_contract: None,
                     continue_on_error: false,
                     branches: vec![WorkflowBranchSpec {
@@ -398,6 +399,7 @@ mod tests {
                     prompt: "verify".to_string(),
                     agent_id: None,
                     worker_preset: None,
+                    thread_key: None,
                     outcome_contract: None,
                     continue_on_error: false,
                     branches: Vec::new(),
@@ -408,6 +410,7 @@ mod tests {
                     prompt: "fix".to_string(),
                     agent_id: None,
                     worker_preset: None,
+                    thread_key: None,
                     outcome_contract: None,
                     continue_on_error: false,
                     branches: Vec::new(),

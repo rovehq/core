@@ -1,7 +1,10 @@
 use anyhow::Result;
-use sdk::{BrowserApprovalControls, BrowserProfileInput, BrowserProfileMode};
+use sdk::{BrowserApprovalControls, BrowserProfileInput, BrowserProfileMode, BrowserRuntimeStatus};
 
+use crate::cli::database_path::database_path;
 use crate::config::Config;
+use crate::runtime::RuntimeManager;
+use crate::storage::Database;
 use crate::system::browser::BrowserManager;
 
 use super::commands::{
@@ -11,13 +14,22 @@ use super::commands::{
 pub async fn handle_browser(action: BrowserAction) -> Result<()> {
     let config = Config::load_or_create()?;
     let manager = BrowserManager::new(config);
+    let runtime = current_runtime_status()
+        .await
+        .unwrap_or_else(|error| BrowserRuntimeStatus {
+            warnings: vec![format!(
+                "Failed to inspect current runtime browser backend: {}",
+                error
+            )],
+            ..BrowserRuntimeStatus::default()
+        });
 
     match action {
-        BrowserAction::Status => print_status(manager.status()),
+        BrowserAction::Status => print_status(manager.status_with_runtime(runtime)),
         BrowserAction::Enable => print_status(manager.set_enabled(true)?),
         BrowserAction::Disable => print_status(manager.set_enabled(false)?),
         BrowserAction::Controls { action } => match action {
-            BrowserControlsAction::Show => print_status(manager.status()),
+            BrowserControlsAction::Show => print_status(manager.status_with_runtime(runtime)),
             BrowserControlsAction::Set {
                 require_managed_launch_approval,
                 require_existing_session_approval,
@@ -40,10 +52,11 @@ pub async fn handle_browser(action: BrowserAction) -> Result<()> {
             }
         },
         BrowserAction::Profile { action } => match action {
-            BrowserProfileAction::List => print_status(manager.status()),
+            BrowserProfileAction::List => print_status(manager.status_with_runtime(runtime)),
             BrowserProfileAction::Add {
                 id,
                 name,
+                backend,
                 mode,
                 browser,
                 user_data_dir,
@@ -57,6 +70,7 @@ pub async fn handle_browser(action: BrowserAction) -> Result<()> {
                     id,
                     name,
                     enabled: !disabled,
+                    backend,
                     mode: parse_mode(mode),
                     browser,
                     user_data_dir,
@@ -72,6 +86,13 @@ pub async fn handle_browser(action: BrowserAction) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn current_runtime_status() -> Result<BrowserRuntimeStatus> {
+    let config = Config::load_or_create()?;
+    let database = Database::new(&database_path(&config)).await?;
+    let runtime = RuntimeManager::build(&database, &config).await?;
+    Ok(runtime.registry.browser_runtime_status().await)
 }
 
 fn parse_mode(mode: BrowserProfileModeArg) -> BrowserProfileMode {
@@ -104,12 +125,36 @@ fn print_status(status: sdk::BrowserSurfaceStatus) {
         status.controls.require_approval_for_existing_session_attach,
         status.controls.require_approval_for_remote_cdp
     );
+    println!(
+        "Runtime: {}{}{}",
+        if status.runtime.registered {
+            status.runtime.backend_name.as_deref().unwrap_or("loaded")
+        } else {
+            "not loaded"
+        },
+        status
+            .runtime
+            .source
+            .as_deref()
+            .map(|source| format!(" [{}]", source))
+            .unwrap_or_default(),
+        if status.runtime.connected {
+            " connected"
+        } else if status.runtime.registered {
+            " idle"
+        } else {
+            ""
+        }
+    );
 
     if !status.warnings.is_empty() {
         println!("Warnings:");
         for warning in &status.warnings {
             println!("- {}", warning);
         }
+    }
+    for warning in &status.runtime.warnings {
+        println!("- {}", warning);
     }
 
     if status.profiles.is_empty() {
@@ -131,6 +176,9 @@ fn print_status(status: sdk::BrowserSurfaceStatus) {
             "  enabled={} approval_required={}",
             profile.enabled, profile.approval_required
         );
+        if let Some(backend) = &profile.backend {
+            println!("  backend={}", backend);
+        }
         if let Some(browser) = &profile.browser {
             println!("  browser={}", browser);
         }

@@ -282,7 +282,7 @@ pub(crate) fn call_native_tool(
 pub(crate) fn load_native_tool(artifact: &Path) -> Result<Box<dyn CoreTool>> {
     let library = unsafe { libloading::Library::new(artifact) }
         .with_context(|| format!("Failed to load native artifact '{}'", artifact.display()))?;
-    let create_tool: libloading::Symbol<unsafe extern "C" fn() -> *mut dyn CoreTool> =
+    let create_tool: libloading::Symbol<unsafe fn() -> *mut dyn CoreTool> =
         unsafe { library.get(b"create_tool") }.with_context(|| {
             format!(
                 "Native artifact '{}' does not export create_tool",

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Rove installer (POSIX / macOS / Linux).
 # Usage:
-#   curl -sSfL https://rove.sh/install.sh | sh
-#   ROVE_CHANNEL=dev curl -sSfL https://rove.sh/install.sh | sh
+#   curl -sSfL https://get.roveai.co/install.sh | sh
+#   ROVE_CHANNEL=dev curl -sSfL https://get.roveai.co/install.sh | sh
 #
 # Env:
 #   ROVE_CHANNEL       stable (default) | dev

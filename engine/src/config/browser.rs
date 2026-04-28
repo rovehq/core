@@ -48,6 +48,8 @@ pub struct BrowserProfileConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
+    pub backend: Option<String>,
+    #[serde(default)]
     pub mode: BrowserProfileMode,
     #[serde(default)]
     pub browser: Option<String>,
@@ -67,6 +69,7 @@ impl Default for BrowserProfileConfig {
             id: String::new(),
             name: String::new(),
             enabled: true,
+            backend: None,
             mode: BrowserProfileMode::ManagedLocal,
             browser: None,
             user_data_dir: None,

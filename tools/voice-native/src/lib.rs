@@ -140,8 +140,7 @@ fn speak_text(text: &str, voice: Option<&str>) -> Result<String> {
     Err(anyhow!("Voice output is unsupported on this platform"))
 }
 
-#[allow(improper_ctypes_definitions)]
 #[no_mangle]
-pub extern "C" fn create_tool() -> *mut dyn CoreTool {
+pub fn create_tool() -> *mut dyn CoreTool {
     Box::into_raw(Box::new(VoiceNativeTool::new()))
 }

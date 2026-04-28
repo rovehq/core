@@ -82,7 +82,11 @@ impl AgentCore {
         let orchestration = self.select_execution_strategy(&task, &context).await;
         self.insert_thought_event(
             task_id,
-            &format!("Execution strategy: {}", orchestration.summary()),
+            &format!(
+                "Execution mode: {} · {}",
+                orchestration.execution_mode().label(),
+                orchestration.summary()
+            ),
             &context.domain_str,
         )
         .await?;

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use sdk::{
     BrowserApprovalControls, BrowserProfileInput, BrowserProfileMode, BrowserProfileReadiness,
-    BrowserProfileRecord, BrowserSurfaceStatus, BrowserSurfaceUpdate,
+    BrowserProfileRecord, BrowserRuntimeStatus, BrowserSurfaceStatus, BrowserSurfaceUpdate,
 };
 
 use crate::config::{
@@ -19,6 +19,10 @@ impl BrowserManager {
     }
 
     pub fn status(&self) -> BrowserSurfaceStatus {
+        self.status_with_runtime(BrowserRuntimeStatus::default())
+    }
+
+    pub fn status_with_runtime(&self, runtime: BrowserRuntimeStatus) -> BrowserSurfaceStatus {
         let browser = &self.config.browser;
         let mut warnings = Vec::new();
 
@@ -38,6 +42,49 @@ impl BrowserManager {
                     .to_string(),
             );
         }
+        if let Some(active_profile) = active_profile(browser) {
+            if let Some(backend) = active_profile
+                .backend
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                if is_builtin_browser_compat_backend(backend) {
+                    warnings.push(format!(
+                        "Default browser profile '{}' is using the temporary builtin-compat browser backend. Install and select 'browser-cdp' for the fully externalized path.",
+                        active_profile.name
+                    ));
+                }
+                if !runtime.registered {
+                    warnings.push(format!(
+                        "Default browser profile '{}' expects backend '{}', but no matching browser backend is loaded in the daemon runtime.",
+                        active_profile.name, backend
+                    ));
+                } else if runtime
+                    .backend_name
+                    .as_deref()
+                    .is_some_and(|name| !name.eq_ignore_ascii_case(backend))
+                {
+                    warnings.push(format!(
+                        "Default browser profile '{}' expects backend '{}', but the daemon runtime currently loaded '{}'.",
+                        active_profile.name,
+                        backend,
+                        runtime.backend_name.as_deref().unwrap_or("unknown")
+                    ));
+                }
+            } else {
+                warnings.push(format!(
+                    "Default browser profile '{}' has no explicit backend. Install 'browser-cdp' or set backend='builtin-compat' if you intentionally need the temporary compatibility browser.",
+                    active_profile.name
+                ));
+            }
+        }
+        if browser.enabled && !browser.profiles.is_empty() && !runtime.registered {
+            warnings.push(
+                "Browser config exists, but no browser backend is currently loaded in the daemon runtime."
+                    .to_string(),
+            );
+        }
+        warnings.extend(runtime.warnings.iter().cloned());
 
         let profiles = browser
             .profiles
@@ -63,6 +110,7 @@ impl BrowserManager {
             enabled: browser.enabled,
             default_profile_id: browser.default_profile_id.clone(),
             controls: controls_from_config(&browser.approvals),
+            runtime,
             profiles,
             warnings,
         }
@@ -160,10 +208,29 @@ fn profile_record(profile: &BrowserProfileConfig, browser: &BrowserConfig) -> Br
         }
     };
 
+    if let Some(backend) = profile
+        .backend
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if is_builtin_browser_compat_backend(backend) {
+            warnings.push(
+                "Uses the temporary builtin-compat browser backend. Prefer installing and selecting the official 'browser-cdp' driver."
+                    .to_string(),
+            );
+        }
+    } else {
+        warnings.push(
+            "No explicit backend selected. Browser tools only load from an installed browser driver unless you intentionally choose 'builtin-compat'."
+                .to_string(),
+        );
+    }
+
     BrowserProfileRecord {
         id: profile.id.clone(),
         name: profile.name.clone(),
         enabled: profile.enabled,
+        backend: profile.backend.clone(),
         mode,
         is_default: browser.default_profile_id.as_deref() == Some(profile.id.as_str()),
         browser: profile.browser.clone(),
@@ -175,6 +242,13 @@ fn profile_record(profile: &BrowserProfileConfig, browser: &BrowserConfig) -> Br
         approval_required: approval_required(mode, &browser.approvals),
         warnings,
     }
+}
+
+fn is_builtin_browser_compat_backend(backend: &str) -> bool {
+    matches!(
+        backend.trim().to_ascii_lowercase().as_str(),
+        "builtin" | "builtin-compat" | "builtin_compat"
+    )
 }
 
 fn approval_required(mode: BrowserProfileMode, controls: &BrowserApprovalConfig) -> bool {
@@ -206,6 +280,7 @@ fn update_from_config(config: &BrowserConfig) -> BrowserSurfaceUpdate {
                 id: profile.id.clone(),
                 name: profile.name.clone(),
                 enabled: profile.enabled,
+                backend: profile.backend.clone(),
                 mode: mode_from_config(profile.mode),
                 browser: profile.browser.clone(),
                 user_data_dir: profile.user_data_dir.clone(),
@@ -237,6 +312,7 @@ fn config_from_update(update: BrowserSurfaceUpdate) -> BrowserConfig {
                 id: profile.id.trim().to_string(),
                 name: profile.name.trim().to_string(),
                 enabled: profile.enabled,
+                backend: normalize_optional(profile.backend),
                 mode: mode_to_config(profile.mode),
                 browser: normalize_optional(profile.browser),
                 user_data_dir: normalize_optional(profile.user_data_dir),
@@ -246,6 +322,14 @@ fn config_from_update(update: BrowserSurfaceUpdate) -> BrowserConfig {
             })
             .collect(),
     }
+}
+
+fn active_profile<'a>(browser: &'a BrowserConfig) -> Option<&'a BrowserProfileConfig> {
+    browser
+        .default_profile_id
+        .as_deref()
+        .and_then(|id| browser.profiles.iter().find(|profile| profile.id == id))
+        .or_else(|| browser.profiles.iter().find(|profile| profile.enabled))
 }
 
 fn mode_from_config(mode: ConfigMode) -> BrowserProfileMode {
@@ -316,5 +400,83 @@ mod tests {
         );
         assert!(!status.profiles[1].warnings.is_empty());
         assert!(!status.profiles[2].warnings.is_empty());
+    }
+
+    #[test]
+    fn browser_status_surfaces_missing_runtime_backend_warning() {
+        let mut config = Config::default();
+        config.browser.enabled = true;
+        config.browser.default_profile_id = Some("managed".to_string());
+        config.browser.profiles = vec![BrowserProfileConfig {
+            id: "managed".to_string(),
+            name: "Managed".to_string(),
+            mode: ConfigMode::ManagedLocal,
+            ..Default::default()
+        }];
+
+        let status =
+            BrowserManager::new(config).status_with_runtime(BrowserRuntimeStatus::default());
+
+        assert!(!status.runtime.registered);
+        assert!(status
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("no browser backend is currently loaded")));
+    }
+
+    #[test]
+    fn browser_status_warns_when_default_profile_has_no_explicit_backend() {
+        let mut config = Config::default();
+        config.browser.enabled = true;
+        config.browser.default_profile_id = Some("managed".to_string());
+        config.browser.profiles = vec![BrowserProfileConfig {
+            id: "managed".to_string(),
+            name: "Managed".to_string(),
+            mode: ConfigMode::ManagedLocal,
+            ..Default::default()
+        }];
+
+        let status = BrowserManager::new(config).status();
+
+        assert!(status.warnings.iter().any(|warning| {
+            warning.contains("has no explicit backend")
+                && warning.contains("browser-cdp")
+                && warning.contains("builtin-compat")
+        }));
+        assert!(status.profiles[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("No explicit backend selected")));
+    }
+
+    #[test]
+    fn browser_status_marks_builtin_compat_as_temporary() {
+        let mut config = Config::default();
+        config.browser.enabled = true;
+        config.browser.default_profile_id = Some("compat".to_string());
+        config.browser.profiles = vec![BrowserProfileConfig {
+            id: "compat".to_string(),
+            name: "Compat".to_string(),
+            mode: ConfigMode::ManagedLocal,
+            backend: Some("builtin-compat".to_string()),
+            ..Default::default()
+        }];
+
+        let status = BrowserManager::new(config).status_with_runtime(BrowserRuntimeStatus {
+            registered: true,
+            connected: false,
+            backend_name: Some("builtin-compat".to_string()),
+            source: Some("builtin-compat".to_string()),
+            warnings: Vec::new(),
+        });
+
+        assert!(status
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("temporary builtin-compat")));
+        assert!(status.profiles[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("temporary builtin-compat")));
     }
 }

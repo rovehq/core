@@ -315,24 +315,62 @@ jobs:
             cp -r artifacts/core_tools/* ".r2_upload/${CHANNEL}/core-tools/${ENGINE_VERSION}/" 2>/dev/null || true
           fi
 
-          # Install scripts are channel-agnostic: they read ROVE_CHANNEL at runtime.
-          cp scripts/install.sh .r2_upload/install.sh
-          cp scripts/install.ps1 .r2_upload/install.ps1
-          cp scripts/uninstall.sh .r2_upload/uninstall.sh 2>/dev/null || true
-          cp scripts/uninstall.ps1 .r2_upload/uninstall.ps1 2>/dev/null || true
-          find .r2_upload -type f | sort
+              find .r2_upload -type f | sort
 
-      - name: Deploy to Cloudflare R2
+      - name: Deploy artifacts to registry R2 (rove-registry)
         uses: jakejarvis/s3-sync-action@master
         with:
           args: --acl public-read --follow-symlinks
         env:
-          AWS_S3_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+          AWS_S3_BUCKET: ${{ secrets.REGISTRY_R2_BUCKET_NAME }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_REGION: "auto"
           AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
           SOURCE_DIR: ".r2_upload"
+
+      # Install scripts are channel-agnostic: they read ROVE_CHANNEL at runtime.
+      # Deployed to a separate get.roveai.co bucket (rove-get), not the registry bucket.
+      - name: Stage install scripts
+        run: |
+          mkdir -p .r2_get
+          cp scripts/install.sh .r2_get/install.sh 2>/dev/null || true
+          cp scripts/install.ps1 .r2_get/install.ps1 2>/dev/null || true
+          cp scripts/uninstall.sh .r2_get/uninstall.sh 2>/dev/null || true
+          cp scripts/uninstall.ps1 .r2_get/uninstall.ps1 2>/dev/null || true
+          find .r2_get -type f | sort
+        shell: bash
+
+      - name: Deploy install scripts to get R2 (rove-get)
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl public-read --follow-symlinks
+        env:
+          AWS_S3_BUCKET: ${{ secrets.GET_R2_BUCKET_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: "auto"
+          AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
+          SOURCE_DIR: ".r2_get"
+
+      - name: Stage assets (logo + static media)
+        run: |
+          mkdir -p .r2_assets
+          cp assets/logo/Demo_logo.png .r2_assets/logo.png 2>/dev/null || true
+          find .r2_assets -type f | sort
+        shell: bash
+
+      - name: Deploy assets to assets R2 (rove-assets)
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl public-read --follow-symlinks
+        env:
+          AWS_S3_BUCKET: ${{ secrets.ASSETS_R2_BUCKET_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: "auto"
+          AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
+          SOURCE_DIR: ".r2_assets"
 
       - name: GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -369,13 +407,13 @@ jobs:
           CHANNEL: ${{ needs.changes.outputs.channel }}
         run: |
           set -e
-          git clone https://x-access-token:${REGISTRY_PAT}@github.com/orvislab/rove-registry.git /tmp/registry
+          git clone https://x-access-token:${REGISTRY_PAT}@github.com/rovehq/registry.git /tmp/registry
 
           ENGINE_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           COMMIT=$(git rev-parse --short HEAD)
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           R2_BASE="https://registry.roveai.co"
-          GH_RAW="https://raw.githubusercontent.com/orvislab/rove-registry/main"
+          GH_RAW="https://raw.githubusercontent.com/rovehq/registry/main"
 
           # ══════════════════ ENGINE ══════════════════
           if [ -d "artifacts/engine" ]; then

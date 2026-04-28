@@ -557,6 +557,7 @@ fn create_workflow(
             prompt,
             agent_id: agent.get(index).cloned(),
             worker_preset: worker_preset.get(index).cloned(),
+            thread_key: None,
             outcome_contract: None,
             continue_on_error: false,
             branches: Vec::new(),

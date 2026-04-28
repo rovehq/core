@@ -247,7 +247,10 @@ impl RuntimeManager {
                 })
             {
                 registry
-                    .register_browser_backend(Arc::new(TokioMutex::new(BrowserTool::new(profile))))
+                    .register_browser_backend(Arc::new(TokioMutex::new(BrowserTool::new(
+                        profile,
+                        config.core.data_dir.join("browser"),
+                    ))))
                     .await;
             }
         }

@@ -353,6 +353,13 @@ fn validate_workflow(spec: &WorkflowSpec) -> Result<()> {
         {
             bail!("Workflow step '{}' has an empty worker preset", step.id);
         }
+        if step
+            .thread_key
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("Workflow step '{}' has an empty thread key", step.id);
+        }
         if step.agent_id.is_some() && step.worker_preset.is_some() {
             bail!(
                 "Workflow step '{}' cannot define both `agent_id` and `worker_preset`",
@@ -452,6 +459,7 @@ mod tests {
                 prompt: "Do the thing".to_string(),
                 agent_id: Some("default-assistant".to_string()),
                 worker_preset: Some("executor".to_string()),
+                thread_key: None,
                 outcome_contract: None,
                 continue_on_error: false,
                 branches: Vec::new(),
@@ -483,6 +491,7 @@ mod tests {
                 prompt: "Do the thing".to_string(),
                 agent_id: None,
                 worker_preset: None,
+                thread_key: None,
                 outcome_contract: None,
                 continue_on_error: false,
                 branches: vec![WorkflowBranchSpec {

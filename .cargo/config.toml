@@ -1,0 +1,5 @@
+[env]
+# WASM/Extism tests allocate large memory pools; running them with full parallelism
+# causes OOM kills on CI. Limit default parallelism to prevent SIGKILL.
+# Override with: RUST_TEST_THREADS=N cargo test
+RUST_TEST_THREADS = { value = "4", force = false }

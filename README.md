@@ -22,20 +22,20 @@ One line. No package managers. Pick a channel.
 
 ```console
 # Dev channel (default for now — Rove is pre-stable)
-curl -fsSL https://rove.sh/install.sh | ROVE_CHANNEL=dev sh
+curl -fsSL https://get.roveai.co/install.sh | ROVE_CHANNEL=dev sh
 
 # Stable channel (empty until v* tags ship)
-curl -fsSL https://rove.sh/install.sh | sh
+curl -fsSL https://get.roveai.co/install.sh | sh
 ```
 
 ### 🪟 Windows (PowerShell)
 
 ```powershell
 # Dev
-$env:ROVE_CHANNEL="dev"; irm https://rove.sh/install.ps1 | iex
+$env:ROVE_CHANNEL="dev"; irm https://get.roveai.co/install.ps1 | iex
 
 # Stable
-irm https://rove.sh/install.ps1 | iex
+irm https://get.roveai.co/install.ps1 | iex
 ```
 
 ### 🧭 What you get
@@ -53,10 +53,10 @@ Both channels can coexist on one machine. Dev CI pre-builds at **22:00 UTC** so 
 
 ```console
 # Linux / macOS
-curl -fsSL https://rove.sh/uninstall.sh | sh
+curl -fsSL https://get.roveai.co/uninstall.sh | sh
 
 # Windows
-irm https://rove.sh/uninstall.ps1 | iex
+irm https://get.roveai.co/uninstall.ps1 | iex
 ```
 
 <div align="right">

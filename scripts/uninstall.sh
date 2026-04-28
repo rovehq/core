@@ -1,7 +1,7 @@
 #!/bin/sh
 # ─────────────────────────────────────────────
 # 🗑️  Rove Uninstaller (macOS / Linux)
-# Usage: curl -fsSL https://registry.roveai.co/uninstall.sh | sh
+# Usage: curl -fsSL https://get.roveai.co/uninstall.sh | sh
 #    or: ./uninstall.sh          (interactive, asks for confirmation)
 #    or: ./uninstall.sh --yes    (skip confirmation)
 # ─────────────────────────────────────────────

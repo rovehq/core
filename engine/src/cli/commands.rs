@@ -1242,6 +1242,8 @@ pub enum BrowserProfileAction {
         id: String,
         #[arg(long)]
         name: String,
+        #[arg(long)]
+        backend: Option<String>,
         #[arg(long, value_enum)]
         mode: BrowserProfileModeArg,
         #[arg(long)]

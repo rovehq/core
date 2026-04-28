@@ -295,6 +295,22 @@ impl ToolRegistry {
         .await;
     }
 
+    pub async fn browser_runtime_status(&self) -> sdk::BrowserRuntimeStatus {
+        match &self.browser {
+            Some(backend) => {
+                let guard = backend.lock().await;
+                sdk::BrowserRuntimeStatus {
+                    registered: true,
+                    connected: guard.is_connected(),
+                    backend_name: Some(guard.backend_name().to_string()),
+                    source: None,
+                    warnings: Vec::new(),
+                }
+            }
+            None => sdk::BrowserRuntimeStatus::default(),
+        }
+    }
+
     pub async fn register_browser_backend(&mut self, tool: Arc<Mutex<dyn BrowserBackend>>) {
         self.browser = Some(tool);
         self.register(ToolSchema {

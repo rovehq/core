@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -672,43 +672,51 @@ fn stage_official_system_package(system: &OfficialSystem) -> Result<TempDir> {
     )?;
     fs::write(
         temp_dir.path().join("runtime.json"),
-        serde_json::to_string_pretty(&json!({ "tools": system_tools(system.id) }))?,
+        serde_json::to_string_pretty(&system_runtime_config(system.id))?,
     )?;
 
     Ok(temp_dir)
 }
 
 fn build_official_system_artifact(system: &OfficialSystem) -> Result<PathBuf> {
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .context("Engine manifest has no workspace parent")?
+        .and_then(Path::parent)
+        .context("Engine manifest has no repo root parent")?
         .to_path_buf();
-    let status = Command::new("cargo")
-        .args([
-            "build",
-            "-p",
+    let build_manifest = system
+        .build_manifest_rel
+        .map(|rel| repo_root.join(rel))
+        .unwrap_or_else(|| repo_root.join("core").join("Cargo.toml"));
+
+    let mut command = Command::new("cargo");
+    command
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&build_manifest)
+        .arg("-p")
+        .arg(system.crate_name)
+        .arg("--release");
+    if system.native_tool_entry {
+        command.args(["--features", "native-tool-entry"]);
+    }
+
+    let status = command.current_dir(&repo_root).status().with_context(|| {
+        format!(
+            "Failed to build official system crate '{}' via '{}'",
             system.crate_name,
-            "--release",
-            "--features",
-            "native-tool-entry",
-        ])
-        .current_dir(&workspace_root)
-        .status()
-        .with_context(|| {
-            format!(
-                "Failed to build official system crate '{}' in '{}'",
-                system.crate_name,
-                workspace_root.display()
-            )
-        })?;
+            build_manifest.display()
+        )
+    })?;
     if !status.success() {
         bail!("cargo build failed for official system '{}'", system.id);
     }
 
-    let artifact = workspace_root
-        .join("target")
-        .join("release")
-        .join(native_artifact_filename(system.crate_name));
+    let artifact_dir = system
+        .artifact_dir_rel
+        .map(|rel| repo_root.join(rel))
+        .unwrap_or_else(|| repo_root.join("core").join("target").join("release"));
+    let artifact = artifact_dir.join(native_artifact_filename(system.crate_name));
     if !artifact.exists() {
         bail!(
             "Built artifact '{}' was not found for official system '{}'",
@@ -720,17 +728,18 @@ fn build_official_system_artifact(system: &OfficialSystem) -> Result<PathBuf> {
 }
 
 fn native_artifact_filename(crate_name: &str) -> String {
+    let lib_stem = crate_name.replace('-', "_");
     #[cfg(target_os = "macos")]
     {
-        format!("lib{}.dylib", crate_name)
+        format!("lib{}.dylib", lib_stem)
     }
     #[cfg(target_os = "linux")]
     {
-        format!("lib{}.so", crate_name)
+        format!("lib{}.so", lib_stem)
     }
     #[cfg(target_os = "windows")]
     {
-        format!("{}.dll", crate_name)
+        format!("{}.dll", lib_stem)
     }
 }
 
@@ -895,6 +904,9 @@ struct OfficialSystem {
     id: &'static str,
     crate_name: &'static str,
     description: &'static str,
+    build_manifest_rel: Option<&'static str>,
+    artifact_dir_rel: Option<&'static str>,
+    native_tool_entry: bool,
 }
 
 const OFFICIAL_SYSTEMS: &[OfficialSystem] = &[
@@ -902,21 +914,41 @@ const OFFICIAL_SYSTEMS: &[OfficialSystem] = &[
         id: "filesystem",
         crate_name: "filesystem",
         description: "Workspace file read/write/list primitives.",
+        build_manifest_rel: None,
+        artifact_dir_rel: None,
+        native_tool_entry: true,
     },
     OfficialSystem {
         id: "terminal",
         crate_name: "terminal",
         description: "Secure local terminal command execution.",
+        build_manifest_rel: None,
+        artifact_dir_rel: None,
+        native_tool_entry: true,
+    },
+    OfficialSystem {
+        id: "browser-cdp",
+        crate_name: "browser-cdp",
+        description: "Chrome CDP browser backend for Rove. Provides browse_url, read_page_text, click_element, and fill_form_field via the Chrome DevTools Protocol.",
+        build_manifest_rel: Some("plugins/browser-cdp/Cargo.toml"),
+        artifact_dir_rel: Some("plugins/target/release"),
+        native_tool_entry: false,
     },
     OfficialSystem {
         id: "vision",
         crate_name: "screenshot",
         description: "Local screenshot capture primitives.",
+        build_manifest_rel: None,
+        artifact_dir_rel: None,
+        native_tool_entry: true,
     },
     OfficialSystem {
         id: "voice-native",
         crate_name: "voice-native",
         description: "Local audio device integration and OS-native speech hooks.",
+        build_manifest_rel: None,
+        artifact_dir_rel: None,
+        native_tool_entry: true,
     },
 ];
 
@@ -925,6 +957,13 @@ fn system_permissions(id: &str) -> serde_json::Value {
         "filesystem" | "terminal" | "vision" => json!({
             "filesystem": ["workspace/**"],
             "network": [],
+            "memory_read": false,
+            "memory_write": false,
+            "tools": []
+        }),
+        "browser-cdp" => json!({
+            "filesystem": [],
+            "network": ["*"],
             "memory_read": false,
             "memory_write": false,
             "tools": []
@@ -946,6 +985,24 @@ fn system_permissions(id: &str) -> serde_json::Value {
     }
 }
 
+fn system_runtime_config(id: &str) -> serde_json::Value {
+    match id {
+        "browser-cdp" => json!({
+            "browser_backend": {
+                "id": "cdp",
+                "display_name": "Chrome CDP",
+                "tool_names": {
+                    "browse_url": "browse_url",
+                    "read_page_text": "read_page_text",
+                    "click_element": "click_element",
+                    "fill_form_field": "fill_form_field"
+                }
+            }
+        }),
+        _ => json!({ "tools": system_tools(id) }),
+    }
+}
+
 fn system_tools(id: &str) -> Vec<serde_json::Value> {
     match id {
         "filesystem" => vec![
@@ -961,6 +1018,7 @@ fn system_tools(id: &str) -> Vec<serde_json::Value> {
         "vision" => vec![
             json!({"name":"capture_screen","description":"Capture a screenshot.","parameters":{"type":"object","properties":{"output_file":{"type":"string"}}},"domains":["vision","all"]}),
         ],
+        "browser-cdp" => Vec::new(),
         "voice-native" => Vec::new(),
         _ => Vec::new(),
     }
@@ -968,7 +1026,10 @@ fn system_tools(id: &str) -> Vec<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{official_registry_dir, official_system, system_state};
+    use super::{
+        native_artifact_filename, official_registry_dir, official_system, system_runtime_config,
+        system_state,
+    };
     use crate::config::Config;
     use crate::storage::InstalledPlugin;
 
@@ -1014,5 +1075,30 @@ mod tests {
         let config = Config::default();
         let registry_dir = official_registry_dir(&config);
         assert!(registry_dir.ends_with("registries/official"));
+    }
+
+    #[test]
+    fn browser_cdp_is_an_official_system() {
+        let system = official_system("browser-cdp").expect("official system");
+        assert_eq!(system.crate_name, "browser-cdp");
+        assert!(!system.native_tool_entry);
+    }
+
+    #[test]
+    fn browser_cdp_runtime_config_declares_browser_backend() {
+        let runtime = system_runtime_config("browser-cdp");
+        assert_eq!(runtime["browser_backend"]["id"], "cdp");
+        assert!(runtime.get("tools").is_none());
+    }
+
+    #[test]
+    fn native_artifact_filename_normalizes_hyphenated_crate_names() {
+        let filename = native_artifact_filename("browser-cdp");
+        #[cfg(target_os = "macos")]
+        assert_eq!(filename, "libbrowser_cdp.dylib");
+        #[cfg(target_os = "linux")]
+        assert_eq!(filename, "libbrowser_cdp.so");
+        #[cfg(target_os = "windows")]
+        assert_eq!(filename, "browser_cdp.dll");
     }
 }

@@ -66,6 +66,7 @@ export interface TaskSummary {
   source: string;
   agent_id?: string | null;
   agent_name?: string | null;
+  thread_id?: string | null;
   worker_preset_id?: string | null;
   worker_preset_name?: string | null;
   status: 'pending' | 'running' | 'completed' | 'failed';
@@ -463,6 +464,7 @@ export interface WorkflowStepSpec {
   prompt: string;
   agent_id?: string | null;
   worker_preset?: string | null;
+  thread_key?: string | null;
   outcome_contract?: OutcomeContract | null;
   continue_on_error: boolean;
   branches: WorkflowBranchSpec[];
@@ -940,6 +942,7 @@ export interface BrowserProfileInput {
   id: string;
   name: string;
   enabled: boolean;
+  backend?: string | null;
   mode: BrowserProfileMode;
   browser?: string | null;
   user_data_dir?: string | null;
@@ -955,10 +958,19 @@ export interface BrowserProfileRecord extends BrowserProfileInput {
   warnings: string[];
 }
 
+export interface BrowserRuntimeStatus {
+  registered: boolean;
+  connected: boolean;
+  backend_name?: string | null;
+  source?: string | null;
+  warnings: string[];
+}
+
 export interface BrowserSurfaceStatus {
   enabled: boolean;
   default_profile_id?: string | null;
   controls: BrowserApprovalControls;
+  runtime: BrowserRuntimeStatus;
   profiles: BrowserProfileRecord[];
   warnings: string[];
 }
@@ -1723,6 +1735,7 @@ export class RoveDaemonClient {
   async listTasks(filters?: {
     status?: 'pending' | 'running' | 'completed' | 'failed';
     agent_id?: string;
+    thread_id?: string;
     date_from?: number;
     date_to?: number;
     limit?: number;
@@ -1731,6 +1744,7 @@ export class RoveDaemonClient {
     const params = new URLSearchParams();
     if (filters?.status) params.set('status', filters.status);
     if (filters?.agent_id) params.set('agent_id', filters.agent_id);
+    if (filters?.thread_id) params.set('thread_id', filters.thread_id);
     if (typeof filters?.date_from === 'number') params.set('date_from', String(filters.date_from));
     if (typeof filters?.date_to === 'number') params.set('date_to', String(filters.date_to));
     if (typeof filters?.limit === 'number') params.set('limit', String(filters.limit));

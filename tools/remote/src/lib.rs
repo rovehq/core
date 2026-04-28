@@ -702,10 +702,9 @@ async fn index_handler() -> Response {
     (StatusCode::OK, [("content-type", "text/html")], html).into_response()
 }
 
-/// FFI export for creating the tool
-#[allow(improper_ctypes_definitions)]
+/// Native export for creating the tool
 #[no_mangle]
-pub extern "C" fn create_tool() -> *mut dyn CoreTool {
+pub fn create_tool() -> *mut dyn CoreTool {
     Box::into_raw(Box::new(APIServer::new()))
 }
 

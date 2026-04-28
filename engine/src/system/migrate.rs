@@ -611,6 +611,7 @@ fn extract_workflow_content(
                 prompt: raw.trim().to_string(),
                 agent_id: None,
                 worker_preset: None,
+                thread_key: None,
                 outcome_contract: None,
                 continue_on_error: false,
                 branches: Vec::new(),
@@ -646,6 +647,7 @@ fn value_steps(value: &Value) -> Option<Vec<WorkflowStepSpec>> {
                 prompt: prompt.to_string(),
                 agent_id: None,
                 worker_preset: None,
+                thread_key: None,
                 outcome_contract: None,
                 continue_on_error: false,
                 branches: Vec::new(),
@@ -661,6 +663,7 @@ fn value_steps(value: &Value) -> Option<Vec<WorkflowStepSpec>> {
                 prompt,
                 agent_id: string_field(step, &["agent_id", "agent"]),
                 worker_preset: string_field(step, &["worker_preset"]),
+                thread_key: string_field(step, &["thread_key", "thread"]),
                 outcome_contract: None,
                 continue_on_error: step
                     .get("continue_on_error")

@@ -209,9 +209,8 @@ impl CoreTool for TelegramBot {
     }
 }
 
-/// FFI export for injecting the tool natively at runtime
-#[allow(improper_ctypes_definitions)]
+/// Native export for injecting the tool at runtime
 #[no_mangle]
-pub extern "C" fn create_tool() -> *mut dyn CoreTool {
+pub fn create_tool() -> *mut dyn CoreTool {
     Box::into_raw(Box::new(TelegramBot::new()))
 }

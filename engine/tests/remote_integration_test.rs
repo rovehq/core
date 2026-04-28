@@ -4,8 +4,6 @@
 //! These tests exercise the full RemoteManager stack using two in-process
 //! instances sharing a temporary directory.
 
-use std::time::Duration;
-
 use axum::{
     extract::Json,
     http::HeaderMap,
@@ -191,11 +189,11 @@ async fn test_presence_heartbeat_endpoint() {
     use std::sync::{Arc, Mutex};
 
     let received: Arc<Mutex<Vec<PresenceHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
-    let received_clone = Arc::clone(&received);
+    let _received_clone = Arc::clone(&received);
 
     async fn presence_handler(
         _headers: HeaderMap,
-        Json(payload): Json<PresenceHeartbeat>,
+        Json(_payload): Json<PresenceHeartbeat>,
     ) -> impl IntoResponse {
         (axum::http::StatusCode::NO_CONTENT, ())
     }
@@ -206,7 +204,7 @@ async fn test_presence_heartbeat_endpoint() {
 
     let app = Router::new().route("/v1/remote/presence", post(presence_handler));
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let addr = listener.local_addr().expect("addr");
+    let _addr = listener.local_addr().expect("addr");
 
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
