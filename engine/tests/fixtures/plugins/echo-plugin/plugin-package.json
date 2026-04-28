@@ -1,6 +1,6 @@
 {
-  "id": "echo-skill",
-  "artifact": "echo_skill.wasm",
+  "id": "echo-plugin",
+  "artifact": "echo_plugin.wasm",
   "runtime_config": "runtime.json",
   "payload_hash": "LOCAL_DEV_PAYLOAD_HASH",
   "payload_signature": "LOCAL_DEV_PAYLOAD_SIGNATURE",

@@ -119,7 +119,7 @@ pub(super) async fn prepare_distribution_bundle(
     if !no_build
         && matches!(
             manifest.plugin_type,
-            PluginType::Skill | PluginType::Channel
+            PluginType::Plugin | PluginType::Channel
         )
     {
         run_cargo(&package_root, &["test"])?;
@@ -408,7 +408,7 @@ mod tests {
                 "name": "Sample Skill",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": [],
@@ -490,7 +490,7 @@ mod tests {
     #[tokio::test]
     async fn fixture_example_package_packs() {
         let fixture =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugins/echo-skill");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugins/echo-plugin");
         let temp_dir = TempDir::new().expect("temp dir");
         let bundle_dir = temp_dir.path().join("bundle");
 
@@ -505,7 +505,7 @@ mod tests {
         assert!(bundle.bundle_dir.join("manifest.json").exists());
         assert!(bundle.bundle_dir.join("plugin-package.json").exists());
         assert!(bundle.bundle_dir.join("runtime.json").exists());
-        assert!(bundle.bundle_dir.join("echo_skill.wasm").exists());
+        assert!(bundle.bundle_dir.join("echo_plugin.wasm").exists());
     }
 
     #[tokio::test]

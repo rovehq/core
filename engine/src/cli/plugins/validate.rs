@@ -11,7 +11,7 @@ use super::package::{PluginPackage, RUNTIME_FILE};
 pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> Result<()> {
     if matches!(
         manifest.plugin_type,
-        PluginType::Brain | PluginType::Workspace
+        PluginType::Brain | PluginType::Plugin
     ) && matches!(manifest.trust_tier, TrustTier::Community)
     {
         bail!(
@@ -76,7 +76,7 @@ pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> 
     ))?;
 
     match manifest.plugin_type {
-        PluginType::Skill | PluginType::Channel | PluginType::Brain | PluginType::Workspace => {
+        PluginType::Plugin | PluginType::Channel | PluginType::Brain => {
             ToolCatalog::from_json(Some(runtime_raw))?;
         }
         PluginType::Mcp => {
@@ -205,7 +205,7 @@ pub fn review_manifest_permissions(manifest: &Manifest) -> PermissionReview {
     }
     if matches!(
         manifest.plugin_type,
-        PluginType::Brain | PluginType::Workspace
+        PluginType::Brain | PluginType::Plugin
     ) && !matches!(
         manifest.trust_tier,
         TrustTier::Official | TrustTier::Reviewed
@@ -259,11 +259,11 @@ pub fn resolve_payload_source(
     runtime_rel: Option<&str>,
 ) -> Result<Option<PathBuf>> {
     match manifest.plugin_type {
-        PluginType::Skill | PluginType::Channel => {
+        PluginType::Plugin | PluginType::Channel => {
             let path = resolve_artifact(root, package.artifact.as_deref(), "wasm")?;
             Ok(Some(path))
         }
-        PluginType::Brain | PluginType::Workspace => {
+        PluginType::Brain => {
             let path = resolve_artifact(root, package.artifact.as_deref(), native_extension())?;
             Ok(Some(path))
         }
@@ -366,7 +366,7 @@ mod tests {
                 "name": "Broad Network",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": ["/"],
                     "network": ["*"],
@@ -443,7 +443,7 @@ mod tests {
                 "name": "Bad Secret Plugin",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": ["api.openai.com"],
@@ -486,7 +486,7 @@ mod tests {
                 "name": "Secret Plugin",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": ["api.openai.com"],
@@ -522,7 +522,7 @@ mod tests {
                 "name": "Limited Plugin",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": [],

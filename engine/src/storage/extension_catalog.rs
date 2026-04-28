@@ -167,8 +167,8 @@ mod tests {
     fn sample_entry(id: &str) -> ExtensionCatalogEntry {
         ExtensionCatalogEntry {
             id: id.to_string(),
-            name: "Echo Skill".to_string(),
-            kind: "skill".to_string(),
+            name: "Echo Plugin".to_string(),
+            kind: "plugin".to_string(),
             description: "Test catalog entry".to_string(),
             trust_badge: "verified".to_string(),
             latest_version: "0.2.0".to_string(),
@@ -186,15 +186,15 @@ mod tests {
     #[tokio::test]
     async fn replace_all_overwrites_existing_catalog_entries() {
         let (_temp_dir, repo) = repo().await;
-        repo.replace_all(&[sample_entry("echo-skill")])
+        repo.replace_all(&[sample_entry("echo-plugin")])
             .await
             .expect("seed entries");
-        repo.replace_all(&[sample_entry("grep-skill")])
+        repo.replace_all(&[sample_entry("grep-plugin")])
             .await
             .expect("replace entries");
 
         let entries = repo.list_entries().await.expect("list entries");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "grep-skill");
+        assert_eq!(entries[0].id, "grep-plugin");
     }
 }

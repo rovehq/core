@@ -233,8 +233,8 @@ fn filter_installed_plugins(plugins: &[InstalledPlugin], kind: &str) -> Vec<Inst
 
 fn plugin_public_kind(plugin: &InstalledPlugin) -> &'static str {
     match plugin.plugin_type.as_str() {
-        "Skill" => "skill",
-        "Workspace" => "driver",
+        "Plugin" | "Skill" => "plugin",
+        "Workspace" => "native",
         "Channel" => "channel",
         "Mcp" => "connector",
         "Brain" => "brain",
@@ -312,10 +312,10 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Skill".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 1,
             manifest: format!(
-                r#"{{"name":"{name}","version":"0.1.0","sdk_version":"0.1.0","plugin_type":"Skill","permissions":{{"filesystem":[],"network":[],"memory_read":false,"memory_write":false,"tools":[]}},"trust_tier":"Reviewed","min_model":null,"description":"{name} plugin"}}"#
+                r#"{{"name":"{name}","version":"0.1.0","sdk_version":"0.1.0","plugin_type":"Plugin","permissions":{{"filesystem":[],"network":[],"memory_read":false,"memory_write":false,"tools":[]}},"trust_tier":"Reviewed","min_model":null,"description":"{name} plugin"}}"#
             ),
             binary_path: Some(format!("/tmp/{}.wasm", name)),
             binary_hash: "abc123".to_string(),

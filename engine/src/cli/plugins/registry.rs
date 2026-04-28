@@ -560,10 +560,10 @@ mod tests {
 
     fn sample_manifest(version: &str) -> Manifest {
         Manifest {
-            name: "Echo Skill".to_string(),
+            name: "Echo Plugin".to_string(),
             version: version.to_string(),
             sdk_version: "0.1.0".to_string(),
-            plugin_type: PluginType::Skill,
+            plugin_type: PluginType::Plugin,
             permissions: Permissions {
                 filesystem: Vec::<PathPattern>::new(),
                 network: Vec::<DomainPattern>::new(),
@@ -589,19 +589,19 @@ mod tests {
 
         update_registry_metadata(
             temp_dir.path(),
-            "echo-skill",
+            "echo-plugin",
             &manifest,
             PublishedBundle {
                 version: "0.2.0".to_string(),
                 published_at: 123,
-                bundle_path: "echo-skill/0.2.0".to_string(),
-                manifest_path: "echo-skill/0.2.0/manifest.json".to_string(),
-                package_path: "echo-skill/0.2.0/plugin-package.json".to_string(),
-                runtime_path: Some("echo-skill/0.2.0/runtime.json".to_string()),
-                artifact_path: Some("echo-skill/0.2.0/echo.wasm".to_string()),
-                artifact_sidecar_path: Some("echo-skill/0.2.0/echo.capabilities.json".to_string()),
-                readme_path: Some("echo-skill/0.2.0/README.md".to_string()),
-                release_path: "echo-skill/0.2.0/release.json".to_string(),
+                bundle_path: "echo-plugin/0.2.0".to_string(),
+                manifest_path: "echo-plugin/0.2.0/manifest.json".to_string(),
+                package_path: "echo-plugin/0.2.0/plugin-package.json".to_string(),
+                runtime_path: Some("echo-plugin/0.2.0/runtime.json".to_string()),
+                artifact_path: Some("echo-plugin/0.2.0/echo.wasm".to_string()),
+                artifact_sidecar_path: Some("echo-plugin/0.2.0/echo.capabilities.json".to_string()),
+                readme_path: Some("echo-plugin/0.2.0/README.md".to_string()),
+                release_path: "echo-plugin/0.2.0/release.json".to_string(),
             },
         )
         .expect("write registry");
@@ -616,7 +616,7 @@ mod tests {
         assert!(registry.signed_at > 0);
 
         let plugin_index: RegistryPluginIndex = serde_json::from_str(
-            &fs::read_to_string(temp_dir.path().join("echo-skill").join(PLUGIN_INDEX_FILE))
+            &fs::read_to_string(temp_dir.path().join("echo-plugin").join(PLUGIN_INDEX_FILE))
                 .expect("plugin index"),
         )
         .expect("plugin index json");
@@ -629,7 +629,7 @@ mod tests {
     #[tokio::test]
     async fn materialize_registry_bundle_copies_local_release() {
         let temp_dir = TempDir::new().expect("temp dir");
-        let release_dir = temp_dir.path().join("echo-skill").join("0.1.0");
+        let release_dir = temp_dir.path().join("echo-plugin").join("0.1.0");
         fs::create_dir_all(&release_dir).expect("release dir");
         fs::write(release_dir.join("manifest.json"), "{}").expect("manifest");
         fs::write(release_dir.join("plugin-package.json"), "{}").expect("package");
@@ -643,26 +643,26 @@ mod tests {
 
         update_registry_metadata(
             temp_dir.path(),
-            "echo-skill",
+            "echo-plugin",
             &sample_manifest("0.1.0"),
             PublishedBundle {
                 version: "0.1.0".to_string(),
                 published_at: 123,
-                bundle_path: "echo-skill/0.1.0".to_string(),
-                manifest_path: "echo-skill/0.1.0/manifest.json".to_string(),
-                package_path: "echo-skill/0.1.0/plugin-package.json".to_string(),
-                runtime_path: Some("echo-skill/0.1.0/runtime.json".to_string()),
-                artifact_path: Some("echo-skill/0.1.0/echo.wasm".to_string()),
-                artifact_sidecar_path: Some("echo-skill/0.1.0/echo.capabilities.json".to_string()),
+                bundle_path: "echo-plugin/0.1.0".to_string(),
+                manifest_path: "echo-plugin/0.1.0/manifest.json".to_string(),
+                package_path: "echo-plugin/0.1.0/plugin-package.json".to_string(),
+                runtime_path: Some("echo-plugin/0.1.0/runtime.json".to_string()),
+                artifact_path: Some("echo-plugin/0.1.0/echo.wasm".to_string()),
+                artifact_sidecar_path: Some("echo-plugin/0.1.0/echo.capabilities.json".to_string()),
                 readme_path: None,
-                release_path: "echo-skill/0.1.0/release.json".to_string(),
+                release_path: "echo-plugin/0.1.0/release.json".to_string(),
             },
         )
         .expect("write registry");
 
         let bundle = materialize_registry_bundle(
             temp_dir.path().to_str().expect("registry path"),
-            "echo-skill",
+            "echo-plugin",
             Some("0.1.0"),
         )
         .await

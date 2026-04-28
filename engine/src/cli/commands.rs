@@ -161,9 +161,9 @@ pub enum Command {
     /// Unlock secrets from the keychain for this process.
     Unlock,
 
-    /// Plugin management.
-    #[command(hide = true)]
-    Plugin {
+    /// Legacy plugin management.
+    #[command(name = "plugin-mgmt", hide = true)]
+    LegacyPlugin {
         #[command(subcommand)]
         action: PluginAction,
     },
@@ -233,21 +233,16 @@ pub enum Command {
         action: ExtensionFacadeAction,
     },
 
-    /// Skill extension management.
-    Skill {
+    /// Plugin extension management.
+    #[command(alias = "skill")]
+    Plugin {
         #[command(subcommand)]
         action: ExtensionAction,
     },
 
-    /// Compatibility alias for driver extension management.
-    #[command(hide = true)]
-    System {
-        #[command(subcommand)]
-        action: ExtensionAction,
-    },
-
-    /// Driver extension management.
-    Driver {
+    /// Native extension management.
+    #[command(alias = "driver", alias = "system")]
+    Native {
         #[command(subcommand)]
         action: ExtensionAction,
     },
@@ -405,7 +400,7 @@ pub enum PluginAction {
         name: String,
 
         /// Plugin surface to scaffold.
-        #[arg(long = "type", value_enum, default_value_t = PluginScaffoldType::Skill)]
+        #[arg(long = "type", value_enum, default_value_t = PluginScaffoldType::Plugin)]
         plugin_type: PluginScaffoldType,
     },
     /// Build and run a local plugin package against a mock runtime.
@@ -759,16 +754,15 @@ pub enum ExtensionFacadeAction {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum PluginScaffoldType {
-    Skill,
-    System,
+    Plugin,
+    Native,
     Channel,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum ExtensionKindArg {
-    Skill,
-    Driver,
-    System,
+    Plugin,
+    Native,
     Connector,
     Channel,
 }
@@ -776,9 +770,8 @@ pub enum ExtensionKindArg {
 impl ExtensionKindArg {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Skill => "skill",
-            Self::Driver => "driver",
-            Self::System => "driver",
+            Self::Plugin => "plugin",
+            Self::Native => "native",
             Self::Connector => "connector",
             Self::Channel => "channel",
         }

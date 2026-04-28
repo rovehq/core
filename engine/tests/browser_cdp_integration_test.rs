@@ -67,7 +67,7 @@ fn browser_cdp_manifest_is_valid() {
     assert_eq!(manifest.name, "browser-cdp");
     assert_eq!(
         manifest.plugin_type,
-        rove_engine::runtime::manifest::PluginType::Workspace
+        rove_engine::runtime::manifest::PluginType::Plugin
     );
 }
 

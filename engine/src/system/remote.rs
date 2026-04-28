@@ -1419,7 +1419,7 @@ impl RemoteManager {
         for driver in drivers {
             let installed = remote_extensions
                 .iter()
-                .find(|item| item.id == driver.id && item.kind == "driver");
+                .find(|item| item.id == driver.id && item.kind == "native");
 
             let action = if let Some(installed) = installed {
                 if installed.version.as_deref() == Some(driver.version.as_str()) {
@@ -1555,7 +1555,7 @@ impl RemoteManager {
             .post(format!("{}{}", endpoint.trim_end_matches('/'), path))
             .bearer_auth(auth_token)
             .json(&serde_json::json!({
-                "kind": "driver",
+                "kind": "native",
                 "source": driver.source,
                 "registry": driver.registry,
                 "version": driver.version,

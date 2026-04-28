@@ -18,10 +18,9 @@ pub struct Manifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PluginType {
-    Skill,
+    Plugin,
     Channel,
     Brain,
-    Workspace,
     Mcp,
 }
 
@@ -207,20 +206,18 @@ impl ToolCatalog {
 impl PluginType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Skill => "Skill",
+            Self::Plugin => "Plugin",
             Self::Channel => "Channel",
             Self::Brain => "Brain",
-            Self::Workspace => "Workspace",
             Self::Mcp => "Mcp",
         }
     }
 
     pub fn parse(value: &str) -> Result<Self, EngineError> {
         match value {
-            "Skill" => Ok(Self::Skill),
+            "Plugin" | "Skill" | "Workspace" => Ok(Self::Plugin),
             "Channel" => Ok(Self::Channel),
             "Brain" => Ok(Self::Brain),
-            "Workspace" => Ok(Self::Workspace),
             "Mcp" => Ok(Self::Mcp),
             other => Err(EngineError::Config(format!(
                 "Unknown plugin type '{}'",
@@ -260,10 +257,10 @@ mod tests {
     fn parses_and_validates_manifest_json() {
         let manifest = Manifest::from_json(
             r#"{
-                "name": "echo-skill",
+                "name": "echo-plugin",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": [],
@@ -278,8 +275,8 @@ mod tests {
         )
         .expect("manifest");
 
-        assert_eq!(manifest.name, "echo-skill");
-        assert_eq!(manifest.plugin_type, PluginType::Skill);
+        assert_eq!(manifest.name, "echo-plugin");
+        assert_eq!(manifest.plugin_type, PluginType::Plugin);
         assert_eq!(manifest.trust_tier, TrustTier::Reviewed);
     }
 
@@ -290,7 +287,7 @@ mod tests {
                 "name": "fetcher",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": ["api.openai.com"],
@@ -315,10 +312,10 @@ mod tests {
     fn rejects_sdk_version_mismatch() {
         let error = Manifest::from_json(
             r#"{
-                "name": "echo-skill",
+                "name": "echo-plugin",
                 "version": "0.1.0",
                 "sdk_version": "9.9.9",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": [],
@@ -342,10 +339,10 @@ mod tests {
     fn rejects_install_record_mismatch() {
         let manifest = Manifest::from_json(
             r#"{
-                "name": "echo-skill",
+                "name": "echo-plugin",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": [],

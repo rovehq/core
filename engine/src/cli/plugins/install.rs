@@ -311,7 +311,7 @@ async fn remove_existing_plugin_artifacts(
         .await
         .context("Failed to remove existing plugin before upgrade")?;
 
-    let plugin_type = PluginType::parse(&existing.plugin_type).unwrap_or(PluginType::Skill);
+    let plugin_type = PluginType::parse(&existing.plugin_type).unwrap_or(PluginType::Plugin);
     let install_dir = install_directory(config, &existing.id, &plugin_type);
     if install_dir.exists() {
         fs::remove_dir_all(&install_dir).with_context(|| {
@@ -320,7 +320,8 @@ async fn remove_existing_plugin_artifacts(
                 install_dir.display()
             )
         })?;
-    } else if matches!(plugin_type, PluginType::Workspace) {
+    } else if false {
+        // Legacy Workspace fallback path removed (Workspace merged into Plugin)
         let legacy_dir = legacy_install_directory(config, &existing.id);
         if legacy_dir.exists() {
             fs::remove_dir_all(&legacy_dir).with_context(|| {
@@ -443,8 +444,8 @@ mod tests {
         write_signed_manifest(
             package_dir.path(),
             &signing_key,
-            "Echo Skill",
-            "Skill",
+            "Echo Plugin",
+            "Plugin",
             "Reviewed",
             "0.1.0",
         );
@@ -463,9 +464,9 @@ mod tests {
             .await
             .expect("install plugin");
 
-        assert_eq!(installed.name, "Echo Skill");
-        assert_eq!(installed.id, default_plugin_id("Echo Skill"));
-        assert_eq!(installed.plugin_type, "Skill");
+        assert_eq!(installed.name, "Echo Plugin");
+        assert_eq!(installed.id, default_plugin_id("Echo Plugin"));
+        assert_eq!(installed.plugin_type, "Plugin");
         assert!(installed
             .binary_path
             .as_ref()
@@ -473,7 +474,7 @@ mod tests {
         assert!(data_dir
             .path()
             .join("plugins")
-            .join(default_plugin_id("Echo Skill"))
+            .join(default_plugin_id("Echo Plugin"))
             .join("echo.wasm")
             .exists());
     }
@@ -497,8 +498,8 @@ mod tests {
         write_signed_manifest(
             package_dir.path(),
             &signing_key,
-            "Bad Skill",
-            "Skill",
+            "Bad Plugin",
+            "Plugin",
             "Reviewed",
             "9.9.9",
         );
@@ -542,8 +543,8 @@ mod tests {
         write_signed_manifest(
             first_dir.path(),
             &signing_key,
-            "Echo Skill",
-            "Skill",
+            "Echo Plugin",
+            "Plugin",
             "Reviewed",
             "0.1.0",
         );
@@ -560,8 +561,8 @@ mod tests {
         write_signed_manifest(
             second_dir.path(),
             &signing_key,
-            "Echo Skill",
-            "Skill",
+            "Echo Plugin",
+            "Plugin",
             "Reviewed",
             "0.1.0",
         );
@@ -601,8 +602,8 @@ mod tests {
         write_signed_manifest(
             package_dir.path(),
             &signing_key,
-            "Echo Skill",
-            "Skill",
+            "Echo Plugin",
+            "Plugin",
             "Reviewed",
             "0.1.0",
         );
@@ -630,19 +631,19 @@ mod tests {
             &database,
             &crypto,
             registry_dir.path().to_str().expect("registry path"),
-            "echo-skill",
+            "echo-plugin",
             Some("0.1.0"),
             None,
         )
         .await
         .expect("install from registry");
 
-        assert_eq!(installed.id, "echo-skill");
+        assert_eq!(installed.id, "echo-plugin");
         assert_eq!(installed.version, "0.1.0");
         assert!(data_dir
             .path()
             .join("plugins")
-            .join("echo-skill")
+            .join("echo-plugin")
             .join("echo.wasm")
             .exists());
     }
@@ -668,7 +669,7 @@ mod tests {
             package_dir.path(),
             &signing_key,
             "Vision Plus",
-            "Workspace",
+            "Plugin",
             "Official",
             "0.1.0",
         );
@@ -687,16 +688,16 @@ mod tests {
             .await
             .expect("install driver");
 
-        assert_eq!(installed.plugin_type, "Workspace");
+        assert_eq!(installed.plugin_type, "Plugin");
         assert!(data_dir
             .path()
-            .join("drivers")
+            .join("plugins")
             .join(default_plugin_id("Vision Plus"))
             .join("vision-plus.dylib")
             .exists());
         assert!(data_dir
             .path()
-            .join("drivers")
+            .join("plugins")
             .join(default_plugin_id("Vision Plus"))
             .join(PACKAGE_FILE)
             .exists());
@@ -710,8 +711,8 @@ mod tests {
         write_signed_manifest(
             package_dir.path(),
             &signing_key,
-            "Echo Skill",
-            "Skill",
+            "Echo Plugin",
+            "Plugin",
             "Reviewed",
             "0.1.0",
         );

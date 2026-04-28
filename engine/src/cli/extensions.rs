@@ -19,8 +19,8 @@ use sdk::{
 };
 
 pub enum ExtensionSurface {
-    Skill,
-    Driver,
+    Plugin,
+    Native,
     Channel,
 }
 
@@ -57,24 +57,24 @@ pub struct WasmLimitView {
 impl ExtensionSurface {
     fn noun(&self) -> &'static str {
         match self {
-            Self::Skill => "skill",
-            Self::Driver => "driver",
+            Self::Plugin => "plugin",
+            Self::Native => "native",
             Self::Channel => "channel",
         }
     }
 
     fn scaffold_type(&self) -> PluginScaffoldType {
         match self {
-            Self::Skill => PluginScaffoldType::Skill,
-            Self::Driver => PluginScaffoldType::System,
+            Self::Plugin => PluginScaffoldType::Plugin,
+            Self::Native => PluginScaffoldType::Native,
             Self::Channel => PluginScaffoldType::Channel,
         }
     }
 
     fn expected_type(&self) -> PluginType {
         match self {
-            Self::Skill => PluginType::Skill,
-            Self::Driver => PluginType::Workspace,
+            Self::Plugin => PluginType::Plugin,
+            Self::Native => PluginType::Plugin,
             Self::Channel => PluginType::Channel,
         }
     }
@@ -85,7 +85,7 @@ pub async fn handle(
     surface: ExtensionSurface,
     action: ExtensionAction,
 ) -> Result<()> {
-    if matches!(surface, ExtensionSurface::Driver) {
+    if matches!(surface, ExtensionSurface::Native) {
         if let Some(result) = try_handle_official_system_action(config, &action).await? {
             return Ok(result);
         }
@@ -243,7 +243,7 @@ async fn print_official_systems(config: &Config) -> Result<()> {
         .await
         .context("Failed to list installed plugins")?;
 
-    println!("Official drivers:");
+    println!("Official native extensions:");
     for system in OFFICIAL_SYSTEMS {
         let state = system_state(&installed, system.id);
         println!("- {} [{}] {}", system.id, state, system.description);
@@ -252,13 +252,13 @@ async fn print_official_systems(config: &Config) -> Result<()> {
     let custom = installed
         .iter()
         .filter(|plugin| {
-            plugin_public_kind(plugin) == "driver" && !is_official_system_id(&plugin.id)
+            plugin_public_kind(plugin) == "native" && !is_official_system_id(&plugin.id)
         })
         .cloned()
         .collect::<Vec<_>>();
     if !custom.is_empty() {
         println!();
-        println!("Installed custom drivers:");
+        println!("Installed custom native extensions:");
         for plugin in custom {
             println!(
                 "- {} [{}] version={}",
@@ -286,7 +286,7 @@ async fn inspect_official_system(config: &Config, name: &str) -> Result<()> {
     let system = official_system(name).expect("validated official system");
 
     println!("name: {}", system.id);
-    println!("kind: driver");
+    println!("kind: native");
     println!("source: official");
     println!("state: {}", system_state(&installed, system.id));
     println!("description: {}", system.description);
@@ -300,7 +300,7 @@ async fn inspect_official_system(config: &Config, name: &str) -> Result<()> {
             println!("artifact: {}", path);
         }
     } else {
-        println!("install: rove driver install {}", system.id);
+        println!("install: rove native install {}", system.id);
     }
 
     Ok(())
@@ -314,7 +314,7 @@ async fn enable_official_system(config: &Config, name: &str) -> Result<()> {
             .set_enabled(&plugin.id, true)
             .await
             .context("Failed to enable installed system")?;
-        println!("Enabled driver '{}'.", name);
+        println!("Enabled native extension '{}'.", name);
         return Ok(());
     }
 
@@ -328,13 +328,13 @@ async fn disable_official_system(config: &Config, name: &str) -> Result<()> {
             .installed_plugins()
             .set_enabled(&plugin.id, false)
             .await
-            .context("Failed to disable installed driver")?;
-        println!("Disabled driver '{}'.", name);
+            .context("Failed to disable installed native extension")?;
+        println!("Disabled native extension '{}'.", name);
         return Ok(());
     }
 
     println!(
-        "Driver '{}' is not installed. Install it with `rove driver install {}`.",
+        "Native extension '{}' is not installed. Install it with `rove native install {}`.",
         name, name
     );
     Ok(())
@@ -367,11 +367,11 @@ pub(crate) async fn remove_official_system(config: &Config, name: &str) -> Resul
                 })?;
             }
         }
-        println!("Removed driver '{}'.", name);
+        println!("Removed native extension '{}'.", name);
         return Ok(());
     }
 
-    println!("Driver '{}' is not installed.", name);
+    println!("Native extension '{}' is not installed.", name);
     Ok(())
 }
 
@@ -391,7 +391,7 @@ pub(crate) async fn install_official_system(
             system.id,
             Some(registry.as_str()),
             Some(version),
-            Some(PluginType::Workspace),
+            Some(PluginType::Plugin),
         )
         .await?
     } else {
@@ -400,7 +400,7 @@ pub(crate) async fn install_official_system(
             system.id,
             Some(registry.as_str()),
             Some(version),
-            Some(PluginType::Workspace),
+            Some(PluginType::Plugin),
         )
         .await
         {
@@ -411,7 +411,7 @@ pub(crate) async fn install_official_system(
                     system.id,
                     Some(registry.as_str()),
                     Some(version),
-                    Some(PluginType::Workspace),
+                    Some(PluginType::Plugin),
                 )
                 .await?
             }
@@ -420,7 +420,7 @@ pub(crate) async fn install_official_system(
     };
 
     println!(
-        "{} official driver '{}' [{}] version={}",
+        "{} official native extension '{}' [{}] version={}",
         if upgrade { "Upgraded" } else { "Installed" },
         installed.name,
         installed.id,
@@ -470,7 +470,7 @@ pub(crate) async fn set_extension_enabled_api(
     selector: &str,
     enabled: bool,
 ) -> Result<ExtensionInventoryItem> {
-    if matches!(kind, "driver" | "system") && official_system(selector).is_some() {
+    if matches!(kind, "native" | "driver" | "system") && official_system(selector).is_some() {
         if enabled {
             enable_official_system(config, selector).await?;
         } else {
@@ -479,8 +479,8 @@ pub(crate) async fn set_extension_enabled_api(
         return inventory(config)
             .await?
             .into_iter()
-            .find(|item| item.kind == "driver" && item.id.eq_ignore_ascii_case(selector))
-            .context("Updated official driver did not appear in inventory");
+            .find(|item| item.kind == "native" && item.id.eq_ignore_ascii_case(selector))
+            .context("Updated official native did not appear in inventory");
     }
 
     let database = open_database(config).await?;
@@ -514,7 +514,7 @@ pub async fn install_extension_api(
     registry: Option<&str>,
     version: Option<&str>,
 ) -> Result<ExtensionInventoryItem> {
-    if matches!(kind, Some("driver") | Some("system"))
+    if matches!(kind, Some("native") | Some("driver") | Some("system"))
         && official_system(source).is_some()
         && registry.is_none()
     {
@@ -522,8 +522,8 @@ pub async fn install_extension_api(
         return inventory(config)
             .await?
             .into_iter()
-            .find(|item| item.id == source && item.kind == "driver")
-            .context("Installed official driver did not appear in inventory");
+            .find(|item| item.id == source && item.kind == "native")
+            .context("Installed official native did not appear in inventory");
     }
 
     let expected_type = kind.and_then(parse_public_kind);
@@ -550,7 +550,7 @@ pub async fn upgrade_extension_api(
     registry: Option<&str>,
     version: Option<&str>,
 ) -> Result<ExtensionInventoryItem> {
-    if matches!(kind, Some("driver") | Some("system"))
+    if matches!(kind, Some("native") | Some("driver") | Some("system"))
         && official_system(source).is_some()
         && registry.is_none()
     {
@@ -558,8 +558,8 @@ pub async fn upgrade_extension_api(
         return inventory(config)
             .await?
             .into_iter()
-            .find(|item| item.id == source && item.kind == "driver")
-            .context("Upgraded official driver did not appear in inventory");
+            .find(|item| item.id == source && item.kind == "native")
+            .context("Upgraded official native did not appear in inventory");
     }
 
     let expected_type = kind.and_then(parse_public_kind);
@@ -584,7 +584,7 @@ pub(crate) async fn remove_extension_api(
     kind: &str,
     selector: &str,
 ) -> Result<()> {
-    if matches!(kind, "driver" | "system") && official_system(selector).is_some() {
+    if matches!(kind, "native" | "driver" | "system") && official_system(selector).is_some() {
         remove_official_system(config, selector).await?;
         return Ok(());
     }
@@ -651,7 +651,7 @@ fn stage_official_system_package(system: &OfficialSystem) -> Result<TempDir> {
             "name": system.id,
             "version": env!("CARGO_PKG_VERSION"),
             "sdk_version": crate::runtime::SDK_VERSION,
-            "plugin_type": "Workspace",
+            "plugin_type": "Plugin",
             "permissions": system_permissions(system.id),
             "trust_tier": "Official",
             "min_model": null,
@@ -782,7 +782,7 @@ fn system_state(installed: &[InstalledPlugin], id: &str) -> &'static str {
 }
 
 fn installed_system_dir(config: &Config, id: &str) -> PathBuf {
-    config.core.data_dir.join("drivers").join(id)
+    config.core.data_dir.join("native").join(id)
 }
 
 fn legacy_system_dir(config: &Config, id: &str) -> PathBuf {
@@ -799,8 +799,8 @@ fn plugin_public_kind(plugin: &InstalledPlugin) -> &'static str {
 
 fn parse_public_kind(kind: &str) -> Option<PluginType> {
     match kind {
-        "skill" => Some(PluginType::Skill),
-        "driver" | "system" => Some(PluginType::Workspace),
+        "plugin" | "skill" => Some(PluginType::Plugin),
+        "native" | "driver" | "system" => Some(PluginType::Plugin),
         "channel" => Some(PluginType::Channel),
         _ => None,
     }
@@ -1038,7 +1038,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Workspace".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 0,
             manifest: "{}".to_string(),
             binary_path: Some(format!("{id}.dylib")),

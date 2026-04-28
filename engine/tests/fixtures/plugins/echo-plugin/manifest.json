@@ -1,8 +1,8 @@
 {
-  "name": "Echo Skill",
+  "name": "Echo Plugin",
   "version": "0.1.0",
   "sdk_version": "0.1.0",
-  "plugin_type": "Skill",
+  "plugin_type": "Plugin",
   "permissions": {
     "filesystem": [],
     "network": [],
@@ -12,6 +12,6 @@
   },
   "trust_tier": "Community",
   "min_model": null,
-  "description": "Reference skill package for registry and authoring docs",
+  "description": "Reference plugin package for registry and authoring docs",
   "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
 }

@@ -33,11 +33,8 @@ pub fn legacy_install_directory(config: &Config, install_id: &str) -> PathBuf {
         .join(install_id)
 }
 
-fn install_root(plugin_type: &PluginType) -> &'static str {
-    match plugin_type {
-        PluginType::Workspace => "drivers",
-        _ => "plugins",
-    }
+fn install_root(_plugin_type: &PluginType) -> &'static str {
+    "plugins"
 }
 
 pub fn perform_install(
@@ -187,10 +184,10 @@ mod tests {
 
     fn sample_manifest() -> Manifest {
         Manifest {
-            name: "Echo Skill".to_string(),
+            name: "Echo Plugin".to_string(),
             version: "0.1.0".to_string(),
             sdk_version: "0.1.0".to_string(),
-            plugin_type: PluginType::Skill,
+            plugin_type: PluginType::Plugin,
             permissions: Permissions {
                 filesystem: Vec::<PathPattern>::new(),
                 network: Vec::<DomainPattern>::new(),
@@ -205,7 +202,7 @@ mod tests {
             },
             trust_tier: TrustTier::Reviewed,
             min_model: None,
-            description: "Echo skill".to_string(),
+            description: "Echo plugin".to_string(),
         }
     }
 
@@ -229,7 +226,7 @@ mod tests {
             Some("{}"),
             Some(&artifact),
             &PluginPackage {
-                id: Some("echo-skill".to_string()),
+                id: Some("echo-plugin".to_string()),
                 artifact: Some("echo.wasm".to_string()),
                 runtime_config: Some("runtime.json".to_string()),
                 payload_hash: "hash".to_string(),
@@ -237,7 +234,7 @@ mod tests {
                 enabled: true,
             },
             &manifest,
-            "echo-skill",
+            "echo-plugin",
         )
         .expect("perform install");
 

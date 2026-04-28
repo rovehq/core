@@ -296,7 +296,7 @@ fn build_findings(
 
     if trust_badge == "unverified" {
         findings.push(SecurityFinding {
-            severity: if kind == "driver" {
+            severity: if kind == "native" {
                 SecurityFindingSeverity::High
             } else {
                 SecurityFindingSeverity::Medium
@@ -307,7 +307,7 @@ fn build_findings(
 
     if advanced_source {
         findings.push(SecurityFinding {
-            severity: if kind == "driver" {
+            severity: if kind == "native" {
                 SecurityFindingSeverity::High
             } else {
                 SecurityFindingSeverity::Medium
@@ -316,14 +316,14 @@ fn build_findings(
         });
     }
 
-    if kind == "driver" && trust_badge != "official" {
+    if kind == "native" && trust_badge != "official" {
         findings.push(SecurityFinding {
             severity: SecurityFindingSeverity::High,
-            message: "native driver is not from the official trust tier".to_string(),
+            message: "native extension is not from the official trust tier".to_string(),
         });
     }
 
-    if kind != "driver" && privilege.contains("memory-write") {
+    if kind != "native" && privilege.contains("memory-write") {
         findings.push(SecurityFinding {
             severity: SecurityFindingSeverity::Medium,
             message: "sandboxed extension can mutate daemon memory".to_string(),
@@ -457,7 +457,7 @@ fn integrity_label(plugin: &InstalledPlugin) -> String {
 }
 
 fn privilege_label(plugin: &InstalledPlugin, manifest: Option<&Manifest>) -> String {
-    if public_kind_from_plugin_type(&plugin.plugin_type) == "driver" {
+    if public_kind_from_plugin_type(&plugin.plugin_type) == "native" {
         return "native".to_string();
     }
 
@@ -550,10 +550,10 @@ mod tests {
 
     fn sample_plugin() -> InstalledPlugin {
         InstalledPlugin {
-            id: "skill.echo".to_string(),
+            id: "plugin.echo".to_string(),
             name: "echo".to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Skill".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 1,
             manifest: String::new(),
             binary_path: Some("/tmp/echo.wasm".to_string()),
@@ -574,7 +574,7 @@ mod tests {
             name: "echo".to_string(),
             version: "0.1.0".to_string(),
             sdk_version: "0.1.0".to_string(),
-            plugin_type: PluginType::Skill,
+            plugin_type: PluginType::Plugin,
             permissions: Permissions {
                 filesystem: vec![PathPattern("workspace".to_string())],
                 network: vec![DomainPattern("api.example.com".to_string())],

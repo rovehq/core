@@ -46,14 +46,14 @@ pub async fn handle_test(
     if !no_build {
         run_cargo(&package_root, &["test"])?;
         match manifest.plugin_type {
-            PluginType::Skill | PluginType::Channel => {
+            PluginType::Plugin | PluginType::Channel => {
                 ensure_wasm_target_installed()?;
                 run_cargo(
                     &package_root,
                     &["build", "--target", "wasm32-wasip1", "--release"],
                 )?;
             }
-            PluginType::Brain | PluginType::Workspace => {
+            PluginType::Brain => {
                 run_cargo(&package_root, &["build", "--release"])?;
             }
             PluginType::Mcp => {
@@ -71,10 +71,10 @@ pub async fn handle_test(
     let selected_tool = select_tool(&catalog, tool)?;
     let payload = build_input_payload(&package_root, input, files, args)?;
     let output = match manifest.plugin_type {
-        PluginType::Skill | PluginType::Channel => {
+        PluginType::Plugin | PluginType::Channel => {
             call_wasm_tool(&artifact, &selected_tool.name, &payload)?
         }
-        PluginType::Brain | PluginType::Workspace => {
+        PluginType::Brain => {
             call_native_tool(&artifact, &selected_tool.name, &payload)?
         }
         PluginType::Mcp => unreachable!("handled above"),

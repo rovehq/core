@@ -68,7 +68,6 @@ pub mod remote;
 pub mod search;
 pub mod secrets;
 pub mod security;
-pub mod steering;
 pub mod telegram;
 pub mod tools;
 pub mod transport;

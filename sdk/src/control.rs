@@ -91,8 +91,8 @@ pub struct DaemonCapabilities {
 /// Public kind for installable Rove capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExtensionKind {
-    Skill,
-    System,
+    Plugin,
+    Native,
     Connector,
     Channel,
 }
@@ -100,8 +100,8 @@ pub enum ExtensionKind {
 impl ExtensionKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Skill => "skill",
-            Self::System => "system",
+            Self::Plugin => "plugin",
+            Self::Native => "native",
             Self::Connector => "connector",
             Self::Channel => "channel",
         }

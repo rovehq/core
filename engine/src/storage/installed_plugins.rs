@@ -210,11 +210,11 @@ mod tests {
     fn sample_plugin(id: &str) -> InstalledPlugin {
         InstalledPlugin {
             id: id.to_string(),
-            name: "echo-skill".to_string(),
+            name: "echo-plugin".to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Skill".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 1,
-            manifest: r#"{"name":"echo-skill","version":"0.1.0","sdk_version":"0.1.0","plugin_type":"Skill","permissions":{"filesystem":[],"network":[],"memory_read":false,"memory_write":false,"tools":[]},"trust_tier":"Reviewed","min_model":null,"description":"Echo skill"}"#.to_string(),
+            manifest: r#"{"name":"echo-plugin","version":"0.1.0","sdk_version":"0.1.0","plugin_type":"Plugin","permissions":{"filesystem":[],"network":[],"memory_read":false,"memory_write":false,"tools":[]},"trust_tier":"Reviewed","min_model":null,"description":"Echo plugin"}"#.to_string(),
             binary_path: Some("/tmp/echo.wasm".to_string()),
             binary_hash: "abc123".to_string(),
             signature: "deadbeef".to_string(),
@@ -275,7 +275,7 @@ mod tests {
             .expect("touch last used");
 
         let stored = repo
-            .get_plugin_by_name("echo-skill")
+            .get_plugin_by_name("echo-plugin")
             .await
             .expect("fetch plugin by name")
             .expect("stored plugin");

@@ -24,8 +24,8 @@ pub async fn handle_new(name: &str, plugin_type: PluginScaffoldType) -> Result<(
     println!("- {}", dir.join("tests/integration.rs").display());
     println!("- {}", dir.join("README.md").display());
     match plugin_type {
-        PluginScaffoldType::System => println!(
-            "Next: cargo test, cargo build --release, rove driver test {} --input \"hello\", then replace placeholder hash/signatures before install.",
+        PluginScaffoldType::Native => println!(
+            "Next: cargo test, cargo build --release, rove native test {} --input \"hello\", then replace placeholder hash/signatures before install.",
             dir.display()
         ),
         _ => println!(
@@ -155,18 +155,18 @@ fn title_case(part: &str) -> String {
 
 fn plugin_type_name(plugin_type: PluginScaffoldType) -> &'static str {
     match plugin_type {
-        PluginScaffoldType::Skill => "Skill",
-        PluginScaffoldType::System => "Workspace",
+        PluginScaffoldType::Plugin => "Plugin",
+        PluginScaffoldType::Native => "Plugin",
         PluginScaffoldType::Channel => "Channel",
     }
 }
 
 fn scaffold_artifact(plugin_type: PluginScaffoldType, crate_slug: &str) -> Option<String> {
     match plugin_type {
-        PluginScaffoldType::Skill | PluginScaffoldType::Channel => {
+        PluginScaffoldType::Plugin | PluginScaffoldType::Channel => {
             Some(format!("target/wasm32-wasip1/release/{}.wasm", crate_slug))
         }
-        PluginScaffoldType::System => None,
+        PluginScaffoldType::Native => None,
     }
 }
 
@@ -177,7 +177,7 @@ fn cargo_toml(
     scaffold_type: PluginScaffoldType,
 ) -> String {
     match scaffold_type {
-        PluginScaffoldType::System => format!(
+        PluginScaffoldType::Native => format!(
             r#"[package]
 name = "{crate_slug}"
 version = "0.1.0"
@@ -226,7 +226,7 @@ fn manifest_json(package_name: &str, plugin_type: &str) -> serde_json::Value {
             "memory_write": false,
             "tools": []
         },
-        "trust_tier": if plugin_type == "Workspace" { "Reviewed" } else { "Community" },
+        "trust_tier": if plugin_type == "Plugin" { "Reviewed" } else { "Community" },
         "min_model": null,
         "description": format!("{package_name} plugin for Rove"),
         "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"
@@ -273,7 +273,7 @@ fn runtime_json(package_name: &str, tool_name: &str) -> serde_json::Value {
 
 fn lib_rs(tool_name: &str, plugin_type: &str, scaffold_type: PluginScaffoldType) -> String {
     match scaffold_type {
-        PluginScaffoldType::System => format!(
+        PluginScaffoldType::Native => format!(
             r#"use sdk::{{CoreContext, CoreTool, EngineError, ToolInput, ToolOutput}};
 
 #[derive(Default)]
@@ -374,7 +374,7 @@ pub fn {tool_name}(Json(input): Json<RunInput>) -> FnResult<Json<RunOutput>> {{
 
 fn integration_test_rs(crate_slug: &str, scaffold_type: PluginScaffoldType) -> String {
     match scaffold_type {
-        PluginScaffoldType::System => format!(
+        PluginScaffoldType::Native => format!(
             r#"use {crate_slug}::GeneratedSystemTool;
 use sdk::{{CoreTool, ToolInput}};
 
@@ -385,7 +385,7 @@ fn generated_system_tool_reports_method() {{
     let output = tool.handle(input).expect("tool output");
 
     assert!(output.success);
-    assert_eq!(output.data["plugin_type"], serde_json::json!("Workspace"));
+    assert_eq!(output.data["plugin_type"], serde_json::json!("Plugin"));
 }}
 "#
         ),
@@ -419,7 +419,7 @@ fn readme(
 ) -> String {
     let dir_display = dir.display();
     match scaffold_type {
-        PluginScaffoldType::System => format!(
+        PluginScaffoldType::Native => format!(
             "# {package_name}\n\n\
 This is a generated native {plugin_type} extension scaffold for Rove.\n\n\
 ## Files\n\n\
@@ -433,18 +433,18 @@ This is a generated native {plugin_type} extension scaffold for Rove.\n\n\
 1. Place this package under `core/tools/<name>` or adjust the `sdk` path in `Cargo.toml`\n\
 2. `cargo test`\n\
 3. `cargo build --release`\n\
-4. `rove driver test {dir_display} --input \"hello\"`\n\n\
+4. `rove native test {dir_display} --input \"hello\"`\n\n\
 ## Packaging and registry flow\n\n\
-1. `rove driver pack {dir_display}`\n\
-2. `rove driver publish {dir_display} --registry-dir ./registry`\n\
-3. `rove driver install {{install_id}} --registry ./registry --version 0.1.0`\n\n\
+1. `rove native pack {dir_display}`\n\
+2. `rove native publish {dir_display} --registry-dir ./registry`\n\
+3. `rove native install {{install_id}} --registry ./registry --version 0.1.0`\n\n\
 ## Before install or publish\n\n\
 1. Build the native artifact with `cargo build --release`\n\
 2. Replace the placeholder permissions in `manifest.json`\n\
 3. Compute the SHA256 of the built artifact and place it in `plugin-package.json`\n\
 4. Sign the built artifact and place the signature in `plugin-package.json`\n\
 5. Sign `manifest.json` and replace `signature`\n\
-6. Install with `rove driver install {dir_display}`\n"
+6. Install with `rove native install {dir_display}`\n"
         )
         .replace("{install_id}", &default_plugin_id(package_name)),
         _ => format!(
@@ -493,7 +493,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let output_dir = temp_dir.path().join("my-pdf-reader");
 
-        generate_plugin_scaffold(&output_dir, "My Pdf Reader", PluginScaffoldType::Skill)
+        generate_plugin_scaffold(&output_dir, "My Pdf Reader", PluginScaffoldType::Plugin)
             .expect("generate scaffold");
 
         assert!(output_dir.join("Cargo.toml").exists());
@@ -514,7 +514,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let output_dir = temp_dir.path().join("notifications");
 
-        generate_plugin_scaffold(&output_dir, "Notifications", PluginScaffoldType::System)
+        generate_plugin_scaffold(&output_dir, "Notifications", PluginScaffoldType::Native)
             .expect("generate scaffold");
 
         let cargo = fs::read_to_string(output_dir.join("Cargo.toml")).expect("cargo");

@@ -664,7 +664,7 @@ async fn collect_syncable_drivers(config: &Config) -> Result<Vec<RemoteDriverSyn
     let mut drivers = Vec::new();
     for plugin in installed
         .into_iter()
-        .filter(|plugin| plugin.plugin_type == "Workspace")
+        .filter(|plugin| plugin.plugin_type == "Plugin" || plugin.plugin_type == "Workspace")
     {
         if let Some(item) = syncable_driver_from_plugin(&plugin) {
             drivers.push(item);

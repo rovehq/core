@@ -306,10 +306,7 @@ fn filter_installed_plugins_for_loadout(
     installed_plugins
         .into_iter()
         .filter(|plugin| match PluginType::parse(&plugin.plugin_type) {
-            Ok(PluginType::Workspace) => {
-                resolved_loadout.allows_driver(plugin.name.as_str(), plugin.id.as_str())
-            }
-            Ok(PluginType::Skill | PluginType::Channel) => {
+            Ok(PluginType::Plugin | PluginType::Channel) => {
                 resolved_loadout.allows_plugin(plugin.name.as_str(), plugin.id.as_str())
             }
             Ok(PluginType::Brain | PluginType::Mcp) => true,
@@ -415,7 +412,7 @@ fn load_driver_install(install_dir: &Path) -> Result<Option<InstalledPlugin>, En
         ))
     })?;
     let manifest = Manifest::from_json(&manifest_raw)?;
-    if manifest.plugin_type != PluginType::Workspace {
+    if manifest.plugin_type != PluginType::Plugin {
         return Ok(None);
     }
 
@@ -593,7 +590,7 @@ async fn register_installed_plugin_schemas(
         }
 
         match manifest.plugin_type {
-            PluginType::Skill | PluginType::Channel => {
+            PluginType::Plugin | PluginType::Channel => {
                 let catalog = match ToolCatalog::from_json(plugin.config.as_deref()) {
                     Ok(catalog) => catalog,
                     Err(error) => {
@@ -619,7 +616,7 @@ async fn register_installed_plugin_schemas(
                         .await;
                 }
             }
-            PluginType::Brain | PluginType::Workspace => {
+            PluginType::Brain => {
                 let catalog = match ToolCatalog::from_json(plugin.config.as_deref()) {
                     Ok(catalog) => catalog,
                     Err(error) => {
@@ -728,7 +725,7 @@ pub(crate) fn sdk_plugin_entry_from_installed_plugin(
     let manifest = Manifest::from_json(&plugin.manifest).ok()?;
     if !matches!(
         manifest.plugin_type,
-        PluginType::Skill | PluginType::Channel
+        PluginType::Plugin | PluginType::Channel
     ) {
         return None;
     }
@@ -831,7 +828,7 @@ mod tests {
                 "name": "{manifest_name}",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Workspace",
+                "plugin_type": "Plugin",
                 "permissions": {{
                     "filesystem": [],
                     "network": [],
@@ -841,7 +838,7 @@ mod tests {
                 }},
                 "trust_tier": "Official",
                 "min_model": null,
-                "description": "Filesystem-discovered driver"
+                "description": "Filesystem-discovered native extension"
             }}"#
         );
         fs::write(install_dir.join("manifest.json"), &manifest).expect("write manifest");
@@ -894,16 +891,16 @@ mod tests {
             .expect("database");
 
         let plugin = InstalledPlugin {
-            id: "echo-skill".to_string(),
-            name: "echo-skill".to_string(),
+            id: "echo-plugin".to_string(),
+            name: "echo-plugin".to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Skill".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 1,
             manifest: r#"{
-                "name": "echo-skill",
+                "name": "echo-plugin",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": [],
@@ -913,10 +910,10 @@ mod tests {
                 },
                 "trust_tier": "Reviewed",
                 "min_model": null,
-                "description": "Echo skill"
+                "description": "Echo plugin"
             }"#
             .to_string(),
-            binary_path: Some("echo-skill.wasm".to_string()),
+            binary_path: Some("echo-plugin.wasm".to_string()),
             binary_hash: "abc123".to_string(),
             signature: "deadbeef".to_string(),
             enabled: true,
@@ -976,13 +973,13 @@ mod tests {
             id: "terminal".to_string(),
             name: "terminal".to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Workspace".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 0,
             manifest: r#"{
                 "name": "terminal",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Workspace",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": ["workspace/**"],
                     "network": [],
@@ -992,7 +989,7 @@ mod tests {
                 },
                 "trust_tier": "Official",
                 "min_model": null,
-                "description": "Official terminal system"
+                "description": "Official terminal native extension"
             }"#
             .to_string(),
             binary_path: Some("terminal.dylib".to_string()),
@@ -1119,7 +1116,7 @@ mod tests {
             id: "vision-plus".to_string(),
             name: "Vision Plus".to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Workspace".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 0,
             manifest,
             binary_path: Some(binary_path.to_string_lossy().to_string()),
@@ -1176,16 +1173,16 @@ mod tests {
             .expect("database");
 
         let skill = InstalledPlugin {
-            id: "echo-skill".to_string(),
-            name: "echo-skill".to_string(),
+            id: "echo-plugin".to_string(),
+            name: "echo-plugin".to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Skill".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 1,
             manifest: r#"{
-                "name": "echo-skill",
+                "name": "echo-plugin",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": [],
@@ -1195,10 +1192,10 @@ mod tests {
                 },
                 "trust_tier": "Reviewed",
                 "min_model": null,
-                "description": "Echo skill"
+                "description": "Echo plugin"
             }"#
             .to_string(),
-            binary_path: Some("echo-skill.wasm".to_string()),
+            binary_path: Some("echo-plugin.wasm".to_string()),
             binary_hash: "hash".to_string(),
             signature: "sig".to_string(),
             enabled: true,
@@ -1230,13 +1227,13 @@ mod tests {
             id: "vision-plus".to_string(),
             name: "vision-plus".to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Workspace".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 0,
             manifest: r#"{
                 "name": "vision-plus",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Workspace",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": [],
@@ -1246,7 +1243,7 @@ mod tests {
                 },
                 "trust_tier": "Official",
                 "min_model": null,
-                "description": "Vision driver"
+                "description": "Vision native extension"
             }"#
             .to_string(),
             binary_path: Some("vision-plus.dylib".to_string()),
@@ -1303,7 +1300,7 @@ mod tests {
             crate::config::LoadoutConfig {
                 builtins: vec!["filesystem".to_string(), "terminal".to_string()],
                 drivers: vec![],
-                plugins: vec!["echo-skill".to_string()],
+                plugins: vec!["echo-plugin".to_string()],
             },
         );
 
@@ -1413,16 +1410,16 @@ mod tests {
     #[test]
     fn sdk_plugin_entry_preserves_network_and_memory_permissions() {
         let plugin = InstalledPlugin {
-            id: "net-skill".to_string(),
-            name: "net-skill".to_string(),
+            id: "net-plugin".to_string(),
+            name: "net-plugin".to_string(),
             version: "0.1.0".to_string(),
-            plugin_type: "Skill".to_string(),
+            plugin_type: "Plugin".to_string(),
             trust_tier: 1,
             manifest: r#"{
-                "name": "net-skill",
+                "name": "net-plugin",
                 "version": "0.1.0",
                 "sdk_version": "0.1.0",
-                "plugin_type": "Skill",
+                "plugin_type": "Plugin",
                 "permissions": {
                     "filesystem": [],
                     "network": ["api.example.com", "*.example.net"],
@@ -1432,10 +1429,10 @@ mod tests {
                 },
                 "trust_tier": "Reviewed",
                 "min_model": null,
-                "description": "network skill"
+                "description": "network plugin"
             }"#
             .to_string(),
-            binary_path: Some("net-skill.wasm".to_string()),
+            binary_path: Some("net-plugin.wasm".to_string()),
             binary_hash: "hash".to_string(),
             signature: "sig".to_string(),
             enabled: true,

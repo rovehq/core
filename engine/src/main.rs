@@ -119,10 +119,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Status) => rove_engine::cli::status::show().await?,
         Some(Command::Unlock) => rove_engine::cli::unlock::run().await?,
-        Some(Command::Plugin { action }) => {
-            eprintln!(
-                "Compatibility alias: `rove plugin` remains available, but prefer `rove skill`, `rove system`, `rove channel`, or `rove connector`."
-            );
+        Some(Command::LegacyPlugin { action }) => {
             handle_plugin(action).await?
         }
         Some(Command::Steer { action, dir }) => {
@@ -139,33 +136,21 @@ async fn main() -> Result<()> {
             let config = rove_engine::config::Config::load_or_create()?;
             handle_extension_facade(action, &config).await?;
         }
-        Some(Command::Skill { action }) => {
+        Some(Command::Plugin { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
             handle_extension(
                 action,
                 &config,
-                rove_engine::cli::extensions::ExtensionSurface::Skill,
+                rove_engine::cli::extensions::ExtensionSurface::Plugin,
             )
             .await?;
         }
-        Some(Command::System { action }) => {
-            eprintln!(
-                "Compatibility alias: `rove system` remains available, but prefer `rove driver`."
-            );
+        Some(Command::Native { action }) => {
             let config = rove_engine::config::Config::load_or_create()?;
             handle_extension(
                 action,
                 &config,
-                rove_engine::cli::extensions::ExtensionSurface::Driver,
-            )
-            .await?;
-        }
-        Some(Command::Driver { action }) => {
-            let config = rove_engine::config::Config::load_or_create()?;
-            handle_extension(
-                action,
-                &config,
-                rove_engine::cli::extensions::ExtensionSurface::Driver,
+                rove_engine::cli::extensions::ExtensionSurface::Native,
             )
             .await?;
         }
@@ -616,10 +601,7 @@ async fn handle_extension_facade(
 ) -> Result<()> {
     match action {
         ExtensionFacadeAction::New { kind, name } => match kind {
-            ExtensionKindArg::Skill
-            | ExtensionKindArg::Driver
-            | ExtensionKindArg::System
-            | ExtensionKindArg::Channel => {
+            ExtensionKindArg::Plugin | ExtensionKindArg::Native | ExtensionKindArg::Channel => {
                 handle_extension(
                     ExtensionAction::New { name },
                     config,
@@ -642,10 +624,7 @@ async fn handle_extension_facade(
             args,
             no_build,
         } => match kind {
-            ExtensionKindArg::Skill
-            | ExtensionKindArg::Driver
-            | ExtensionKindArg::System
-            | ExtensionKindArg::Channel => {
+            ExtensionKindArg::Plugin | ExtensionKindArg::Native | ExtensionKindArg::Channel => {
                 handle_extension(
                     ExtensionAction::Test {
                         source,
@@ -670,10 +649,7 @@ async fn handle_extension_facade(
             out,
             no_build,
         } => match kind {
-            ExtensionKindArg::Skill
-            | ExtensionKindArg::Driver
-            | ExtensionKindArg::System
-            | ExtensionKindArg::Channel => {
+            ExtensionKindArg::Plugin | ExtensionKindArg::Native | ExtensionKindArg::Channel => {
                 handle_extension(
                     ExtensionAction::Pack {
                         source,
@@ -695,10 +671,7 @@ async fn handle_extension_facade(
             registry_dir,
             no_build,
         } => match kind {
-            ExtensionKindArg::Skill
-            | ExtensionKindArg::Driver
-            | ExtensionKindArg::System
-            | ExtensionKindArg::Channel => {
+            ExtensionKindArg::Plugin | ExtensionKindArg::Native | ExtensionKindArg::Channel => {
                 handle_extension(
                     ExtensionAction::Publish {
                         source,
@@ -720,9 +693,8 @@ async fn handle_extension_facade(
             registry,
             version,
         } => match kind {
-            Some(kind @ ExtensionKindArg::Skill)
-            | Some(kind @ ExtensionKindArg::Driver)
-            | Some(kind @ ExtensionKindArg::System)
+            Some(kind @ ExtensionKindArg::Plugin)
+            | Some(kind @ ExtensionKindArg::Native)
             | Some(kind @ ExtensionKindArg::Channel) => {
                 handle_extension(
                     ExtensionAction::Install {
@@ -764,9 +736,8 @@ async fn handle_extension_facade(
             registry,
             version,
         } => match kind {
-            Some(kind @ ExtensionKindArg::Skill)
-            | Some(kind @ ExtensionKindArg::Driver)
-            | Some(kind @ ExtensionKindArg::System)
+            Some(kind @ ExtensionKindArg::Plugin)
+            | Some(kind @ ExtensionKindArg::Native)
             | Some(kind @ ExtensionKindArg::Channel) => {
                 handle_extension(
                     ExtensionAction::Upgrade {
@@ -880,9 +851,8 @@ async fn handle_extension_facade(
             Ok(())
         }
         ExtensionFacadeAction::List { kind } => match kind {
-            Some(kind @ ExtensionKindArg::Skill)
-            | Some(kind @ ExtensionKindArg::Driver)
-            | Some(kind @ ExtensionKindArg::System)
+            Some(kind @ ExtensionKindArg::Plugin)
+            | Some(kind @ ExtensionKindArg::Native)
             | Some(kind @ ExtensionKindArg::Channel) => {
                 handle_extension(ExtensionAction::List, config, extension_surface(kind)).await
             }
@@ -890,10 +860,7 @@ async fn handle_extension_facade(
             None => handle_plugin(PluginAction::List).await,
         },
         ExtensionFacadeAction::Inspect { kind, name } => match kind {
-            ExtensionKindArg::Skill
-            | ExtensionKindArg::Driver
-            | ExtensionKindArg::System
-            | ExtensionKindArg::Channel => {
+            ExtensionKindArg::Plugin | ExtensionKindArg::Native | ExtensionKindArg::Channel => {
                 handle_extension(
                     ExtensionAction::Inspect { name },
                     config,
@@ -904,10 +871,7 @@ async fn handle_extension_facade(
             ExtensionKindArg::Connector => handle_mcp(McpAction::Show { name }, config).await,
         },
         ExtensionFacadeAction::Enable { kind, name } => match kind {
-            ExtensionKindArg::Skill
-            | ExtensionKindArg::Driver
-            | ExtensionKindArg::System
-            | ExtensionKindArg::Channel => {
+            ExtensionKindArg::Plugin | ExtensionKindArg::Native | ExtensionKindArg::Channel => {
                 handle_extension(
                     ExtensionAction::Enable { name },
                     config,
@@ -918,10 +882,7 @@ async fn handle_extension_facade(
             ExtensionKindArg::Connector => handle_mcp(McpAction::Enable { name }, config).await,
         },
         ExtensionFacadeAction::Disable { kind, name } => match kind {
-            ExtensionKindArg::Skill
-            | ExtensionKindArg::Driver
-            | ExtensionKindArg::System
-            | ExtensionKindArg::Channel => {
+            ExtensionKindArg::Plugin | ExtensionKindArg::Native | ExtensionKindArg::Channel => {
                 handle_extension(
                     ExtensionAction::Disable { name },
                     config,
@@ -932,10 +893,7 @@ async fn handle_extension_facade(
             ExtensionKindArg::Connector => handle_mcp(McpAction::Disable { name }, config).await,
         },
         ExtensionFacadeAction::Remove { kind, name } => match kind {
-            ExtensionKindArg::Skill
-            | ExtensionKindArg::Driver
-            | ExtensionKindArg::System
-            | ExtensionKindArg::Channel => {
+            ExtensionKindArg::Plugin | ExtensionKindArg::Native | ExtensionKindArg::Channel => {
                 handle_extension(
                     ExtensionAction::Remove { name },
                     config,
@@ -1183,10 +1141,8 @@ async fn handle_remote(action: RemoteAction, config: &rove_engine::config::Confi
 
 fn extension_surface(kind: ExtensionKindArg) -> rove_engine::cli::extensions::ExtensionSurface {
     match kind {
-        ExtensionKindArg::Skill => rove_engine::cli::extensions::ExtensionSurface::Skill,
-        ExtensionKindArg::Driver | ExtensionKindArg::System => {
-            rove_engine::cli::extensions::ExtensionSurface::Driver
-        }
+        ExtensionKindArg::Plugin => rove_engine::cli::extensions::ExtensionSurface::Plugin,
+        ExtensionKindArg::Native => rove_engine::cli::extensions::ExtensionSurface::Native,
         ExtensionKindArg::Channel => rove_engine::cli::extensions::ExtensionSurface::Channel,
         ExtensionKindArg::Connector => unreachable!("connectors use MCP handlers"),
     }
