@@ -93,6 +93,7 @@ impl PendingTaskRepository {
     /// Create a new pending task (durable inbox entry point)
     ///
     /// This INSERTs the task BEFORE execution starts, ensuring it survives crashes.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_task(
         &self,
         id: &str,

@@ -336,7 +336,7 @@ fn auth_summary(config: &Config, session_auth: Option<&AuthStatus>) -> AuthHealt
 
     AuthHealthSummary {
         password_state,
-        session_state: session_auth.map(|status| auth_state_label(status)),
+        session_state: session_auth.map(auth_state_label),
         idle_expires_in_secs: session_auth.and_then(|status| status.idle_expires_in_secs),
         absolute_expires_in_secs: session_auth.and_then(|status| status.absolute_expires_in_secs),
     }

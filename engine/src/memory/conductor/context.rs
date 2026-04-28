@@ -114,7 +114,7 @@ impl ContextAssembler {
                         let snippet = format!("[Typed] {}\n", hit.content);
                         // Very rough token truncation (avoid blowing up the system prompt)
                         let snippet_tokens = snippet.len() / 4;
-                        if snippet_tokens < self.budget.episodic_tokens / 8.max(1) {
+                        if snippet_tokens < self.budget.episodic_tokens / 8 {
                             sys_prompt.push_str(&snippet);
                         }
                     }
@@ -122,7 +122,7 @@ impl ContextAssembler {
                     for path in &bundle.graph_paths {
                         let snippet = format!("[Graph] {}\n", path.summary);
                         let snippet_tokens = snippet.len() / 4;
-                        if snippet_tokens < self.budget.episodic_tokens / 8.max(1) {
+                        if snippet_tokens < self.budget.episodic_tokens / 8 {
                             sys_prompt.push_str(&snippet);
                         }
                     }
@@ -138,7 +138,7 @@ impl ContextAssembler {
                             hit.depth, edges, hit.content
                         );
                         let snippet_tokens = snippet.len() / 4;
-                        if snippet_tokens < self.budget.episodic_tokens / 8.max(1) {
+                        if snippet_tokens < self.budget.episodic_tokens / 8 {
                             sys_prompt.push_str(&snippet);
                         }
                     }
@@ -158,7 +158,7 @@ impl ContextAssembler {
                         };
                         let snippet = format!("[{}] {}\n", hit_type_label, hit.content);
                         let snippet_tokens = snippet.len() / 4;
-                        if snippet_tokens < self.budget.episodic_tokens / 8.max(1) {
+                        if snippet_tokens < self.budget.episodic_tokens / 8 {
                             sys_prompt.push_str(&snippet);
                         }
                     }

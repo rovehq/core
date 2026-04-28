@@ -46,7 +46,7 @@ impl MemoryKind {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_kind_str(s: &str) -> Self {
         match s {
             "fact" => MemoryKind::Fact,
             "preference" => MemoryKind::Preference,
@@ -109,7 +109,7 @@ impl GraphSourceKind {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn from_kind_str(value: &str) -> Self {
         match value {
             "code_review_graph" => Self::CodeReviewGraph,
             "project_context" => Self::ProjectContext,

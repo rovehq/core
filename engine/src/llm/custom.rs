@@ -31,6 +31,7 @@ pub struct CustomLLMProvider {
 }
 
 impl CustomLLMProvider {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider_name: String,
         protocol: String,

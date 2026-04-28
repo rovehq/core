@@ -266,7 +266,7 @@ async fn envelope_nonce_replay_second_call_fails() {
         timestamp: now,
         nonce: 999888u64,
         payload: payload.clone(),
-        signature: signature.clone(),
+        signature,
     };
 
     // First call (will fail on sig but nonce gets cached)

@@ -376,7 +376,7 @@ impl WasmRuntime {
                     .memory_handle(request_offset)
                     .ok_or_else(|| extism::Error::msg("Invalid request offset"))?;
                 let request: HostMemoryReadRequest = serde_json::from_str(
-                    plugin.memory_str(request_handle)?.as_ref(),
+                    plugin.memory_str(request_handle)?,
                 )
                 .map_err(|error| {
                     extism::Error::msg(format!("Invalid memory read request JSON: {}", error))
@@ -407,7 +407,7 @@ impl WasmRuntime {
                     .memory_handle(request_offset)
                     .ok_or_else(|| extism::Error::msg("Invalid request offset"))?;
                 let request: HostMemoryWriteRequest = serde_json::from_str(
-                    plugin.memory_str(request_handle)?.as_ref(),
+                    plugin.memory_str(request_handle)?,
                 )
                 .map_err(|error| {
                     extism::Error::msg(format!("Invalid memory write request JSON: {}", error))
@@ -454,10 +454,15 @@ mod tests {
         config.core.workspace = workspace.path().to_path_buf();
         config.core.data_dir = data_dir.path().to_path_buf();
 
-        let mut plugin = PluginEntry::default();
-        plugin.name = "memory-plugin".to_string();
-        plugin.permissions.memory_read = memory_read;
-        plugin.permissions.memory_write = memory_write;
+        let plugin = PluginEntry {
+            name: "memory-plugin".to_string(),
+            permissions: sdk::manifest::PluginPermissions {
+                memory_read,
+                memory_write,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         (
             WasmHostContext {

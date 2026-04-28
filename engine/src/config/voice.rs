@@ -87,7 +87,7 @@ impl Default for VoiceEngineConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VoiceConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
@@ -103,18 +103,4 @@ pub struct VoiceConfig {
     pub policy: VoicePolicyConfig,
     #[serde(default)]
     pub engines: Vec<VoiceEngineConfig>,
-}
-
-impl Default for VoiceConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            active_input_engine: None,
-            active_output_engine: None,
-            selected_input_device_id: None,
-            selected_output_device_id: None,
-            policy: VoicePolicyConfig::default(),
-            engines: Vec::new(),
-        }
-    }
 }

@@ -244,6 +244,7 @@ fn capability_pack_entries() -> Vec<StarterCatalogEntry> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capability_pack_entry(
     id: &str,
     name: &str,

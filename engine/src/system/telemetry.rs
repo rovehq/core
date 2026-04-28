@@ -20,6 +20,12 @@ pub struct TaskTraceContext {
     pub root_span_id: String,
 }
 
+impl Default for TaskTraceContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskTraceContext {
     pub fn new() -> Self {
         Self {

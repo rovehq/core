@@ -70,6 +70,7 @@ impl KnowledgeRepository {
         Self { pool }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn ingest(
         &self,
         source_type: &str,

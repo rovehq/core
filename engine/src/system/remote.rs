@@ -264,7 +264,7 @@ impl RemoteManager {
             "disabled" => {
                 builder = builder.relay_mode(iroh::RelayMode::Disabled);
             }
-            "relay_only" | _ => {
+            _ => {
                 // "auto" or "relay_only" — use default public relay or a custom one
                 if let Some(url) = &cfg.relay_url {
                     let relay_url: iroh::RelayUrl = url
@@ -2313,7 +2313,7 @@ impl RemoteManager {
 fn base64_encode(data: &[u8]) -> String {
     use std::fmt::Write;
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as usize;
         let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
@@ -2348,7 +2348,7 @@ fn base64_decode(s: &str) -> Result<Vec<u8>> {
             _ => 255,
         })
         .collect();
-    if bytes.iter().any(|&b| b == 255) {
+    if bytes.contains(&255) {
         bail!("Invalid base64 character");
     }
     for chunk in bytes.chunks(4) {
@@ -3074,8 +3074,7 @@ mod tests {
                         "type": "connected",
                         "version": "test"
                     })
-                    .to_string()
-                    .into(),
+                    .to_string(),
                 ))
                 .await;
 
@@ -3094,8 +3093,7 @@ mod tests {
                                 "domain": "general",
                                 "created_at": 1
                             })
-                            .to_string()
-                            .into(),
+                            .to_string(),
                         ))
                         .await;
                     let _ = socket
@@ -3107,8 +3105,7 @@ mod tests {
                                 "duration_ms": 7,
                                 "iterations": 1
                             })
-                            .to_string()
-                            .into(),
+                            .to_string(),
                         ))
                         .await;
                     break;

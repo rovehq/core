@@ -260,7 +260,7 @@ fn loadout_config_serializes() {
 #[test]
 fn resolved_loadout_no_profiles_returns_compatibility_default() {
     let temp = TempDir::new().unwrap();
-    let mut config = base_config(&temp);
+    let config = base_config(&temp);
     assert!(config.profiles.is_empty());
     let resolved = config.resolved_loadout().unwrap();
     // Should return default compatibility

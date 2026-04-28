@@ -324,7 +324,7 @@ fn config_from_update(update: BrowserSurfaceUpdate) -> BrowserConfig {
     }
 }
 
-fn active_profile<'a>(browser: &'a BrowserConfig) -> Option<&'a BrowserProfileConfig> {
+fn active_profile(browser: &BrowserConfig) -> Option<&BrowserProfileConfig> {
     browser
         .default_profile_id
         .as_deref()

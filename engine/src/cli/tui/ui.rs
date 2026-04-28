@@ -180,7 +180,7 @@ fn render_task_list(f: &mut Frame, area: Rect, state: &TaskListState) {
         return;
     }
 
-    let width = (area.width.min(64)).max(30);
+    let width = area.width.clamp(30, 64);
     let height = (state.tasks.len() as u16 + 2).min(area.height.saturating_sub(2));
 
     let list_area = Rect {

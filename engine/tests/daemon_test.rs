@@ -84,9 +84,10 @@ async fn test_write_and_read_pid_file() {
 #[tokio::test]
 #[cfg(unix)]
 async fn test_daemon_already_running() {
-    let _guard = DAEMON_LOCK.lock().unwrap();
+    let guard = DAEMON_LOCK.lock().unwrap();
     let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
+    drop(guard);
 
     let manager = DaemonManager::new(&config).unwrap();
     manager.start().await.unwrap();
@@ -97,9 +98,10 @@ async fn test_daemon_already_running() {
 
 #[tokio::test]
 async fn test_stale_pid_file_handling() {
-    let _guard = DAEMON_LOCK.lock().unwrap();
+    let guard = DAEMON_LOCK.lock().unwrap();
     let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
+    drop(guard);
 
     let manager = DaemonManager::new(&config).unwrap();
     let pid_path = manager.pid_file_path().clone();
@@ -113,9 +115,10 @@ async fn test_stale_pid_file_handling() {
 #[tokio::test]
 #[cfg(unix)]
 async fn test_daemon_status() {
-    let _guard = DAEMON_LOCK.lock().unwrap();
+    let guard = DAEMON_LOCK.lock().unwrap();
     let temp_dir = create_safe_temp_dir();
     let config = create_test_config(&temp_dir);
+    drop(guard);
 
     let status = DaemonManager::status(&config).unwrap();
     assert!(!status.is_running);

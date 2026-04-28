@@ -138,7 +138,7 @@ fn allowlist_no_rules_requires_approval() {
 
 #[test]
 fn allowlist_rule_matches_tool_auto_allows() {
-    let (_temp, mut config) = temp_config(ApprovalMode::Allowlist);
+    let (_temp, config) = temp_config(ApprovalMode::Allowlist);
     add_rule(&config, allow_rule("allow-read", Some("read_file"))).unwrap();
     let decision = evaluate(&config, "read_file", &json!({"path":"/workspace/a.rs"}), &TaskSource::Cli, 0).unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
@@ -146,7 +146,7 @@ fn allowlist_rule_matches_tool_auto_allows() {
 
 #[test]
 fn allowlist_rule_matches_wildcard_tool_auto_allows() {
-    let (_temp, mut config) = temp_config(ApprovalMode::Allowlist);
+    let (_temp, config) = temp_config(ApprovalMode::Allowlist);
     add_rule(&config, allow_rule("allow-all-tools", Some("*"))).unwrap();
     let decision = evaluate(&config, "write_file", &json!({}), &TaskSource::Cli, 1).unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));

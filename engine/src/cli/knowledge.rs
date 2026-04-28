@@ -116,8 +116,8 @@ async fn handle_list(
     }
 
     println!(
-        "{:<38} {:<8} {:<12} {:<6} {}",
-        "ID", "Source", "Domain", "Words", "Title"
+        "{:<38} {:<8} {:<12} {:<6} Title",
+        "ID", "Source", "Domain", "Words"
     );
     println!("{}", "-".repeat(100));
     for doc in docs {
@@ -182,8 +182,8 @@ async fn handle_search(
 
     println!("Search results for '{}':", query);
     println!(
-        "{:<38} {:<8} {:<12} {:<6} {}",
-        "ID", "Source", "Domain", "Words", "Title"
+        "{:<38} {:<8} {:<12} {:<6} Title",
+        "ID", "Source", "Domain", "Words"
     );
     println!("{}", "-".repeat(100));
     for hit in hits {

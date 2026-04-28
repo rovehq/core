@@ -1043,7 +1043,7 @@ fn sync_workflow_file_watch_paths(
             RecursiveMode::NonRecursive
         };
         match desired.get(&registration.path) {
-            Some(existing) if matches!(existing, RecursiveMode::Recursive) => {}
+            Some(RecursiveMode::Recursive) => {}
             _ => {
                 desired.insert(registration.path.clone(), mode);
             }
@@ -1128,74 +1128,6 @@ fn matches_database_file(path: &Path, db_path: &Path) -> bool {
     file_name == db_name
         || file_name == format!("{db_name}-wal")
         || file_name == format!("{db_name}-shm")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use notify::{
-        event::{CreateKind, ModifyKind},
-        Event, EventKind,
-    };
-
-    use super::{is_extension_reload_event, matches_database_file};
-
-    #[test]
-    fn database_file_match_includes_wal_and_shm() {
-        let db_path = PathBuf::from("/tmp/rove/rove.db");
-        assert!(matches_database_file(
-            &PathBuf::from("/tmp/rove/rove.db"),
-            &db_path
-        ));
-        assert!(matches_database_file(
-            &PathBuf::from("/tmp/rove/rove.db-wal"),
-            &db_path
-        ));
-        assert!(matches_database_file(
-            &PathBuf::from("/tmp/rove/rove.db-shm"),
-            &db_path
-        ));
-        assert!(!matches_database_file(
-            &PathBuf::from("/tmp/other/rove.db"),
-            &db_path
-        ));
-    }
-
-    #[test]
-    fn extension_reload_event_filters_plugin_and_database_paths() {
-        let db_path = PathBuf::from("/tmp/rove/rove.db");
-        let plugin_dir = PathBuf::from("/tmp/rove/plugins");
-        let event = Event {
-            kind: EventKind::Create(CreateKind::File),
-            paths: vec![PathBuf::from("/tmp/rove/plugins/demo/runtime.json")],
-            attrs: Default::default(),
-        };
-        assert!(is_extension_reload_event(&event, &db_path, &plugin_dir));
-
-        let unrelated = Event {
-            kind: EventKind::Create(CreateKind::File),
-            paths: vec![PathBuf::from("/tmp/rove/logs/rove.log")],
-            attrs: Default::default(),
-        };
-        assert!(!is_extension_reload_event(
-            &unrelated,
-            &db_path,
-            &plugin_dir
-        ));
-    }
-
-    #[test]
-    fn extension_reload_event_accepts_plugin_modify_events() {
-        let db_path = PathBuf::from("/tmp/rove/rove.db");
-        let plugin_dir = PathBuf::from("/tmp/rove/plugins");
-        let event = Event {
-            kind: EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content)),
-            paths: vec![PathBuf::from("/tmp/rove/plugins/demo/demo.wasm")],
-            attrs: Default::default(),
-        };
-        assert!(is_extension_reload_event(&event, &db_path, &plugin_dir));
-    }
 }
 
 fn spawn_workflow_cron_scheduler(db: Arc<Database>, config: Config) {
@@ -1315,4 +1247,72 @@ fn daemon_socket_addr(bind_addr: &str, port: u16) -> Result<SocketAddr> {
     format!("{}:{}", host, port)
         .parse::<SocketAddr>()
         .with_context(|| format!("Invalid daemon bind address '{}'", bind_addr))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use notify::{
+        event::{CreateKind, ModifyKind},
+        Event, EventKind,
+    };
+
+    use super::{is_extension_reload_event, matches_database_file};
+
+    #[test]
+    fn database_file_match_includes_wal_and_shm() {
+        let db_path = PathBuf::from("/tmp/rove/rove.db");
+        assert!(matches_database_file(
+            &PathBuf::from("/tmp/rove/rove.db"),
+            &db_path
+        ));
+        assert!(matches_database_file(
+            &PathBuf::from("/tmp/rove/rove.db-wal"),
+            &db_path
+        ));
+        assert!(matches_database_file(
+            &PathBuf::from("/tmp/rove/rove.db-shm"),
+            &db_path
+        ));
+        assert!(!matches_database_file(
+            &PathBuf::from("/tmp/other/rove.db"),
+            &db_path
+        ));
+    }
+
+    #[test]
+    fn extension_reload_event_filters_plugin_and_database_paths() {
+        let db_path = PathBuf::from("/tmp/rove/rove.db");
+        let plugin_dir = PathBuf::from("/tmp/rove/plugins");
+        let event = Event {
+            kind: EventKind::Create(CreateKind::File),
+            paths: vec![PathBuf::from("/tmp/rove/plugins/demo/runtime.json")],
+            attrs: Default::default(),
+        };
+        assert!(is_extension_reload_event(&event, &db_path, &plugin_dir));
+
+        let unrelated = Event {
+            kind: EventKind::Create(CreateKind::File),
+            paths: vec![PathBuf::from("/tmp/rove/logs/rove.log")],
+            attrs: Default::default(),
+        };
+        assert!(!is_extension_reload_event(
+            &unrelated,
+            &db_path,
+            &plugin_dir
+        ));
+    }
+
+    #[test]
+    fn extension_reload_event_accepts_plugin_modify_events() {
+        let db_path = PathBuf::from("/tmp/rove/rove.db");
+        let plugin_dir = PathBuf::from("/tmp/rove/plugins");
+        let event = Event {
+            kind: EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content)),
+            paths: vec![PathBuf::from("/tmp/rove/plugins/demo/demo.wasm")],
+            attrs: Default::default(),
+        };
+        assert!(is_extension_reload_event(&event, &db_path, &plugin_dir));
+    }
 }

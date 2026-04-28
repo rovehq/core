@@ -25,6 +25,7 @@ impl TelegramAuditRepository {
         Self { pool }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn log(
         &self,
         event_type: &str,

@@ -84,9 +84,7 @@ fn run_wizard_inner() -> Result<SetupResult> {
         match action {
             NavigationAction::Next => step += 1,
             NavigationAction::Back => {
-                if step > 0 {
-                    step -= 1;
-                }
+                step = step.saturating_sub(1);
             }
             NavigationAction::Quit => {
                 print_line(&mut stdout, "")?;

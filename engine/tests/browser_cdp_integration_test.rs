@@ -800,7 +800,7 @@ async fn browser_cdp_smart_form_fill_test() {
         let result: serde_json::Value =
             serde_json::from_str(output.data.as_str().unwrap_or("{}")).unwrap();
         assert!(
-            result["filled"].as_array().unwrap().len() > 0,
+            !result["filled"].as_array().unwrap().is_empty(),
             "Should fill at least one field"
         );
         println!(

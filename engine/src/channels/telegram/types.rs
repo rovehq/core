@@ -7,6 +7,12 @@ pub struct TelegramRateLimits {
     tier2_ops: Vec<std::time::Instant>,
 }
 
+impl Default for TelegramRateLimits {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TelegramRateLimits {
     pub fn new() -> Self {
         Self {

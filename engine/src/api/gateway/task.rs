@@ -101,8 +101,7 @@ impl From<TaskSource> for crate::risk_assessor::OperationSource {
             TaskSource::Telegram(_)
             | TaskSource::Channel(_)
             | TaskSource::WebUI
-            | TaskSource::Remote(_)
-            | TaskSource::Subagent(_) => crate::risk_assessor::OperationSource::Remote,
+            | TaskSource::Remote(_) => crate::risk_assessor::OperationSource::Remote,
         }
     }
 }

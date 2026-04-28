@@ -1,9 +1,6 @@
 mod helpers;
 
 use std::sync::Arc;
-use std::{collections::VecDeque, sync::Mutex};
-
-use async_trait::async_trait;
 use std::time::Instant;
 use tempfile::TempDir;
 
@@ -16,7 +13,7 @@ use rove_engine::db::tasks::TaskStatus;
 use rove_engine::db::Database;
 use rove_engine::gateway::{Task, WorkspaceLocks};
 use rove_engine::llm::router::LLMRouter;
-use rove_engine::llm::{FinalAnswer, LLMProvider, LLMResponse, Message};
+use rove_engine::llm::{FinalAnswer, LLMProvider, LLMResponse};
 use rove_engine::rate_limiter::RateLimiter;
 use rove_engine::risk_assessor::RiskAssessor;
 use rove_engine::risk_assessor::RiskTier;
@@ -128,7 +125,7 @@ async fn setup_test_agent_for_hook_workspace(
     let task_repo = Arc::new(TaskRepository::new(pool));
     let tools = Arc::new(ToolRegistry::new(config.clone(), None, None, None));
 
-    let agent = AgentCore::new(
+    AgentCore::new(
         router,
         risk_assessor,
         rate_limiter,
@@ -138,9 +135,7 @@ async fn setup_test_agent_for_hook_workspace(
         config,
         Arc::new(WorkspaceLocks::new()),
     )
-    .expect("Failed to create AgentCore in test");
-
-    agent
+    .expect("Failed to create AgentCore in test")
 }
 
 use helpers::mock_llm::MockSequenceProvider;

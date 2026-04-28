@@ -1339,6 +1339,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn from_task_generates_specs() {
         let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();

@@ -101,6 +101,7 @@ impl TelegramBot {
         self.admin_users.contains(&user_id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn log_telegram_audit(
         &self,
         event_type: &str,

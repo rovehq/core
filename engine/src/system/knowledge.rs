@@ -332,6 +332,32 @@ fn html_to_text(html: &str) -> String {
     result.trim().to_string()
 }
 
+fn extract_title(content: &str, url: &str) -> String {
+    if let Some(start) = content.find("<title>") {
+        if let Some(end) = content[start..].find("</title>") {
+            let title = &content[start + 7..start + end];
+            if !title.trim().is_empty() {
+                return title.trim().to_string();
+            }
+        }
+    }
+    url.split('/').next_back().unwrap_or(url).to_string()
+}
+
+fn parse_sitemap_urls(xml: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for line in xml.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<loc>") && trimmed.ends_with("</loc>") {
+            let url = &trimmed[5..trimmed.len() - 6];
+            if !url.is_empty() {
+                urls.push(url.to_string());
+            }
+        }
+    }
+    urls
+}
+
 #[cfg(test)]
 mod tests {
     use super::{fetch_url_text, html_to_text};
@@ -368,30 +394,4 @@ mod tests {
 
         server.abort();
     }
-}
-
-fn extract_title(content: &str, url: &str) -> String {
-    if let Some(start) = content.find("<title>") {
-        if let Some(end) = content[start..].find("</title>") {
-            let title = &content[start + 7..start + end];
-            if !title.trim().is_empty() {
-                return title.trim().to_string();
-            }
-        }
-    }
-    url.split('/').last().unwrap_or(url).to_string()
-}
-
-fn parse_sitemap_urls(xml: &str) -> Vec<String> {
-    let mut urls = Vec::new();
-    for line in xml.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("<loc>") && trimmed.ends_with("</loc>") {
-            let url = &trimmed[5..trimmed.len() - 6];
-            if !url.is_empty() {
-                urls.push(url.to_string());
-            }
-        }
-    }
-    urls
 }

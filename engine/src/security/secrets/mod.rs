@@ -666,6 +666,7 @@ backend = "{backend}"
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn vault_roundtrip_and_delete() {
         let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().expect("temp dir");
@@ -687,6 +688,7 @@ backend = "{backend}"
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn env_backend_is_read_only() {
         let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().expect("temp dir");

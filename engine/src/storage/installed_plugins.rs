@@ -261,7 +261,7 @@ mod tests {
         assert!(enabled.is_empty());
 
         let disabled = repo.get_plugin("plugin-2").await.expect("fetch plugin");
-        assert_eq!(disabled.expect("stored plugin").enabled, false);
+        assert!(!disabled.expect("stored plugin").enabled);
     }
 
     #[tokio::test]

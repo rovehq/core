@@ -248,7 +248,7 @@ fn heuristic_extractor_constructs() {
 
 #[test]
 fn heuristic_extractor_default_constructs() {
-    let _ = HeuristicExtractor::default();
+    let _ = HeuristicExtractor;
 }
 
 #[test]

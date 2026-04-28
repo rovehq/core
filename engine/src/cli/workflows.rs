@@ -534,6 +534,7 @@ fn normalize_watch_events(events: &[String]) -> Result<Vec<String>> {
     Ok(normalized)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_workflow(
     repo: &SpecRepository,
     id: String,

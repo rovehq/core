@@ -76,6 +76,7 @@ impl MemoryAuditRepository {
         Self { pool }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_version(
         &self,
         entity_kind: MemoryEntityKind,
@@ -134,6 +135,7 @@ impl MemoryAuditRepository {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_audit(
         &self,
         entity_kind: MemoryEntityKind,
@@ -251,6 +253,7 @@ impl MemoryAuditRepository {
             .collect())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn episodic_snapshot_hash(
         summary: &str,
         entities: &str,
@@ -490,7 +493,7 @@ pub async fn current_episodic_hash(pool: &SqlitePool, id: &str) -> Result<Option
     .bind(id)
     .fetch_optional(pool)
     .await?;
-    Ok(row
+    row
         .map(|row| {
             MemoryAuditRepository::episodic_snapshot_hash(
                 row.get::<String, _>("summary").as_str(),
@@ -505,7 +508,7 @@ pub async fn current_episodic_hash(pool: &SqlitePool, id: &str) -> Result<Option
             )
             .map(|(hash, _)| hash)
         })
-        .transpose()?)
+        .transpose()
 }
 
 pub async fn current_fact_hash(pool: &SqlitePool, key: &str) -> Result<Option<String>> {
@@ -517,7 +520,7 @@ pub async fn current_fact_hash(pool: &SqlitePool, key: &str) -> Result<Option<St
     .bind(key)
     .fetch_optional(pool)
     .await?;
-    Ok(row
+    row
         .map(|row| {
             MemoryAuditRepository::fact_snapshot_hash(
                 row.get::<String, _>("value").as_str(),
@@ -526,7 +529,7 @@ pub async fn current_fact_hash(pool: &SqlitePool, key: &str) -> Result<Option<St
             )
             .map(|(hash, _)| hash)
         })
-        .transpose()?)
+        .transpose()
 }
 
 pub fn redact_value(label: &str) -> String {

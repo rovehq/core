@@ -407,7 +407,7 @@ fn llm_response_final_answer_roundtrip() {
 
 #[test]
 fn message_vec_construction() {
-    let messages = vec![
+    let messages = [
         Message::system("You are helpful"),
         Message::user("What is 2+2?"),
         Message::assistant("4"),
@@ -420,7 +420,7 @@ fn message_vec_construction() {
 
 #[test]
 fn message_vec_with_tool_result() {
-    let messages = vec![
+    let messages = [
         Message::user("read the file"),
         Message::tool_result("file contents here", "call_1"),
     ];

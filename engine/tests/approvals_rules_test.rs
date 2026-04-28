@@ -741,7 +741,7 @@ fn rule_tool_some_restricts_match() {
 
 #[test]
 fn multiple_rules_have_unique_ids() {
-    let rules = vec![
+    let rules = [
         allow_rule("rule-a"),
         allow_rule("rule-b"),
         allow_rule("rule-c"),
@@ -752,7 +752,7 @@ fn multiple_rules_have_unique_ids() {
 
 #[test]
 fn rules_sorted_by_id() {
-    let mut rules = vec![
+    let mut rules = [
         allow_rule("zzz"),
         allow_rule("aaa"),
         allow_rule("mmm"),

@@ -110,6 +110,7 @@ pub async fn resume_run(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_run(
     repo: &SpecRepository,
     db: &Database,

@@ -424,7 +424,7 @@ fn parse_relation_type(s: &str) -> RelationType {
 }
 
 fn parse_source_kind(value: String) -> GraphSourceKind {
-    GraphSourceKind::from_str(&value)
+    GraphSourceKind::from_kind_str(&value)
 }
 
 fn normalize_identifier(label: &str) -> String {

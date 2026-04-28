@@ -335,7 +335,7 @@ impl TaskRepository {
         .await
         .context("Failed to fetch task")?;
 
-        Ok(row.map(|r| map_task_row(r)))
+        Ok(row.map(map_task_row))
     }
 
     /// Get recent tasks (last N tasks)

@@ -53,7 +53,7 @@ fn tool_ne_system() {
 #[test]
 fn role_clone_user() {
     let r = MessageRole::User;
-    let r2 = r.clone();
+    let r2 = r;
     assert_eq!(r, r2);
 }
 
@@ -359,7 +359,7 @@ fn llm_response_clone_final_answer() {
 
 #[test]
 fn messages_in_vec_accessible_by_index() {
-    let msgs = vec![
+    let msgs = [
         Message::system("sys"),
         Message::user("hi"),
         Message::assistant("hello"),
@@ -371,7 +371,7 @@ fn messages_in_vec_accessible_by_index() {
 
 #[test]
 fn message_vec_len() {
-    let msgs: Vec<Message> = vec![
+    let msgs = [
         Message::user("a"),
         Message::user("b"),
         Message::user("c"),
@@ -381,7 +381,7 @@ fn message_vec_len() {
 
 #[test]
 fn message_filter_by_role() {
-    let msgs = vec![
+    let msgs = [
         Message::system("sys"),
         Message::user("hi"),
         Message::assistant("hello"),

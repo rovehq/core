@@ -156,7 +156,7 @@ fn health_check_serializes() {
 
 #[test]
 fn health_checks_in_vec() {
-    let checks = vec![
+    let checks = [
         HealthCheckRecord { name: "A".to_string(), ok: true, detail: "ok".to_string() },
         HealthCheckRecord { name: "B".to_string(), ok: false, detail: "fail".to_string() },
     ];
@@ -167,7 +167,7 @@ fn health_checks_in_vec() {
 
 #[test]
 fn health_check_all_ok_filter() {
-    let checks = vec![
+    let checks = [
         HealthCheckRecord { name: "A".to_string(), ok: true, detail: "ok".to_string() },
         HealthCheckRecord { name: "B".to_string(), ok: true, detail: "ok".to_string() },
     ];
@@ -176,7 +176,7 @@ fn health_check_all_ok_filter() {
 
 #[test]
 fn health_check_any_failing_filter() {
-    let checks = vec![
+    let checks = [
         HealthCheckRecord { name: "A".to_string(), ok: true, detail: "ok".to_string() },
         HealthCheckRecord { name: "B".to_string(), ok: false, detail: "fail".to_string() },
     ];
@@ -518,7 +518,7 @@ fn healthy_snapshot_no_issues_device_sealed() {
 
 #[test]
 fn checks_filtering_all_passing() {
-    let checks = vec![
+    let checks = [
         HealthCheckRecord { name: "Config".to_string(), ok: true, detail: "ok".to_string() },
         HealthCheckRecord { name: "Workspace".to_string(), ok: true, detail: "ok".to_string() },
         HealthCheckRecord { name: "Database".to_string(), ok: true, detail: "ok".to_string() },
@@ -529,7 +529,7 @@ fn checks_filtering_all_passing() {
 
 #[test]
 fn checks_filtering_some_failing() {
-    let checks = vec![
+    let checks = [
         HealthCheckRecord { name: "Config".to_string(), ok: true, detail: "ok".to_string() },
         HealthCheckRecord { name: "Daemon".to_string(), ok: false, detail: "not running".to_string() },
         HealthCheckRecord { name: "Auth".to_string(), ok: false, detail: "uninitialized".to_string() },

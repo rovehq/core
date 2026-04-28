@@ -93,6 +93,7 @@ impl ScheduleRepository {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn create_target(
         &self,
         name: &str,

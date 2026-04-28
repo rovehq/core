@@ -877,9 +877,10 @@ pub struct ExtensionUpdateRecord {
 }
 
 /// Starter catalog group for official setup surfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum StarterCatalogKind {
+    #[default]
     AgentTemplate,
     WorkflowTemplate,
     WorkerPreset,
@@ -899,16 +900,11 @@ impl StarterCatalogKind {
     }
 }
 
-impl Default for StarterCatalogKind {
-    fn default() -> Self {
-        Self::AgentTemplate
-    }
-}
-
 /// Availability state for an official starter entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum StarterCatalogStatus {
+    #[default]
     Available,
     NeedsSetup,
     Ready,
@@ -921,12 +917,6 @@ impl StarterCatalogStatus {
             Self::NeedsSetup => "needs_setup",
             Self::Ready => "ready",
         }
-    }
-}
-
-impl Default for StarterCatalogStatus {
-    fn default() -> Self {
-        Self::Available
     }
 }
 

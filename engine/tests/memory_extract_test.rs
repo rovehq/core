@@ -41,7 +41,7 @@ fn fact_has_remembered_fact_in_facts() {
 #[test]
 fn fact_summary_contains_content() {
     let out = extract_heuristic("remember that the linter is clippy");
-    assert!(out.summary.contains("clippy") || out.summary.len() > 0);
+    assert!(out.summary.contains("clippy") || !out.summary.is_empty());
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn workspace_path_extracted_to_facts() {
 #[test]
 fn workspace_project_name_in_summary() {
     let out = extract_heuristic("I work on the rove project in ~/workspace/rove using Rust");
-    assert!(out.summary.contains("rove") || out.summary.len() > 0);
+    assert!(out.summary.contains("rove") || !out.summary.is_empty());
 }
 
 // ── Kind classification: Warning ─────────────────────────────────────────────
@@ -488,7 +488,7 @@ async fn heuristic_extractor_extract_warning() {
 
 #[tokio::test]
 async fn heuristic_extractor_default_is_same() {
-    let extractor = HeuristicExtractor::default();
+    let extractor = HeuristicExtractor;
     let out = extractor.extract("some general query", "").await;
     assert!(!out.summary.is_empty());
 }

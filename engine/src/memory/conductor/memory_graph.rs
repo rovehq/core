@@ -405,6 +405,7 @@ async fn get_outbound_edges(
 }
 
 /// Upsert one directed edge. Returns 1 if inserted, 0 if already existed.
+#[allow(clippy::too_many_arguments)]
 async fn upsert_edge(
     pool: &SqlitePool,
     from_id: &str,

@@ -399,7 +399,7 @@ fn file_watch_path_absolute() {
 
 #[test]
 fn trigger_matches_can_be_sorted_by_name() {
-    let mut matches = vec![
+    let mut matches = [
         WorkflowTriggerMatch {
             workflow_id: "b".to_string(),
             workflow_name: "B Workflow".to_string(),
@@ -417,7 +417,7 @@ fn trigger_matches_can_be_sorted_by_name() {
 
 #[test]
 fn file_watch_registrations_can_be_sorted_by_path() {
-    let mut regs = vec![
+    let mut regs = [
         FileWatchRegistration {
             workflow_id: "b".to_string(),
             workflow_name: "B".to_string(),

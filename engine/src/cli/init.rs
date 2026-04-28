@@ -104,6 +104,7 @@ pub async fn handle_init(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn should_launch_setup_wizard(
     config_exists: bool,
     no_node_name: bool,

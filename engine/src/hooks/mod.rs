@@ -662,9 +662,7 @@ impl HookHandle {
             response: parsed,
         };
 
-        if outcome.success {
-            self.reset_failures().await;
-        } else if output.status.code() == Some(1) {
+        if outcome.success || output.status.code() == Some(1) {
             self.reset_failures().await;
         } else {
             self.register_failure().await;
@@ -1026,13 +1024,11 @@ command = "./handler.sh"
         write_hook(
             &hooks_root,
             "session-start-audit",
-            &format!(
-                r#"
+            r#"
 name = "session-start-audit"
 events = ["SessionStart"]
 command = "./handler.sh"
-"#
-            ),
+"#,
             &format!(
                 "#!/bin/sh\ncat > \"{}\"\nprintf '{{\"action\":\"continue\"}}'\n",
                 output_path.display()

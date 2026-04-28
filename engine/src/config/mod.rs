@@ -901,6 +901,85 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
     })
 }
 
+/// Expand ~ in path to user's home directory
+fn expand_path(path: &Path) -> Result<PathBuf, EngineError> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| EngineError::Config("Invalid UTF-8 in path".to_string()))?;
+
+    if let Some(rest) = path_str.strip_prefix("~/") {
+        let home = dirs::home_dir()
+            .ok_or_else(|| EngineError::Config("Could not determine home directory".to_string()))?;
+        Ok(home.join(rest))
+    } else if path_str == "~" {
+        dirs::home_dir()
+            .ok_or_else(|| EngineError::Config("Could not determine home directory".to_string()))
+    } else {
+        Ok(path.to_path_buf())
+    }
+}
+
+fn ensure_directory_writable(path: &Path) -> Result<(), EngineError> {
+    let probe = path.join(format!(".rove-write-test-{}", std::process::id()));
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&probe)
+        .map_err(|error| {
+            EngineError::Config(format!(
+                "Configured data directory is not writable: {} ({})",
+                path.display(),
+                error
+            ))
+        })?;
+    let _ = fs::remove_file(probe);
+    Ok(())
+}
+
+fn ensure_database_path_writable(path: &Path) -> Result<(), EngineError> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|error| {
+            EngineError::Config(format!(
+                "Configured database path is not writable: {} ({}). Update `core.data_dir` or set `ROVE_DATA_DIR` to a writable location.",
+                path.display(),
+                error
+            ))
+        })?;
+    Ok(())
+}
+
+/// Reject dangerous workspace paths (system roots)
+fn reject_dangerous_workspace(path: &Path) -> Result<(), EngineError> {
+    let dangerous_paths = ["/", "/usr", "/bin", "/sbin", "/etc", "/var", "/root"];
+    let path_str = path.to_string_lossy();
+    for dangerous in dangerous_paths {
+        if path_str == dangerous || path_str.starts_with(&format!("{}/", dangerous)) {
+            return Err(EngineError::Config(format!(
+                "Dangerous workspace path rejected: {:?}",
+                path
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Canonicalize path or create if doesn't exist
+fn canonicalize_or_create(path: &Path) -> Result<PathBuf, EngineError> {
+    if path.exists() {
+        path.canonicalize()
+            .map_err(|e| EngineError::Config(format!("Failed to canonicalize path: {}", e)))
+    } else {
+        Ok(path.to_path_buf())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
@@ -1277,84 +1356,5 @@ max_risk_tier = 2
         assert!(error
             .to_string()
             .contains("No active extension profile could be resolved"));
-    }
-}
-
-/// Expand ~ in path to user's home directory
-fn expand_path(path: &Path) -> Result<PathBuf, EngineError> {
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| EngineError::Config("Invalid UTF-8 in path".to_string()))?;
-
-    if let Some(rest) = path_str.strip_prefix("~/") {
-        let home = dirs::home_dir()
-            .ok_or_else(|| EngineError::Config("Could not determine home directory".to_string()))?;
-        Ok(home.join(rest))
-    } else if path_str == "~" {
-        dirs::home_dir()
-            .ok_or_else(|| EngineError::Config("Could not determine home directory".to_string()))
-    } else {
-        Ok(path.to_path_buf())
-    }
-}
-
-fn ensure_directory_writable(path: &Path) -> Result<(), EngineError> {
-    let probe = path.join(format!(".rove-write-test-{}", std::process::id()));
-    OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&probe)
-        .map_err(|error| {
-            EngineError::Config(format!(
-                "Configured data directory is not writable: {} ({})",
-                path.display(),
-                error
-            ))
-        })?;
-    let _ = fs::remove_file(probe);
-    Ok(())
-}
-
-fn ensure_database_path_writable(path: &Path) -> Result<(), EngineError> {
-    if !path.exists() {
-        return Ok(());
-    }
-
-    OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|error| {
-            EngineError::Config(format!(
-                "Configured database path is not writable: {} ({}). Update `core.data_dir` or set `ROVE_DATA_DIR` to a writable location.",
-                path.display(),
-                error
-            ))
-        })?;
-    Ok(())
-}
-
-/// Reject dangerous workspace paths (system roots)
-fn reject_dangerous_workspace(path: &Path) -> Result<(), EngineError> {
-    let dangerous_paths = ["/", "/usr", "/bin", "/sbin", "/etc", "/var", "/root"];
-    let path_str = path.to_string_lossy();
-    for dangerous in dangerous_paths {
-        if path_str == dangerous || path_str.starts_with(&format!("{}/", dangerous)) {
-            return Err(EngineError::Config(format!(
-                "Dangerous workspace path rejected: {:?}",
-                path
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Canonicalize path or create if doesn't exist
-fn canonicalize_or_create(path: &Path) -> Result<PathBuf, EngineError> {
-    if path.exists() {
-        path.canonicalize()
-            .map_err(|e| EngineError::Config(format!("Failed to canonicalize path: {}", e)))
-    } else {
-        Ok(path.to_path_buf())
     }
 }

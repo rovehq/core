@@ -49,7 +49,7 @@ impl CdpSession {
 
         let req = serde_json::json!({"id": id, "method": method, "params": params});
         self.ws
-            .send(Message::Text(req.to_string().into()))
+            .send(Message::Text(req.to_string()))
             .await
             .context("Failed to send CDP command")?;
 

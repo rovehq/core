@@ -80,7 +80,7 @@ impl Default for BrowserProfileConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BrowserConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
@@ -90,15 +90,4 @@ pub struct BrowserConfig {
     pub approvals: BrowserApprovalConfig,
     #[serde(default)]
     pub profiles: Vec<BrowserProfileConfig>,
-}
-
-impl Default for BrowserConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            default_profile_id: None,
-            approvals: BrowserApprovalConfig::default(),
-            profiles: Vec::new(),
-        }
-    }
 }
