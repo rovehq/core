@@ -176,6 +176,7 @@ impl Config {
         }
 
         let mut config = Self::default();
+        config.apply_env_overrides();
         config.clamp_and_validate()?;
 
         let toml_string = config_to_toml(&config)

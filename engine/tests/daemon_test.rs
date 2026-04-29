@@ -9,6 +9,7 @@ use rove_engine::system::daemon::DaemonManager;
 #[cfg(unix)]
 use rove_engine::system::daemon::Result;
 #[cfg(unix)]
+#[allow(unused_imports)]
 use sdk::errors::EngineError;
 
 // Daemon tests call start() which writes the current process PID. Serialise
