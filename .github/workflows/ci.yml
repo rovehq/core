@@ -170,9 +170,9 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
-      - name: Install b3sum
+      - name: Install tools
         run: |
-          sudo apt-get update && sudo apt-get install -y b3sum || \
+          sudo apt-get update && sudo apt-get install -y b3sum awscli || \
             cargo install b3sum
 
       - name: Hash all artifacts
@@ -201,16 +201,16 @@ jobs:
           find .r2_upload -type f | sort
 
       - name: Deploy artifacts to registry R2 (rove-registry)
-        uses: jakejarvis/s3-sync-action@master
-        with:
-          args: --acl public-read --follow-symlinks
         env:
-          AWS_S3_BUCKET: ${{ secrets.REGISTRY_R2_BUCKET_NAME }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_REGION: "auto"
-          AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
-          SOURCE_DIR: ".r2_upload"
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_API_URL }}
+          R2_BUCKET: ${{ secrets.REGISTRY_R2_BUCKET_NAME }}
+        run: |
+          aws s3 sync .r2_upload/ "s3://${R2_BUCKET}/" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --acl public-read --follow-symlinks
 
       # Install scripts are channel-agnostic: only uploaded when the files change.
       - name: Stage install scripts
@@ -226,16 +226,16 @@ jobs:
 
       - name: Deploy install scripts to get R2 (rove-get)
         if: needs.changes.outputs.scripts == 'true'
-        uses: jakejarvis/s3-sync-action@master
-        with:
-          args: --acl public-read --follow-symlinks
         env:
-          AWS_S3_BUCKET: ${{ secrets.GET_R2_BUCKET_NAME }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_REGION: "auto"
-          AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
-          SOURCE_DIR: ".r2_get"
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_API_URL }}
+          R2_BUCKET: ${{ secrets.GET_R2_BUCKET_NAME }}
+        run: |
+          aws s3 sync .r2_get/ "s3://${R2_BUCKET}/" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --acl public-read --follow-symlinks
 
       - name: Stage assets (logo + static media)
         run: |
@@ -245,16 +245,16 @@ jobs:
         shell: bash
 
       - name: Deploy assets to assets R2 (rove-assets)
-        uses: jakejarvis/s3-sync-action@master
-        with:
-          args: --acl public-read --follow-symlinks
         env:
-          AWS_S3_BUCKET: ${{ secrets.ASSETS_R2_BUCKET_NAME }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_REGION: "auto"
-          AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
-          SOURCE_DIR: ".r2_assets"
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_API_URL }}
+          R2_BUCKET: ${{ secrets.ASSETS_R2_BUCKET_NAME }}
+        run: |
+          aws s3 sync .r2_assets/ "s3://${R2_BUCKET}/" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --acl public-read --follow-symlinks
 
       - name: GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -280,8 +280,8 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
-      - name: Install b3sum
-        run: sudo apt-get update && sudo apt-get install -y b3sum openssl || cargo install b3sum
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y b3sum openssl awscli || cargo install b3sum
 
       - name: Update per-channel manifests
         env:
@@ -423,13 +423,16 @@ jobs:
           fi
 
       - name: Upload manifests + sigs to R2
-        uses: jakejarvis/s3-sync-action@master
-        with:
-          args: --acl public-read --follow-symlinks --exclude "*" --include "*/engine/manifest*" --include "*/core-tools/manifest*"
         env:
-          AWS_S3_BUCKET: ${{ secrets.REGISTRY_R2_BUCKET_NAME }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_REGION: "auto"
-          AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
-          SOURCE_DIR: "/tmp/registry"
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_API_URL }}
+          R2_BUCKET: ${{ secrets.REGISTRY_R2_BUCKET_NAME }}
+        run: |
+          aws s3 sync /tmp/registry/ "s3://${R2_BUCKET}/" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --acl public-read --follow-symlinks \
+            --exclude "*" \
+            --include "*/engine/manifest*" \
+            --include "*/core-tools/manifest*"
