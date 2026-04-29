@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
 
@@ -58,7 +60,7 @@ impl Palette {
                 Some((i, score))
             })
             .collect();
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|&(_, score)| Reverse(score));
         self.matched = scored.into_iter().map(|(i, _)| i).collect();
         if self.selected >= self.matched.len() {
             self.selected = 0;

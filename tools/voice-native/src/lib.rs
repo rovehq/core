@@ -87,6 +87,7 @@ impl CoreTool for VoiceNativeTool {
     }
 }
 
+#[allow(unused_variables)]
 fn speak_text(text: &str, voice: Option<&str>) -> Result<String> {
     #[cfg(target_os = "macos")]
     {

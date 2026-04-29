@@ -191,6 +191,7 @@ fn identity_root(config: &Config) -> PathBuf {
         .unwrap_or_else(|| config.core.data_dir.clone())
 }
 
+#[allow(unused_variables)]
 fn lock_down_path(path: &PathBuf) -> Result<()> {
     #[cfg(unix)]
     {

@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
+#[cfg(unix)]
 use tokio::time::timeout;
 
 use crate::config::Config;
@@ -84,6 +85,7 @@ impl DaemonManager {
 
     pub async fn stop(config: &Config) -> Result<()> {
         let pid_file = Self::get_pid_file_path(config)?;
+        #[allow(unused_variables)]
         let pid = Self::read_pid_file(&pid_file)?;
 
         #[cfg(unix)]

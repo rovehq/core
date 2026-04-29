@@ -34,10 +34,8 @@ pub fn select_menu_default(
 
             match code {
                 KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if selected + 1 < items.len() {
-                        selected += 1;
-                    }
+                KeyCode::Down | KeyCode::Char('j') if selected + 1 < items.len() => {
+                    selected += 1;
                 }
                 KeyCode::Enter => break,
                 _ => {}

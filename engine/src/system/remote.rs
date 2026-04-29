@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -1247,7 +1248,7 @@ impl RemoteManager {
             })
             .collect::<Vec<_>>();
 
-        candidates.sort_by(|left, right| right.0.cmp(&left.0));
+        candidates.sort_by_key(|(score, _)| Reverse(*score));
 
         candidates
             .into_iter()
@@ -1339,7 +1340,7 @@ impl RemoteManager {
             })
             .collect::<Vec<_>>();
 
-        candidates.sort_by(|left, right| right.0.cmp(&left.0));
+        candidates.sort_by_key(|(score, _)| Reverse(*score));
         candidates
             .into_iter()
             .map(|(_, peer)| peer)

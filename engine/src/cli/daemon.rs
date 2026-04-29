@@ -153,6 +153,7 @@ pub fn is_running() -> Result<bool> {
     let Ok(pid_str) = std::fs::read_to_string(&pid_file) else {
         return Ok(false);
     };
+    #[allow(unused_variables)]
     let Ok(pid) = pid_str.trim().parse::<i32>() else {
         return Ok(false);
     };

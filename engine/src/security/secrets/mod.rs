@@ -540,6 +540,7 @@ impl SecretManager {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     fn lock_down_path(&self, path: &Path) -> Result<(), EngineError> {
         #[cfg(unix)]
         {
@@ -551,6 +552,7 @@ impl SecretManager {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     fn lock_down_dir(&self, path: &Path) -> Result<(), EngineError> {
         #[cfg(unix)]
         {

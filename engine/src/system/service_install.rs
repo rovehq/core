@@ -207,6 +207,7 @@ fn service_descriptor(_mode: ServiceInstallMode) -> Result<ServiceDescriptor> {
     bail!("Service installation is not implemented on this platform yet")
 }
 
+#[allow(unused_variables)]
 fn render_service_file(
     _mode: ServiceInstallMode,
     label: &str,
@@ -491,6 +492,7 @@ fn run_systemctl(user: bool, args: &[&str], ignore_failure: bool) -> Result<()> 
     run_command("/bin/systemctl", &full, ignore_failure)
 }
 
+#[allow(unused_variables)]
 fn lock_down_service_file(path: &PathBuf) -> Result<()> {
     #[cfg(unix)]
     {

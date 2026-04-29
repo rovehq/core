@@ -49,12 +49,10 @@ pub fn prompt_text(stdout: &mut io::Stdout, label: &str, default: &str) -> Resul
                     write!(stdout, "{}", character)?;
                     stdout.flush()?;
                 }
-                KeyCode::Backspace => {
-                    if !input.is_empty() {
-                        input.pop();
-                        write!(stdout, "\x08 \x08")?;
-                        stdout.flush()?;
-                    }
+                KeyCode::Backspace if !input.is_empty() => {
+                    input.pop();
+                    write!(stdout, "\x08 \x08")?;
+                    stdout.flush()?;
                 }
                 _ => {}
             }
@@ -148,12 +146,10 @@ pub fn prompt_text_with_nav(
                     write!(stdout, "{}", character)?;
                     stdout.flush()?;
                 }
-                KeyCode::Backspace => {
-                    if !input.is_empty() {
-                        input.pop();
-                        write!(stdout, "\x08 \x08")?;
-                        stdout.flush()?;
-                    }
+                KeyCode::Backspace if !input.is_empty() => {
+                    input.pop();
+                    write!(stdout, "\x08 \x08")?;
+                    stdout.flush()?;
                 }
                 _ => {}
             }

@@ -699,10 +699,8 @@ fn detect_channel_bindings(raw: &str, structured: Option<&Value>) -> Vec<Channel
         if let Some(channels) = value.get("channels").and_then(Value::as_array) {
             for channel in channels {
                 match channel {
-                    Value::String(name) => {
-                        if !name.trim().is_empty() {
-                            names.insert(name.trim().to_ascii_lowercase());
-                        }
+                    Value::String(name) if !name.trim().is_empty() => {
+                        names.insert(name.trim().to_ascii_lowercase());
                     }
                     Value::Object(_) => {
                         if let Some(name) = string_field(channel, &["kind", "name", "channel"]) {
