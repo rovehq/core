@@ -109,7 +109,6 @@ windows-sys = { version = "0.52", features = [
 [dev-dependencies]
 proptest = "1.10.0"
 wiremock = "0.6"
-browser-cdp = { path = "../../extension/native/browser-cdp" }
 
 [features]
 default = []
