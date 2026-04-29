@@ -97,7 +97,7 @@ jobs:
   # ── Build engine ─────────────────────────────────
   build-engine:
     name: Build Engine (${{ needs.changes.outputs.channel }} · ${{ matrix.platform }})
-    needs: [changes, check]
+    needs: [changes]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -156,7 +156,7 @@ jobs:
   # ── Build core tools ─────────────────────────────
   build-tools:
     name: Build Tools (${{ needs.changes.outputs.channel }} · ${{ matrix.platform }})
-    needs: [changes, check]
+    needs: [changes]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
