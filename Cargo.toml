@@ -10,8 +10,6 @@ members = [
     "brain",
     "engine",
     "sdk",
-    "tools/telegram",
-    "tools/ui-server",
     "tools/remote",
 
 
@@ -76,9 +74,6 @@ toml = "0.8"
 
 # System directories
 dirs = "5.0"
-
-# Telegram bot
-teloxide = { version = "0.12", features = ["macros"] }
 
 # Regex
 regex = "1.10"

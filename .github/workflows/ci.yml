@@ -189,7 +189,7 @@ jobs:
 
       - name: Build core tools (release)
         run: |
-          for tool in telegram ui-server; do
+          for tool in app-launcher file-watcher notification voice-native; do
             cargo build --release --target ${{ matrix.target }} -p $tool || true
           done
         shell: bash
@@ -197,7 +197,7 @@ jobs:
       - name: Stage tool artifacts
         run: |
           mkdir -p artifacts/core_tools/${{ matrix.platform }}
-          for tool in telegram ui_server; do
+          for tool in app_launcher file_watcher notification voice_native; do
             SRC="target/${{ matrix.target }}/release/${{ matrix.lib_prefix }}${tool}.${{ matrix.lib_ext }}"
             [ -f "$SRC" ] && cp "$SRC" artifacts/core_tools/${{ matrix.platform }}/
           done
