@@ -808,6 +808,16 @@ mod tests {
 
     use tempfile::TempDir;
 
+    fn native_lib_ext() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "dll"
+        } else if cfg!(target_os = "macos") {
+            "dylib"
+        } else {
+            "so"
+        }
+    }
+
     use crate::config::Config;
     use crate::runtime::mcp::SandboxProfile;
     use crate::storage::{Database, InstalledPlugin};
@@ -860,7 +870,8 @@ mod tests {
         )
         .expect("write runtime");
 
-        let binary_path = install_dir.join("vision-plus.dylib");
+        let lib_name = format!("vision-plus.{}", native_lib_ext());
+        let binary_path = install_dir.join(&lib_name);
         fs::write(&binary_path, b"native driver bytes").expect("write binary");
         let payload_hash = "LOCAL_DEV_PAYLOAD_HASH".to_string();
         let payload_signature = "LOCAL_DEV_PAYLOAD_SIGNATURE".to_string();
@@ -869,7 +880,7 @@ mod tests {
             format!(
                 r#"{{
                     "id": "{install_id}",
-                    "artifact": "vision-plus.dylib",
+                    "artifact": "{lib_name}",
                     "runtime_config": "runtime.json",
                     "payload_hash": "{payload_hash}",
                     "payload_signature": "{payload_signature}",
@@ -992,7 +1003,7 @@ mod tests {
                 "description": "Official terminal native extension"
             }"#
             .to_string(),
-            binary_path: Some("terminal.dylib".to_string()),
+            binary_path: Some(format!("terminal.{}", native_lib_ext())),
             binary_hash: "abc123".to_string(),
             signature: "LOCAL_DEV_PAYLOAD_SIGNATURE".to_string(),
             enabled: true,
@@ -1242,7 +1253,7 @@ mod tests {
                 "description": "Vision native extension"
             }"#
             .to_string(),
-            binary_path: Some("vision-plus.dylib".to_string()),
+            binary_path: Some(format!("vision-plus.{}", native_lib_ext())),
             binary_hash: "hash".to_string(),
             signature: "LOCAL_DEV_PAYLOAD_SIGNATURE".to_string(),
             enabled: true,

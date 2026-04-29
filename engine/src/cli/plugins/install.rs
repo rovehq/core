@@ -657,9 +657,15 @@ mod tests {
         let data_dir = TempDir::new().expect("data dir");
         let workspace = TempDir::new().expect("workspace dir");
 
+        #[cfg(target_os = "windows")]
+        let artifact_name = "vision-plus.dll";
+        #[cfg(target_os = "macos")]
+        let artifact_name = "vision-plus.dylib";
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let artifact_name = "vision-plus.so";
+
         let artifact_bytes = b"native driver bytes";
-        fs::write(package_dir.path().join("vision-plus.dylib"), artifact_bytes)
-            .expect("write driver");
+        fs::write(package_dir.path().join(artifact_name), artifact_bytes).expect("write driver");
         fs::write(package_dir.path().join(RUNTIME_FILE), r#"{"tools":[]}"#)
             .expect("write runtime config");
 
@@ -675,7 +681,7 @@ mod tests {
         );
         write_package(
             package_dir.path(),
-            "vision-plus.dylib",
+            artifact_name,
             &payload_hash,
             &payload_signature,
         );
@@ -693,7 +699,7 @@ mod tests {
             .path()
             .join("plugins")
             .join(default_plugin_id("Vision Plus"))
-            .join("vision-plus.dylib")
+            .join(artifact_name)
             .exists());
         assert!(data_dir
             .path()
