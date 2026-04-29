@@ -12,21 +12,32 @@ use super::output::OutputFormat;
 const REGISTRY_BASE: &str = "https://registry.roveai.co";
 const REGISTRY_BASE_ENV: &str = "ROVE_REGISTRY_BASE";
 
+// Schema v2 — produced by the update-registry CI job.
+// Layout: entries.latest.version + entries.latest.platforms[target]
 #[derive(Debug, Deserialize)]
 struct RegistryManifest {
-    #[allow(dead_code)]
-    version: String,
     #[serde(default)]
     channel: Option<String>,
-    engines: std::collections::HashMap<String, EngineRelease>,
+    entries: EntriesV2,
 }
 
 #[derive(Debug, Deserialize)]
-struct EngineRelease {
+struct EntriesV2 {
+    latest: LatestEntry,
+}
+
+#[derive(Debug, Deserialize)]
+struct LatestEntry {
     version: String,
+    #[serde(default)]
+    platforms: std::collections::HashMap<String, PlatformRelease>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlatformRelease {
     url: String,
     fallback_url: Option<String>,
-    sha256: String,
+    blake3: String,
     size_bytes: Option<u64>,
 }
 
@@ -72,11 +83,7 @@ pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()>
         }
     }
 
-    let latest_version = manifest
-        .engines
-        .get("latest")
-        .map(|release| release.version.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Manifest missing 'latest' engine entry"))?;
+    let latest_version = manifest.entries.latest.version.as_str();
     let latest =
         semver::Version::parse(latest_version).context("Failed to parse latest version")?;
 
@@ -90,23 +97,25 @@ pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()>
     }
 
     let target = current_manifest_target();
-    let engine_release = manifest
-        .engines
+    let platform_release = manifest
+        .entries
+        .latest
+        .platforms
         .get(target)
         .ok_or_else(|| anyhow::anyhow!("No release found for target '{}'", target))?;
 
-    let download_url = engine_release
+    let download_url = platform_release
         .fallback_url
         .as_deref()
-        .unwrap_or(engine_release.url.as_str());
+        .unwrap_or(platform_release.url.as_str());
     let payload = download_payload(
         &client,
         download_url,
-        engine_release.size_bytes.unwrap_or(0),
+        platform_release.size_bytes.unwrap_or(0),
     )
     .await?;
 
-    verify_payload(engine_release, &payload)?;
+    verify_payload(platform_release, &payload)?;
     replace_binary(target, &payload)?;
 
     match format {
@@ -156,8 +165,10 @@ fn registry_base() -> String {
 
 pub fn verify_manifest_signature(manifest_bytes: &[u8], signature_hex: &str) -> Result<()> {
     let crypto = CryptoModule::new().context("Failed to load embedded team public key")?;
+    let canonical = CryptoModule::canonicalize_manifest(manifest_bytes)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     crypto
-        .verify_manifest(manifest_bytes, signature_hex)
+        .verify_manifest(&canonical, signature_hex)
         .map_err(|error| anyhow::anyhow!("{}", error))
 }
 
@@ -244,15 +255,15 @@ async fn download_payload(client: &reqwest::Client, url: &str, size_bytes: u64) 
     Ok(payload)
 }
 
-fn verify_payload(release: &EngineRelease, payload: &[u8]) -> Result<()> {
+fn verify_payload(release: &PlatformRelease, payload: &[u8]) -> Result<()> {
     eprintln!("Verifying payload integrity...");
 
-    let computed_hash = hex::encode(CryptoModule::compute_hash(payload));
-    if computed_hash != release.sha256 {
+    let computed = CryptoModule::compute_blake3(payload);
+    if computed != release.blake3 {
         anyhow::bail!(
             "Hash mismatch.\nExpected: {}\nComputed: {}",
-            release.sha256,
-            computed_hash
+            release.blake3,
+            computed
         );
     }
 

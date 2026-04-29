@@ -16,62 +16,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Detect what changed ─────────────────────────
+  # ── Resolve channel + detect script changes ─────
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
     outputs:
-      engine: ${{ steps.filter.outputs.engine }}
-      tools: ${{ steps.filter.outputs.tools }}
-      code: ${{ steps.filter.outputs.code }}
+      scripts: ${{ steps.filter.outputs.scripts }}
       channel: ${{ steps.channel.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
-      # Scheduled / manual runs skip the path filter and rebuild everything.
-      # This is what the nightly 22:00 UTC pre-build relies on.
-      - name: Force-rebuild on schedule/dispatch
-        id: force
-        run: |
-          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "force=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "force=false" >> "$GITHUB_OUTPUT"
-          fi
+
       - uses: dorny/paths-filter@v3
-        id: raw_filter
-        if: steps.force.outputs.force != 'true'
+        id: filter
         with:
           filters: |
-            code:
-              - '**/*.rs'
-              - '**/Cargo.toml'
-              - 'Cargo.lock'
-            engine:
-              - 'engine/**'
-              - 'sdk/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-            tools:
-              - 'tools/**'
-              - 'sdk/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-      - name: Resolve effective filter outputs
-        id: filter
-        run: |
-          if [[ "${{ steps.force.outputs.force }}" == "true" ]]; then
-            echo "code=true"   >> "$GITHUB_OUTPUT"
-            echo "engine=true" >> "$GITHUB_OUTPUT"
-            echo "tools=true"  >> "$GITHUB_OUTPUT"
-          else
-            echo "code=${{ steps.raw_filter.outputs.code }}"     >> "$GITHUB_OUTPUT"
-            echo "engine=${{ steps.raw_filter.outputs.engine }}" >> "$GITHUB_OUTPUT"
-            echo "tools=${{ steps.raw_filter.outputs.tools }}"   >> "$GITHUB_OUTPUT"
-          fi
+            scripts:
+              - 'scripts/install.sh'
+              - 'scripts/install.ps1'
+              - 'scripts/uninstall.sh'
+              - 'scripts/uninstall.ps1'
 
       # Tag push → stable, everything else → dev.
-      # Rove is pre-stable: main branch ships to dev channel only.
-      # A v* tag is the explicit opt-in to push a stable release.
       - name: Resolve release channel
         id: channel
         run: |
@@ -81,11 +46,9 @@ jobs:
             echo "channel=dev" >> "$GITHUB_OUTPUT"
           fi
 
-  # ── Format (only if code changed) ───────────────
+  # ── Format ──────────────────────────────────────
   fmt:
     name: Format
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,11 +57,10 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  # ── Lint & Test (only if code changed) ──────────
+  # ── Lint & Test ──────────────────────────────────
   check:
     name: Check (${{ matrix.platform }})
-    needs: [changes, fmt]
-    if: needs.changes.outputs.code == 'true'
+    needs: fmt
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -132,20 +94,10 @@ jobs:
         run: cargo test --workspace
         shell: bash
 
-  # ── Build engine (only if engine paths changed) ─
+  # ── Build engine ─────────────────────────────────
   build-engine:
     name: Build Engine (${{ needs.changes.outputs.channel }} · ${{ matrix.platform }})
     needs: [changes, check]
-    if: |
-      always() &&
-      (needs.check.result == 'success' || needs.check.result == 'skipped') &&
-      needs.changes.outputs.engine == 'true' &&
-      (
-        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        startsWith(github.ref, 'refs/tags/v') ||
-        github.event_name == 'schedule' ||
-        github.event_name == 'workflow_dispatch'
-      )
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -189,7 +141,6 @@ jobs:
       - name: Stage engine artifact
         run: |
           mkdir -p artifacts/engine
-          # build-release.sh staged binary under target/release-builds/
           cp target/release-builds/rove-*${{ matrix.engine_ext }} \
              artifacts/engine/rove-${{ matrix.target }}${{ matrix.engine_ext }} 2>/dev/null || \
           cp target/${{ matrix.target }}/release/rove${{ matrix.engine_ext }} \
@@ -202,20 +153,10 @@ jobs:
           path: artifacts/
           retention-days: 1
 
-  # ── Build core tools (only if tools paths changed) ──
+  # ── Build core tools ─────────────────────────────
   build-tools:
     name: Build Tools (${{ needs.changes.outputs.channel }} · ${{ matrix.platform }})
     needs: [changes, check]
-    if: |
-      always() &&
-      (needs.check.result == 'success' || needs.check.result == 'skipped') &&
-      needs.changes.outputs.tools == 'true' &&
-      (
-        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        startsWith(github.ref, 'refs/tags/v') ||
-        github.event_name == 'schedule' ||
-        github.event_name == 'workflow_dispatch'
-      )
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -272,9 +213,6 @@ jobs:
   deploy:
     name: Sign & Deploy (${{ needs.changes.outputs.channel }})
     needs: [changes, build-engine, build-tools]
-    if: |
-      always() &&
-      (needs.build-engine.result == 'success' || needs.build-tools.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -287,16 +225,16 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
+      - name: Install b3sum
+        run: |
+          sudo apt-get update && sudo apt-get install -y b3sum || \
+            cargo install b3sum
+
       - name: Hash all artifacts
         run: |
           find artifacts/ -type f | while read f; do
             b3sum "$f" 2>/dev/null || sha256sum "$f"
           done | tee artifacts/checksums.txt
-
-      - name: Install b3sum
-        run: |
-          sudo apt-get update && sudo apt-get install -y b3sum || \
-            cargo install b3sum
 
       - name: Prepare R2 layout (per-channel)
         env:
@@ -315,7 +253,7 @@ jobs:
             cp -r artifacts/core_tools/* ".r2_upload/${CHANNEL}/core-tools/${ENGINE_VERSION}/" 2>/dev/null || true
           fi
 
-              find .r2_upload -type f | sort
+          find .r2_upload -type f | sort
 
       - name: Deploy artifacts to registry R2 (rove-registry)
         uses: jakejarvis/s3-sync-action@master
@@ -329,9 +267,9 @@ jobs:
           AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
           SOURCE_DIR: ".r2_upload"
 
-      # Install scripts are channel-agnostic: they read ROVE_CHANNEL at runtime.
-      # Deployed to a separate get.roveai.co bucket (rove-get), not the registry bucket.
+      # Install scripts are channel-agnostic: only uploaded when the files change.
       - name: Stage install scripts
+        if: needs.changes.outputs.scripts == 'true'
         run: |
           mkdir -p .r2_get
           cp scripts/install.sh .r2_get/install.sh 2>/dev/null || true
@@ -342,6 +280,7 @@ jobs:
         shell: bash
 
       - name: Deploy install scripts to get R2 (rove-get)
+        if: needs.changes.outputs.scripts == 'true'
         uses: jakejarvis/s3-sync-action@master
         with:
           args: --acl public-read --follow-symlinks
@@ -386,9 +325,6 @@ jobs:
   update-registry:
     name: Update Registry (${{ needs.changes.outputs.channel }})
     needs: [changes, build-engine, build-tools]
-    if: |
-      always() &&
-      (needs.build-engine.result == 'success' || needs.build-tools.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -399,12 +335,13 @@ jobs:
           merge-multiple: true
 
       - name: Install b3sum
-        run: sudo apt-get update && sudo apt-get install -y b3sum || cargo install b3sum
+        run: sudo apt-get update && sudo apt-get install -y b3sum openssl || cargo install b3sum
 
       - name: Update per-channel manifests
         env:
           REGISTRY_PAT: ${{ secrets.REGISTRY_PAT }}
           CHANNEL: ${{ needs.changes.outputs.channel }}
+          OFFICIAL_KEY_HEX: ${{ secrets.ROVE_TEAM_OFFICIAL_PRIVATE_KEY }}
         run: |
           set -e
           git clone https://x-access-token:${REGISTRY_PAT}@github.com/rovehq/registry.git /tmp/registry
@@ -414,6 +351,47 @@ jobs:
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           R2_BASE="https://registry.roveai.co"
           GH_RAW="https://raw.githubusercontent.com/rovehq/registry/main"
+
+          # Build PKCS8 PEM for signing
+          python3 - <<'PYEOF'
+import base64, os, sys
+from pathlib import Path
+key_hex = os.environ["OFFICIAL_KEY_HEX"].strip()
+PREFIX = bytes.fromhex("302e020100300506032b657004220420")
+raw = bytes.fromhex(key_hex)
+if len(raw) == 48 and raw[:16] == PREFIX:
+    raw = raw[16:]
+elif len(raw) != 32:
+    sys.exit(f"key seed must be 32 bytes, got {len(raw)}")
+der = PREFIX + raw
+pem = "-----BEGIN PRIVATE KEY-----\n" + base64.encodebytes(der).decode() + "-----END PRIVATE KEY-----\n"
+Path("/tmp/rove_official.pem").write_text(pem)
+print("PEM written")
+PYEOF
+
+          sign_manifest() {
+            local MANIFEST="$1"
+            python3 - "$MANIFEST" <<'PYEOF'
+import json, subprocess, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+d = json.loads(p.read_text())
+d.pop("signature", None)
+d.pop("signed_at", None)
+canon = json.dumps(d, sort_keys=True, separators=(",", ":")).encode()
+Path("/tmp/rove_canon.bin").write_bytes(canon)
+subprocess.run(
+    ["openssl", "pkeyutl", "-sign", "-rawin",
+     "-inkey", "/tmp/rove_official.pem",
+     "-in", "/tmp/rove_canon.bin",
+     "-out", "/tmp/rove_sig.bin"],
+    check=True
+)
+sig = Path("/tmp/rove_sig.bin").read_bytes().hex()
+Path(str(p) + ".sig").write_text(sig)
+print(f"  signed {p.name} → {p.name}.sig")
+PYEOF
+          }
 
           # ══════════════════ ENGINE ══════════════════
           if [ -d "artifacts/engine" ]; then
@@ -467,8 +445,8 @@ jobs:
                  "$MANIFEST" > /tmp/m.json && mv /tmp/m.json "$MANIFEST"
             done
 
-            # Update published_at on every push for this channel
             jq --arg ts "$TIMESTAMP" '.published_at = $ts' "$MANIFEST" > /tmp/m.json && mv /tmp/m.json "$MANIFEST"
+            sign_manifest "$MANIFEST"
           fi
 
           # ══════════════════ CORE-TOOLS ══════════════════
@@ -521,6 +499,7 @@ jobs:
             done
 
             jq --arg ts "$TIMESTAMP" '.published_at = $ts' "$TMANIFEST" > /tmp/m.json && mv /tmp/m.json "$TMANIFEST"
+            sign_manifest "$TMANIFEST"
           fi
 
           cd /tmp/registry
@@ -533,3 +512,15 @@ jobs:
             git commit -m "release(${CHANNEL}): engine v${ENGINE_VERSION} (${COMMIT})"
             git push
           fi
+
+      - name: Upload manifests + sigs to R2
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl public-read --follow-symlinks --exclude "*" --include "*/engine/manifest*" --include "*/core-tools/manifest*"
+        env:
+          AWS_S3_BUCKET: ${{ secrets.REGISTRY_R2_BUCKET_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: "auto"
+          AWS_S3_ENDPOINT: ${{ secrets.R2_API_URL }}
+          SOURCE_DIR: "/tmp/registry"

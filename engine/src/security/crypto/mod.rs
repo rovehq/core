@@ -427,6 +427,11 @@ impl CryptoModule {
         hex::encode(hasher.finalize())
     }
 
+    /// Compute BLAKE3 hash of raw bytes (hex-encoded)
+    pub fn compute_blake3(data: &[u8]) -> String {
+        hex::encode(blake3::hash(data).as_bytes())
+    }
+
     /// Parse a hash string, accepting raw hex or prefixed formats
     ///
     /// Accepts:
