@@ -209,17 +209,17 @@ fn normalize_already_correct_no_change() {
     // Whatever platform we're on, passing already-normalized text
     // should produce identical output
     let text = "line1\nline2\nline3";
-    let normalized = normalize_line_endings(text);
+    let _normalized = normalize_line_endings(text);
     #[cfg(unix)]
-    assert_eq!(normalized, text);
+    assert_eq!(_normalized, text);
 }
 
 #[test]
 fn normalize_multiple_lines_crlf() {
     let text = "first\r\nsecond\r\nthird\r\n";
-    let normalized = normalize_line_endings(text);
+    let _normalized = normalize_line_endings(text);
     #[cfg(unix)]
-    assert_eq!(normalized, "first\nsecond\nthird\n");
+    assert_eq!(_normalized, "first\nsecond\nthird\n");
 }
 
 // ── Round-trip tests ──────────────────────────────────────────────────────────
