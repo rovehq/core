@@ -172,8 +172,8 @@ jobs:
 
       - name: Install tools
         run: |
-          sudo apt-get update && sudo apt-get install -y b3sum awscli || \
-            cargo install b3sum
+          sudo apt-get update && sudo apt-get install -y b3sum || cargo install b3sum
+          pip3 install --quiet awscli
 
       - name: Hash all artifacts
         run: |
@@ -281,7 +281,9 @@ jobs:
           merge-multiple: true
 
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y b3sum openssl awscli || cargo install b3sum
+        run: |
+          sudo apt-get update && sudo apt-get install -y b3sum openssl || cargo install b3sum
+          pip3 install --quiet awscli
 
       - name: Update per-channel manifests
         env:
