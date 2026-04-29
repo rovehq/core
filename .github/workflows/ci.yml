@@ -352,46 +352,9 @@ jobs:
           R2_BASE="https://registry.roveai.co"
           GH_RAW="https://raw.githubusercontent.com/rovehq/registry/main"
 
-          # Build PKCS8 PEM for signing
-          python3 - <<'PYEOF'
-import base64, os, sys
-from pathlib import Path
-key_hex = os.environ["OFFICIAL_KEY_HEX"].strip()
-PREFIX = bytes.fromhex("302e020100300506032b657004220420")
-raw = bytes.fromhex(key_hex)
-if len(raw) == 48 and raw[:16] == PREFIX:
-    raw = raw[16:]
-elif len(raw) != 32:
-    sys.exit(f"key seed must be 32 bytes, got {len(raw)}")
-der = PREFIX + raw
-pem = "-----BEGIN PRIVATE KEY-----\n" + base64.encodebytes(der).decode() + "-----END PRIVATE KEY-----\n"
-Path("/tmp/rove_official.pem").write_text(pem)
-print("PEM written")
-PYEOF
+          python3 scripts/release/sign-manifest.py --make-pem-only
 
-          sign_manifest() {
-            local MANIFEST="$1"
-            python3 - "$MANIFEST" <<'PYEOF'
-import json, subprocess, sys
-from pathlib import Path
-p = Path(sys.argv[1])
-d = json.loads(p.read_text())
-d.pop("signature", None)
-d.pop("signed_at", None)
-canon = json.dumps(d, sort_keys=True, separators=(",", ":")).encode()
-Path("/tmp/rove_canon.bin").write_bytes(canon)
-subprocess.run(
-    ["openssl", "pkeyutl", "-sign", "-rawin",
-     "-inkey", "/tmp/rove_official.pem",
-     "-in", "/tmp/rove_canon.bin",
-     "-out", "/tmp/rove_sig.bin"],
-    check=True
-)
-sig = Path("/tmp/rove_sig.bin").read_bytes().hex()
-Path(str(p) + ".sig").write_text(sig)
-print(f"  signed {p.name} → {p.name}.sig")
-PYEOF
-          }
+          sign_manifest() { python3 scripts/release/sign-manifest.py "$1"; }
 
           # ══════════════════ ENGINE ══════════════════
           if [ -d "artifacts/engine" ]; then
