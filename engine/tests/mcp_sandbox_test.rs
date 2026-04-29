@@ -34,9 +34,8 @@ fn test_linux_sandbox_command() {
     let profile = SandboxProfile::default();
     let result = McpSandbox::wrap_command("echo", &["hello".to_string()], &profile);
 
-    match result {
-        Ok(cmd) => assert_eq!(cmd.get_program().to_string_lossy(), "bwrap"),
-        Err(_) => {}
+    if let Ok(cmd) = result {
+        assert_eq!(cmd.get_program().to_string_lossy(), "bwrap");
     }
 }
 
