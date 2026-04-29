@@ -97,7 +97,7 @@ hyperlocal = "0.9"  # UDS transport for brain comms
 security-framework = "2"  # OS keychain access
 
 [target.'cfg(target_os = "linux")'.dependencies]
-secret-service = { version = "3", features = ["crypto-rust"] }  # Linux keychain
+secret-service = { version = "3", features = ["rt-tokio-crypto-rust"] }  # Linux keychain
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52", features = [
