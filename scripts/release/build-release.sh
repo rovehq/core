@@ -77,6 +77,7 @@ else
 fi
 echo ""
 
+REPO_ROOT="$(pwd)"
 rm -rf "$BUILD_DIR" "$DIST_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
@@ -93,25 +94,21 @@ BINARY_NAME="rove-${VERSION}-${PLAT}${EXT}"
 cp "$BINARY_SRC" "$BUILD_DIR/$BINARY_NAME"
 
 # Archive
-cd "$BUILD_DIR"
-tar -czf "../${DIST_DIR}/${BINARY_NAME}.tar.gz" "$BINARY_NAME"
-cd - > /dev/null
+tar -czf "${REPO_ROOT}/${DIST_DIR}/${BINARY_NAME}.tar.gz" -C "$BUILD_DIR" "$BINARY_NAME"
 
 # BLAKE3 preferred (matches engine's CryptoModule::compute_hash), sha256 fallback
-cd "$DIST_DIR"
 if command -v b3sum >/dev/null 2>&1; then
-    b3sum "${BINARY_NAME}.tar.gz" > "${BINARY_NAME}.tar.gz.blake3"
-    HASH_LINE=$(b3sum "${BINARY_NAME}.tar.gz")
+    b3sum "${DIST_DIR}/${BINARY_NAME}.tar.gz" > "${DIST_DIR}/${BINARY_NAME}.tar.gz.blake3"
+    HASH_LINE=$(b3sum "${DIST_DIR}/${BINARY_NAME}.tar.gz")
     HASH_ALGO=BLAKE3
 else
-    shasum -a 256 "${BINARY_NAME}.tar.gz" > "${BINARY_NAME}.tar.gz.sha256"
-    HASH_LINE=$(shasum -a 256 "${BINARY_NAME}.tar.gz")
+    shasum -a 256 "${DIST_DIR}/${BINARY_NAME}.tar.gz" > "${DIST_DIR}/${BINARY_NAME}.tar.gz.sha256"
+    HASH_LINE=$(shasum -a 256 "${DIST_DIR}/${BINARY_NAME}.tar.gz")
     HASH_ALGO=SHA256
 fi
-cd - > /dev/null
 
 echo ""
 echo "✅ Build complete"
 echo "   Binary:   $BUILD_DIR/$BINARY_NAME ($(du -h "$BUILD_DIR/$BINARY_NAME" | cut -f1))"
-echo "   Archive:  $DIST_DIR/${BINARY_NAME}.tar.gz ($(du -h "$DIST_DIR/${BINARY_NAME}.tar.gz" | cut -f1))"
+echo "   Archive:  ${DIST_DIR}/${BINARY_NAME}.tar.gz ($(du -h "${DIST_DIR}/${BINARY_NAME}.tar.gz" | cut -f1))"
 echo "   ${HASH_ALGO}:   $HASH_LINE"
