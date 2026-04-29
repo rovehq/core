@@ -14,7 +14,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::cli::update::{channel_manifest_signature_url, channel_manifest_url, verify_manifest_signature};
+use crate::cli::update::{
+    channel_manifest_signature_url, channel_manifest_url, verify_manifest_signature,
+};
 use crate::config::channel::Channel;
 use crate::config::metadata::{user_agent, VERSION};
 
@@ -49,9 +51,7 @@ struct CacheEntry {
 
 fn cache() -> &'static Mutex<Option<CacheEntry>> {
     static CACHE: OnceLock<Arc<Mutex<Option<CacheEntry>>>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| Arc::new(Mutex::new(None)))
-        .as_ref()
+    CACHE.get_or_init(|| Arc::new(Mutex::new(None))).as_ref()
 }
 
 pub async fn check_update_available() -> Result<UpdateStatus> {
@@ -86,7 +86,9 @@ async fn fetch_and_verify() -> Result<UpdateStatus> {
     let manifest_url = channel_manifest_url(channel);
     let signature_url = channel_manifest_signature_url(channel);
 
-    let client = reqwest::Client::builder().user_agent(user_agent()).build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(user_agent())
+        .build()?;
 
     let manifest_text = client
         .get(&manifest_url)
@@ -129,8 +131,8 @@ async fn fetch_and_verify() -> Result<UpdateStatus> {
         .ok_or_else(|| anyhow::anyhow!("Manifest missing 'latest' engine entry"))?;
 
     let current = semver::Version::parse(VERSION).context("invalid engine VERSION constant")?;
-    let latest = semver::Version::parse(latest_version)
-        .context("invalid 'latest' version in manifest")?;
+    let latest =
+        semver::Version::parse(latest_version).context("invalid 'latest' version in manifest")?;
 
     let checked_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)

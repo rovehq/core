@@ -15,7 +15,8 @@ fn parse_raw_json_simple() {
 
 #[test]
 fn parse_raw_json_captures_arguments() {
-    let content = r#"{"function": "write_file", "arguments": {"path": "out.txt", "content": "hello"}}"#;
+    let content =
+        r#"{"function": "write_file", "arguments": {"path": "out.txt", "content": "hello"}}"#;
     let tc = parse_tool_calls(content).unwrap();
     assert_eq!(tc.name, "write_file");
     assert!(tc.arguments.contains("path"));
@@ -46,7 +47,8 @@ fn parse_raw_json_arguments_empty_object() {
 
 #[test]
 fn parse_raw_json_arguments_nested() {
-    let content = r#"{"function": "configure", "arguments": {"settings": {"debug": true, "level": 3}}}"#;
+    let content =
+        r#"{"function": "configure", "arguments": {"settings": {"debug": true, "level": 3}}}"#;
     let tc = parse_tool_calls(content).unwrap();
     assert_eq!(tc.name, "configure");
     assert!(tc.arguments.contains("debug"));
@@ -122,7 +124,8 @@ fn parse_raw_json_empty_function_name() {
 
 #[test]
 fn parse_fenced_json_basic() {
-    let content = "```json\n{\"function\": \"read_file\", \"arguments\": {\"path\": \"test.txt\"}}\n```";
+    let content =
+        "```json\n{\"function\": \"read_file\", \"arguments\": {\"path\": \"test.txt\"}}\n```";
     let tc = parse_tool_calls(content).unwrap();
     assert_eq!(tc.name, "read_file");
 }
@@ -151,7 +154,8 @@ fn parse_fenced_json_multiline_arguments() {
 
 #[test]
 fn parse_fenced_json_indented_content() {
-    let content = "```json\n  {\"function\": \"read_file\", \"arguments\": {\"path\": \"a.rs\"}}\n```";
+    let content =
+        "```json\n  {\"function\": \"read_file\", \"arguments\": {\"path\": \"a.rs\"}}\n```";
     let result = parse_tool_calls(content);
     // May or may not parse depending on trim - just don't panic
     let _ = result;
@@ -190,14 +194,16 @@ fn parse_tool_call_marker_with_spaces() {
 
 #[test]
 fn parse_tool_call_marker_with_prose_before() {
-    let content = r#"I will read the file now. <tool_call>read_file({"path": "a.txt"})</tool_call>"#;
+    let content =
+        r#"I will read the file now. <tool_call>read_file({"path": "a.txt"})</tool_call>"#;
     let tc = parse_tool_calls(content).unwrap();
     assert_eq!(tc.name, "read_file");
 }
 
 #[test]
 fn parse_tool_call_marker_complex_args() {
-    let content = r#"<tool_call>write_file({"path": "/tmp/out.txt", "content": "hello\nworld"})</tool_call>"#;
+    let content =
+        r#"<tool_call>write_file({"path": "/tmp/out.txt", "content": "hello\nworld"})</tool_call>"#;
     let tc = parse_tool_calls(content).unwrap();
     assert_eq!(tc.name, "write_file");
 }
@@ -360,14 +366,18 @@ fn parse_function_with_numbers() {
 #[test]
 fn parse_long_path_argument() {
     let long_path = "/".to_string() + &"a/".repeat(50) + "file.txt";
-    let content = format!(r#"{{"function": "read_file", "arguments": {{"path": "{}"}}}}"#, long_path);
+    let content = format!(
+        r#"{{"function": "read_file", "arguments": {{"path": "{}"}}}}"#,
+        long_path
+    );
     let tc = parse_tool_calls(&content).unwrap();
     assert_eq!(tc.name, "read_file");
 }
 
 #[test]
 fn parse_fenced_json_with_trailing_newlines() {
-    let content = "```json\n{\"function\": \"read_file\", \"arguments\": {\"path\": \"x.txt\"}}\n\n\n```";
+    let content =
+        "```json\n{\"function\": \"read_file\", \"arguments\": {\"path\": \"x.txt\"}}\n\n\n```";
     let result = parse_tool_calls(content);
     // May or may not match, just check no panic
     let _ = result;

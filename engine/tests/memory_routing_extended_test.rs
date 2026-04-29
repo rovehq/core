@@ -1,7 +1,7 @@
 //! Extended tests for memory::conductor::routing — additional route_for_step combinations
 
-use rove_engine::conductor::types::{PlanStep, RoutePolicy, StepRole, StepType};
 use rove_engine::conductor::routing::ApexRoutingPolicy;
+use rove_engine::conductor::types::{PlanStep, RoutePolicy, StepRole, StepType};
 use sdk::{Complexity, Route, TaskDomain};
 
 fn make_step_with_role(role: StepRole) -> PlanStep {
@@ -36,7 +36,12 @@ fn local_only_policy_returns_local_regardless_of_brain() {
             Route::Cloud,
             &RoutePolicy::LocalOnly,
         );
-        assert_eq!(route, Route::Local, "LocalOnly failed for brain_available={}", brain_available);
+        assert_eq!(
+            route,
+            Route::Local,
+            "LocalOnly failed for brain_available={}",
+            brain_available
+        );
     }
 }
 
@@ -82,7 +87,12 @@ fn cloud_only_policy_returns_cloud_regardless_of_brain() {
             Route::Ollama,
             &RoutePolicy::CloudOnly,
         );
-        assert_eq!(route, Route::Cloud, "CloudOnly failed for brain_available={}", brain_available);
+        assert_eq!(
+            route,
+            Route::Cloud,
+            "CloudOnly failed for brain_available={}",
+            brain_available
+        );
     }
 }
 

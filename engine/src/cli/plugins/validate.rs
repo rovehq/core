@@ -9,10 +9,8 @@ use crate::runtime::{Manifest, McpServerConfig, PluginType, ToolCatalog, TrustTi
 use super::package::{PluginPackage, RUNTIME_FILE};
 
 pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> Result<()> {
-    if matches!(
-        manifest.plugin_type,
-        PluginType::Brain | PluginType::Plugin
-    ) && matches!(manifest.trust_tier, TrustTier::Community)
+    if matches!(manifest.plugin_type, PluginType::Brain | PluginType::Plugin)
+        && matches!(manifest.trust_tier, TrustTier::Community)
     {
         bail!(
             "Native plugins require trust tier Official or Reviewed. '{}' is Community.",
@@ -203,13 +201,12 @@ pub fn review_manifest_permissions(manifest: &Manifest) -> PermissionReview {
     {
         warnings.push("WASM execution timeout is higher than recommended (over 300s)".to_string());
     }
-    if matches!(
-        manifest.plugin_type,
-        PluginType::Brain | PluginType::Plugin
-    ) && !matches!(
-        manifest.trust_tier,
-        TrustTier::Official | TrustTier::Reviewed
-    ) {
+    if matches!(manifest.plugin_type, PluginType::Brain | PluginType::Plugin)
+        && !matches!(
+            manifest.trust_tier,
+            TrustTier::Official | TrustTier::Reviewed
+        )
+    {
         warnings.push(format!(
             "{} plugins should use Official or Reviewed trust tiers",
             manifest.plugin_type.as_str()

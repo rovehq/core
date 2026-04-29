@@ -1,8 +1,6 @@
 //! Extended tests for llm::types — Message, MessageRole, ToolCall, FinalAnswer, LLMResponse
 
-use rove_engine::llm::types::{
-    FinalAnswer, LLMResponse, Message, MessageRole, ToolCall,
-};
+use rove_engine::llm::types::{FinalAnswer, LLMResponse, Message, MessageRole, ToolCall};
 
 // ── MessageRole display ───────────────────────────────────────────────────────
 
@@ -371,11 +369,7 @@ fn messages_in_vec_accessible_by_index() {
 
 #[test]
 fn message_vec_len() {
-    let msgs = [
-        Message::user("a"),
-        Message::user("b"),
-        Message::user("c"),
-    ];
+    let msgs = [Message::user("a"), Message::user("b"), Message::user("c")];
     assert_eq!(msgs.len(), 3);
 }
 
@@ -387,6 +381,9 @@ fn message_filter_by_role() {
         Message::assistant("hello"),
         Message::user("bye"),
     ];
-    let user_msgs: Vec<_> = msgs.iter().filter(|m| m.role == MessageRole::User).collect();
+    let user_msgs: Vec<_> = msgs
+        .iter()
+        .filter(|m| m.role == MessageRole::User)
+        .collect();
     assert_eq!(user_msgs.len(), 2);
 }

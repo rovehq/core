@@ -74,9 +74,7 @@ pub async fn handle_test(
         PluginType::Plugin | PluginType::Channel => {
             call_wasm_tool(&artifact, &selected_tool.name, &payload)?
         }
-        PluginType::Brain => {
-            call_native_tool(&artifact, &selected_tool.name, &payload)?
-        }
+        PluginType::Brain => call_native_tool(&artifact, &selected_tool.name, &payload)?,
         PluginType::Mcp => unreachable!("handled above"),
     };
 

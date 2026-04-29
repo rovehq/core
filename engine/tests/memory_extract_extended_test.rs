@@ -260,7 +260,9 @@ fn heuristic_extractor_name() {
 #[tokio::test]
 async fn heuristic_extractor_extract_returns_output() {
     let e = HeuristicExtractor::new();
-    let out = e.extract("remember to use Arc for shared ownership", "done").await;
+    let out = e
+        .extract("remember to use Arc for shared ownership", "done")
+        .await;
     assert!(!out.summary.is_empty() || out.summary.is_empty());
 }
 
@@ -274,7 +276,9 @@ async fn heuristic_extractor_extract_warning_kind() {
 #[tokio::test]
 async fn heuristic_extractor_extract_fact_kind() {
     let e = HeuristicExtractor::new();
-    let out = e.extract("remember: always commit before deploying", "").await;
+    let out = e
+        .extract("remember: always commit before deploying", "")
+        .await;
     assert_eq!(out.kind, MemoryKind::Fact);
 }
 
@@ -288,7 +292,9 @@ async fn heuristic_extractor_extract_importance_range() {
 #[tokio::test]
 async fn heuristic_extractor_extract_preserves_summary() {
     let e = HeuristicExtractor::new();
-    let out = e.extract("warning: do not delete the production db", "").await;
+    let out = e
+        .extract("warning: do not delete the production db", "")
+        .await;
     // summary should reflect the input content somehow
     let _ = out.summary;
 }

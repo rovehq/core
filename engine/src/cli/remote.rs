@@ -145,9 +145,7 @@ pub async fn handle(action: RemoteAction, config: &Config) -> Result<()> {
             sync_drivers(config, node.as_deref(), dry_run).await
         }
         RemoteAction::PresenceList => presence_list(&manager),
-        RemoteAction::Terminal { node, shell } => {
-            terminal(&manager, &node, shell.as_deref()).await
-        }
+        RemoteAction::Terminal { node, shell } => terminal(&manager, &node, shell.as_deref()).await,
     }
 }
 

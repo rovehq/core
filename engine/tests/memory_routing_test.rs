@@ -1,8 +1,8 @@
 //! Tests for memory::conductor::routing — ApexRoutingPolicy, route_for_step()
 
-use sdk::{Complexity, Route, TaskDomain};
 use rove_engine::memory::conductor::routing::ApexRoutingPolicy;
 use rove_engine::memory::conductor::types::{PlanStep, RoutePolicy, StepRole, StepType};
+use sdk::{Complexity, Route, TaskDomain};
 
 fn make_step(role: StepRole) -> PlanStep {
     PlanStep {
@@ -379,7 +379,12 @@ fn cloud_only_policy_ignores_complexity() {
 #[test]
 fn local_only_policy_ignores_domain() {
     let policy = ApexRoutingPolicy::new(false);
-    for domain in [TaskDomain::Code, TaskDomain::Browser, TaskDomain::Data, TaskDomain::General] {
+    for domain in [
+        TaskDomain::Code,
+        TaskDomain::Browser,
+        TaskDomain::Data,
+        TaskDomain::General,
+    ] {
         let route = policy.route_for_step(
             &make_step(StepRole::Executor),
             domain,

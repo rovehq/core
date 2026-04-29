@@ -48,7 +48,9 @@ async fn run_loop() {
         info!("dev-channel auto-update: fetching and applying latest build");
         match handle_update(false, OutputFormat::Text).await {
             Ok(()) => info!("dev-channel auto-update succeeded"),
-            Err(error) => error!(%error, "dev-channel auto-update failed; will retry next UTC 00:00"),
+            Err(error) => {
+                error!(%error, "dev-channel auto-update failed; will retry next UTC 00:00")
+            }
         }
 
         // Belt-and-suspenders: sleep at least one second so the loop cannot
@@ -67,9 +69,7 @@ pub(crate) fn duration_until_next_utc_midnight(now: chrono::DateTime<Utc>) -> Du
 
     let delta = next - now;
     let secs = delta.num_seconds().max(1) as u64;
-    let nanos = delta
-        .subsec_nanos()
-        .clamp(0, 999_999_999) as u32;
+    let nanos = delta.subsec_nanos().clamp(0, 999_999_999) as u32;
     Duration::new(secs, nanos)
 }
 

@@ -54,7 +54,10 @@ fn user_property_my_name_is() {
 #[test]
 fn user_property_fact_stored() {
     let out = extract_heuristic("my preferred linter is clippy");
-    assert!(out.facts.iter().any(|(k, v)| k == "preferred linter" && v == "clippy"));
+    assert!(out
+        .facts
+        .iter()
+        .any(|(k, v)| k == "preferred linter" && v == "clippy"));
 }
 
 #[test]
@@ -200,7 +203,8 @@ fn error_rust_error_code() {
 
 #[test]
 fn error_panicked_at() {
-    let out = extract_heuristic("panicked at 'index out of bounds: the len is 0 but the index is 0'");
+    let out =
+        extract_heuristic("panicked at 'index out of bounds: the len is 0 but the index is 0'");
     assert_eq!(out.kind, MemoryKind::Error);
 }
 
@@ -309,16 +313,18 @@ fn entities_error_code_extracted() {
 
 #[test]
 fn entities_max_10() {
-    let out = extract_heuristic(
-        "fn a fn b fn c fn d fn e fn f fn g fn h fn i fn j fn k fn l"
-    );
+    let out = extract_heuristic("fn a fn b fn c fn d fn e fn f fn g fn h fn i fn j fn k fn l");
     assert!(out.entities.len() <= 10);
 }
 
 #[test]
 fn entities_dedup() {
     let out = extract_heuristic("fn read_file is called by fn read_file in /src/read_file.rs");
-    let count = out.entities.iter().filter(|e| e.contains("read_file")).count();
+    let count = out
+        .entities
+        .iter()
+        .filter(|e| e.contains("read_file"))
+        .count();
     assert!(count <= 2, "Entities should be deduped: count = {}", count);
 }
 
@@ -370,7 +376,7 @@ fn topics_debugging_keywords() {
 #[test]
 fn topics_max_5() {
     let out = extract_heuristic(
-        "cargo test git commit SELECT INSERT docker pytest npm yarn webpack deploy release build"
+        "cargo test git commit SELECT INSERT docker pytest npm yarn webpack deploy release build",
     );
     assert!(out.topics.len() <= 5);
 }
@@ -475,14 +481,18 @@ async fn heuristic_extractor_name_is_heuristic() {
 #[tokio::test]
 async fn heuristic_extractor_extract_fact() {
     let extractor = HeuristicExtractor::new();
-    let out = extractor.extract("remember that the config is in ~/.rove", "").await;
+    let out = extractor
+        .extract("remember that the config is in ~/.rove", "")
+        .await;
     assert_eq!(out.kind, MemoryKind::Fact);
 }
 
 #[tokio::test]
 async fn heuristic_extractor_extract_warning() {
     let extractor = HeuristicExtractor::new();
-    let out = extractor.extract("never use unwrap() in lib code", "").await;
+    let out = extractor
+        .extract("never use unwrap() in lib code", "")
+        .await;
     assert_eq!(out.kind, MemoryKind::Warning);
 }
 

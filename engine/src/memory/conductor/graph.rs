@@ -170,8 +170,9 @@ impl ApexGraph {
             }
 
             let ready = step.dependencies.iter().all(|dependency| {
-                self.node(dependency)
-                    .is_some_and(|dependency_node| dependency_node.state == ApexNodeState::Succeeded)
+                self.node(dependency).is_some_and(|dependency_node| {
+                    dependency_node.state == ApexNodeState::Succeeded
+                })
             });
             if ready {
                 if let Some(node) = self.node_mut(&step.id) {

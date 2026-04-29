@@ -80,7 +80,9 @@ fn path_with_env_component_denied() {
 #[test]
 fn path_with_aws_component_denied() {
     let (_t, g) = make_guard();
-    assert!(g.check_denied(Path::new("/home/user/.aws/credentials")).is_err());
+    assert!(g
+        .check_denied(Path::new("/home/user/.aws/credentials"))
+        .is_err());
 }
 
 // ── check_denied: safe paths not denied ──────────────────────────────────────

@@ -47,28 +47,44 @@ fn all_presets_have_nonempty_id() {
 #[test]
 fn all_presets_have_nonempty_name() {
     for preset in list_worker_presets() {
-        assert!(!preset.name.is_empty(), "Preset name is empty for {}", preset.id);
+        assert!(
+            !preset.name.is_empty(),
+            "Preset name is empty for {}",
+            preset.id
+        );
     }
 }
 
 #[test]
 fn all_presets_have_nonempty_description() {
     for preset in list_worker_presets() {
-        assert!(!preset.description.is_empty(), "Description empty for {}", preset.id);
+        assert!(
+            !preset.description.is_empty(),
+            "Description empty for {}",
+            preset.id
+        );
     }
 }
 
 #[test]
 fn all_presets_have_nonempty_instructions() {
     for preset in list_worker_presets() {
-        assert!(!preset.instructions.is_empty(), "Instructions empty for {}", preset.id);
+        assert!(
+            !preset.instructions.is_empty(),
+            "Instructions empty for {}",
+            preset.id
+        );
     }
 }
 
 #[test]
 fn all_presets_have_allowed_tools() {
     for preset in list_worker_presets() {
-        assert!(!preset.allowed_tools.is_empty(), "No allowed tools for {}", preset.id);
+        assert!(
+            !preset.allowed_tools.is_empty(),
+            "No allowed tools for {}",
+            preset.id
+        );
     }
 }
 
@@ -89,7 +105,11 @@ fn all_presets_have_positive_max_steps() {
 #[test]
 fn all_presets_have_positive_memory_budget() {
     for preset in list_worker_presets() {
-        assert!(preset.memory_budget > 0, "memory_budget=0 for {}", preset.id);
+        assert!(
+            preset.memory_budget > 0,
+            "memory_budget=0 for {}",
+            preset.id
+        );
     }
 }
 

@@ -157,7 +157,10 @@ fn validate_rm_not_in_allowlist() {
     let executor = CommandExecutor::new();
     let result = executor.validate("rm", &["-rf".to_string()]);
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), CommandError::CommandNotAllowed(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        CommandError::CommandNotAllowed(_)
+    ));
 }
 
 #[test]
@@ -165,7 +168,10 @@ fn validate_unknown_command_rejected() {
     let executor = CommandExecutor::new();
     let result = executor.validate("unknown_xyz", &[]);
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), CommandError::CommandNotAllowed(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        CommandError::CommandNotAllowed(_)
+    ));
 }
 
 #[test]
@@ -438,10 +444,7 @@ fn custom_allowlist_allows_only_listed() {
 
 #[test]
 fn multiple_custom_commands_allowed() {
-    let executor = CommandExecutor::with_allowlist(vec![
-        "git".to_string(),
-        "cargo".to_string(),
-    ]);
+    let executor = CommandExecutor::with_allowlist(vec!["git".to_string(), "cargo".to_string()]);
     assert!(executor.validate("git", &["status".to_string()]).is_ok());
     assert!(executor.validate("cargo", &["check".to_string()]).is_ok());
     assert!(executor.validate("rg", &["fn".to_string()]).is_err());

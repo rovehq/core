@@ -35,10 +35,7 @@ fn default_targets_whitespace_same_as_none() {
 #[test]
 fn default_targets_new_value_appended() {
     let targets = default_channel_targets(Some("chat:123"));
-    assert_eq!(
-        targets,
-        vec!["default".to_string(), "chat:123".to_string()]
-    );
+    assert_eq!(targets, vec!["default".to_string(), "chat:123".to_string()]);
 }
 
 #[test]
@@ -444,7 +441,9 @@ fn file_watch_dedup_identical_entries() {
         recursive: true,
     };
     let mut regs = vec![reg.clone(), reg.clone()];
-    regs.dedup_by(|l, r| l.workflow_id == r.workflow_id && l.path == r.path && l.recursive == r.recursive);
+    regs.dedup_by(|l, r| {
+        l.workflow_id == r.workflow_id && l.path == r.path && l.recursive == r.recursive
+    });
     assert_eq!(regs.len(), 1);
 }
 
@@ -453,21 +452,36 @@ fn file_watch_dedup_identical_entries() {
 #[test]
 fn normalize_event_case_variants_create() {
     for variant in ["create", "CREATE", "Create", "cReAtE"] {
-        assert_eq!(normalize_watch_event(variant), "create", "Failed for: {}", variant);
+        assert_eq!(
+            normalize_watch_event(variant),
+            "create",
+            "Failed for: {}",
+            variant
+        );
     }
 }
 
 #[test]
 fn normalize_event_case_variants_modify() {
     for variant in ["modify", "MODIFY", "Modify"] {
-        assert_eq!(normalize_watch_event(variant), "modify", "Failed for: {}", variant);
+        assert_eq!(
+            normalize_watch_event(variant),
+            "modify",
+            "Failed for: {}",
+            variant
+        );
     }
 }
 
 #[test]
 fn normalize_event_case_variants_remove() {
     for variant in ["remove", "REMOVE", "Remove"] {
-        assert_eq!(normalize_watch_event(variant), "remove", "Failed for: {}", variant);
+        assert_eq!(
+            normalize_watch_event(variant),
+            "remove",
+            "Failed for: {}",
+            variant
+        );
     }
 }
 

@@ -43,7 +43,14 @@ fn escalation_tier2_stays_at_2_repeatedly() {
 #[test]
 fn all_tier0_ops_local() {
     let assessor = RiskAssessor::new();
-    for op_name in ["read_file", "list_dir", "git_status", "git_log", "execute_task", "cargo_verify"] {
+    for op_name in [
+        "read_file",
+        "list_dir",
+        "git_status",
+        "git_log",
+        "execute_task",
+        "cargo_verify",
+    ] {
         let op = Operation::new(op_name, vec![], OperationSource::Local);
         assert_eq!(
             assessor.assess(&op).unwrap(),
@@ -57,7 +64,14 @@ fn all_tier0_ops_local() {
 #[test]
 fn all_tier0_ops_remote_give_tier2() {
     let assessor = RiskAssessor::new();
-    for op_name in ["read_file", "list_dir", "git_status", "git_log", "execute_task", "cargo_verify"] {
+    for op_name in [
+        "read_file",
+        "list_dir",
+        "git_status",
+        "git_log",
+        "execute_task",
+        "cargo_verify",
+    ] {
         let op = Operation::new(op_name, vec![], OperationSource::Remote);
         assert_eq!(
             assessor.assess(&op).unwrap(),
@@ -73,7 +87,13 @@ fn all_tier0_ops_remote_give_tier2() {
 #[test]
 fn all_tier1_ops_local() {
     let assessor = RiskAssessor::new();
-    for op_name in ["write_file", "git_add", "git_commit", "create_dir", "cargo_build"] {
+    for op_name in [
+        "write_file",
+        "git_add",
+        "git_commit",
+        "create_dir",
+        "cargo_build",
+    ] {
         let op = Operation::new(op_name, vec![], OperationSource::Local);
         assert_eq!(
             assessor.assess(&op).unwrap(),
@@ -87,7 +107,13 @@ fn all_tier1_ops_local() {
 #[test]
 fn all_tier1_ops_remote_give_tier2() {
     let assessor = RiskAssessor::new();
-    for op_name in ["write_file", "git_add", "git_commit", "create_dir", "cargo_build"] {
+    for op_name in [
+        "write_file",
+        "git_add",
+        "git_commit",
+        "create_dir",
+        "cargo_build",
+    ] {
         let op = Operation::new(op_name, vec![], OperationSource::Remote);
         assert_eq!(
             assessor.assess(&op).unwrap(),
@@ -160,7 +186,12 @@ fn classify_git_all_variants() {
         ("git rev-parse --abbrev-ref HEAD", "git_status"),
     ];
     for (cmd, expected) in cases {
-        assert_eq!(classify_terminal_command(cmd), expected, "Failed for: {}", cmd);
+        assert_eq!(
+            classify_terminal_command(cmd),
+            expected,
+            "Failed for: {}",
+            cmd
+        );
     }
 }
 
@@ -176,7 +207,12 @@ fn classify_cargo_all_variants() {
         ("cargo run", "execute_command"),
     ];
     for (cmd, expected) in cases {
-        assert_eq!(classify_terminal_command(cmd), expected, "Failed for: {}", cmd);
+        assert_eq!(
+            classify_terminal_command(cmd),
+            expected,
+            "Failed for: {}",
+            cmd
+        );
     }
 }
 
@@ -188,13 +224,24 @@ fn classify_safe_search_tools() {
         ("bat Cargo.toml", "read_file"),
     ];
     for (cmd, expected) in cases {
-        assert_eq!(classify_terminal_command(cmd), expected, "Failed for: {}", cmd);
+        assert_eq!(
+            classify_terminal_command(cmd),
+            expected,
+            "Failed for: {}",
+            cmd
+        );
     }
 }
 
 #[test]
 fn classify_unknown_programs_are_execute_command() {
-    for cmd in ["python3 script.py", "node server.js", "make build", "curl url", "ls -la"] {
+    for cmd in [
+        "python3 script.py",
+        "node server.js",
+        "make build",
+        "curl url",
+        "ls -la",
+    ] {
         assert_eq!(
             classify_terminal_command(cmd),
             "execute_command",
@@ -215,7 +262,11 @@ fn classify_empty_command_is_execute_command() {
 fn operation_with_many_args() {
     let op = Operation::new(
         "git_log",
-        vec!["--oneline".to_string(), "--graph".to_string(), "--all".to_string()],
+        vec![
+            "--oneline".to_string(),
+            "--graph".to_string(),
+            "--all".to_string(),
+        ],
         OperationSource::Local,
     );
     let assessor = RiskAssessor::new();
@@ -243,7 +294,11 @@ fn operation_clone() {
 
 #[test]
 fn operation_debug() {
-    let op = Operation::new("write_file", vec!["a.txt".to_string()], OperationSource::Remote);
+    let op = Operation::new(
+        "write_file",
+        vec!["a.txt".to_string()],
+        OperationSource::Remote,
+    );
     let s = format!("{:?}", op);
     assert!(s.contains("write_file"));
 }

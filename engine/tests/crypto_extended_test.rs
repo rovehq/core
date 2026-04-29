@@ -32,10 +32,7 @@ fn verify_file_nonexistent_path_returns_error() {
 #[test]
 fn verify_file_sha256_prefix_accepted() {
     let crypto = CryptoModule::new().unwrap();
-    let result = crypto.verify_file(
-        std::path::Path::new("/nonexistent"),
-        "sha256:aabbccdd",
-    );
+    let result = crypto.verify_file(std::path::Path::new("/nonexistent"), "sha256:aabbccdd");
     assert!(result.is_err()); // fails because file doesn't exist, not because of format
 }
 
@@ -93,10 +90,7 @@ fn verify_file_empty_hash_returns_error() {
 #[test]
 fn verify_file_malformed_hash_no_prefix() {
     let crypto = CryptoModule::new().unwrap();
-    let result = crypto.verify_file(
-        std::path::Path::new("/nonexistent"),
-        "aabbccdd",
-    );
+    let result = crypto.verify_file(std::path::Path::new("/nonexistent"), "aabbccdd");
     assert!(result.is_err());
 }
 
@@ -118,7 +112,9 @@ fn verify_manifest_empty_sig_returns_error() {
 #[test]
 fn verify_manifest_invalid_hex_returns_error() {
     let crypto = CryptoModule::new().unwrap();
-    assert!(crypto.verify_manifest(b"test", "ed25519:invalid_hex!!").is_err());
+    assert!(crypto
+        .verify_manifest(b"test", "ed25519:invalid_hex!!")
+        .is_err());
 }
 
 #[test]
@@ -200,7 +196,10 @@ async fn envelope_with_zero_key_and_current_timestamp_fails_sig() {
     };
 
     let result = crypto.verify_envelope(&envelope).await;
-    assert!(result.is_err(), "Zero signing key should not match embedded pubkey");
+    assert!(
+        result.is_err(),
+        "Zero signing key should not match embedded pubkey"
+    );
 }
 
 #[tokio::test]

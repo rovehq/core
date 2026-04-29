@@ -295,10 +295,7 @@ fn render_step_prompt(
 
     // If the template didn't reference {{last_output}} explicitly but a prior
     // step produced output, prepend it so the agent has context to work with.
-    if !last_output.is_empty()
-        && !template.contains("{{last_output}}")
-        && last_output != input
-    {
+    if !last_output.is_empty() && !template.contains("{{last_output}}") && last_output != input {
         rendered = format!("Previous step output:\n{last_output}\n\n{rendered}");
     }
 

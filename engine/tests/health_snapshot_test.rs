@@ -157,8 +157,16 @@ fn health_check_serializes() {
 #[test]
 fn health_checks_in_vec() {
     let checks = [
-        HealthCheckRecord { name: "A".to_string(), ok: true, detail: "ok".to_string() },
-        HealthCheckRecord { name: "B".to_string(), ok: false, detail: "fail".to_string() },
+        HealthCheckRecord {
+            name: "A".to_string(),
+            ok: true,
+            detail: "ok".to_string(),
+        },
+        HealthCheckRecord {
+            name: "B".to_string(),
+            ok: false,
+            detail: "fail".to_string(),
+        },
     ];
     assert_eq!(checks.len(), 2);
     assert!(checks[0].ok);
@@ -168,8 +176,16 @@ fn health_checks_in_vec() {
 #[test]
 fn health_check_all_ok_filter() {
     let checks = [
-        HealthCheckRecord { name: "A".to_string(), ok: true, detail: "ok".to_string() },
-        HealthCheckRecord { name: "B".to_string(), ok: true, detail: "ok".to_string() },
+        HealthCheckRecord {
+            name: "A".to_string(),
+            ok: true,
+            detail: "ok".to_string(),
+        },
+        HealthCheckRecord {
+            name: "B".to_string(),
+            ok: true,
+            detail: "ok".to_string(),
+        },
     ];
     assert!(checks.iter().all(|c| c.ok));
 }
@@ -177,8 +193,16 @@ fn health_check_all_ok_filter() {
 #[test]
 fn health_check_any_failing_filter() {
     let checks = [
-        HealthCheckRecord { name: "A".to_string(), ok: true, detail: "ok".to_string() },
-        HealthCheckRecord { name: "B".to_string(), ok: false, detail: "fail".to_string() },
+        HealthCheckRecord {
+            name: "A".to_string(),
+            ok: true,
+            detail: "ok".to_string(),
+        },
+        HealthCheckRecord {
+            name: "B".to_string(),
+            ok: false,
+            detail: "fail".to_string(),
+        },
     ];
     assert!(checks.iter().any(|c| !c.ok));
 }
@@ -519,9 +543,21 @@ fn healthy_snapshot_no_issues_device_sealed() {
 #[test]
 fn checks_filtering_all_passing() {
     let checks = [
-        HealthCheckRecord { name: "Config".to_string(), ok: true, detail: "ok".to_string() },
-        HealthCheckRecord { name: "Workspace".to_string(), ok: true, detail: "ok".to_string() },
-        HealthCheckRecord { name: "Database".to_string(), ok: true, detail: "ok".to_string() },
+        HealthCheckRecord {
+            name: "Config".to_string(),
+            ok: true,
+            detail: "ok".to_string(),
+        },
+        HealthCheckRecord {
+            name: "Workspace".to_string(),
+            ok: true,
+            detail: "ok".to_string(),
+        },
+        HealthCheckRecord {
+            name: "Database".to_string(),
+            ok: true,
+            detail: "ok".to_string(),
+        },
     ];
     let failing: Vec<_> = checks.iter().filter(|c| !c.ok).collect();
     assert!(failing.is_empty());
@@ -530,9 +566,21 @@ fn checks_filtering_all_passing() {
 #[test]
 fn checks_filtering_some_failing() {
     let checks = [
-        HealthCheckRecord { name: "Config".to_string(), ok: true, detail: "ok".to_string() },
-        HealthCheckRecord { name: "Daemon".to_string(), ok: false, detail: "not running".to_string() },
-        HealthCheckRecord { name: "Auth".to_string(), ok: false, detail: "uninitialized".to_string() },
+        HealthCheckRecord {
+            name: "Config".to_string(),
+            ok: true,
+            detail: "ok".to_string(),
+        },
+        HealthCheckRecord {
+            name: "Daemon".to_string(),
+            ok: false,
+            detail: "not running".to_string(),
+        },
+        HealthCheckRecord {
+            name: "Auth".to_string(),
+            ok: false,
+            detail: "uninitialized".to_string(),
+        },
     ];
     let failing: Vec<_> = checks.iter().filter(|c| !c.ok).collect();
     assert_eq!(failing.len(), 2);

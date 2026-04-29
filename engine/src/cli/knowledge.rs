@@ -75,14 +75,19 @@ async fn handle_ingest(
         }
         KnowledgeIngestSource::Folder { path } => {
             knowledge::ingest_folder(
-                repo, &path, domain_ref, tags_ref, force, dry_run, Some("cli"),
+                repo,
+                &path,
+                domain_ref,
+                tags_ref,
+                force,
+                dry_run,
+                Some("cli"),
             )
             .await?
         }
         KnowledgeIngestSource::Url { url } => {
             let result =
-                knowledge::ingest_url(repo, &url, domain_ref, tags_ref, force, Some("cli"))
-                    .await?;
+                knowledge::ingest_url(repo, &url, domain_ref, tags_ref, force, Some("cli")).await?;
             print_ingest_result(&IngestSummary {
                 total: 1,
                 ingested: vec![result],
@@ -93,7 +98,13 @@ async fn handle_ingest(
         }
         KnowledgeIngestSource::Sitemap { url } => {
             knowledge::ingest_sitemap(
-                repo, &url, domain_ref, tags_ref, force, dry_run, Some("cli"),
+                repo,
+                &url,
+                domain_ref,
+                tags_ref,
+                force,
+                dry_run,
+                Some("cli"),
             )
             .await?
         }

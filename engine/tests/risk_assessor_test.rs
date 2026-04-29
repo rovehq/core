@@ -314,7 +314,11 @@ fn empty_operation_name_returns_error() {
 #[test]
 fn force_flag_escalates_to_tier2() {
     let a = RiskAssessor::new();
-    let op = Operation::new("git_push", vec!["--force".to_string()], OperationSource::Local);
+    let op = Operation::new(
+        "git_push",
+        vec!["--force".to_string()],
+        OperationSource::Local,
+    );
     assert_eq!(a.assess(&op).unwrap(), RiskTier::Tier2);
 }
 
@@ -473,7 +477,10 @@ fn classify_git_commit() {
 
 #[test]
 fn classify_git_push() {
-    assert_eq!(classify_terminal_command("git push origin main"), "git_push");
+    assert_eq!(
+        classify_terminal_command("git push origin main"),
+        "git_push"
+    );
 }
 
 #[test]
@@ -532,10 +539,7 @@ fn classify_rg_search() {
 
 #[test]
 fn classify_fd_search() {
-    assert_eq!(
-        classify_terminal_command("fd Cargo.toml ."),
-        "read_file"
-    );
+    assert_eq!(classify_terminal_command("fd Cargo.toml ."), "read_file");
 }
 
 #[test]
@@ -550,7 +554,10 @@ fn classify_empty_is_execute_command() {
 
 #[test]
 fn classify_unknown_command_is_execute_command() {
-    assert_eq!(classify_terminal_command("curl http://example.com"), "execute_command");
+    assert_eq!(
+        classify_terminal_command("curl http://example.com"),
+        "execute_command"
+    );
 }
 
 #[test]
@@ -561,7 +568,10 @@ fn classify_ls_is_execute_command() {
 
 #[test]
 fn classify_rm_is_execute_command() {
-    assert_eq!(classify_terminal_command("rm -rf /tmp/file"), "execute_command");
+    assert_eq!(
+        classify_terminal_command("rm -rf /tmp/file"),
+        "execute_command"
+    );
 }
 
 #[test]

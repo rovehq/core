@@ -44,7 +44,10 @@ mod tests {
 
     #[test]
     fn defaults_to_stable_channel() {
-        assert_eq!(ExtensionsConfig::default().resolved_channel(), Channel::Stable);
+        assert_eq!(
+            ExtensionsConfig::default().resolved_channel(),
+            Channel::Stable
+        );
     }
 
     #[test]

@@ -119,9 +119,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Status) => rove_engine::cli::status::show().await?,
         Some(Command::Unlock) => rove_engine::cli::unlock::run().await?,
-        Some(Command::LegacyPlugin { action }) => {
-            handle_plugin(action).await?
-        }
+        Some(Command::LegacyPlugin { action }) => handle_plugin(action).await?,
         Some(Command::Steer { action, dir }) => {
             eprintln!(
                 "Compatibility alias: `rove steer` remains available, but prefer `rove policy`."
@@ -192,7 +190,11 @@ async fn main() -> Result<()> {
         Some(Command::Daemon { port, profile }) => run_daemon(port, profile).await?,
         Some(Command::Doctor { json }) => {
             let config = rove_engine::config::Config::load_or_create()?;
-            let fmt = if json { OutputFormat::Json } else { OutputFormat::Text };
+            let fmt = if json {
+                OutputFormat::Json
+            } else {
+                OutputFormat::Text
+            };
             rove_engine::cli::doctor::handle_doctor(&config, fmt).await?;
         }
         Some(Command::Logs { action }) => {

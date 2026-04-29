@@ -264,7 +264,8 @@ fn resolved_loadout_no_profiles_returns_compatibility_default() {
     assert!(config.profiles.is_empty());
     let resolved = config.resolved_loadout().unwrap();
     // Should return default compatibility
-    assert!(!resolved.profile_name.is_empty() || resolved.profile_name.is_empty()); // just check no panic
+    assert!(!resolved.profile_name.is_empty() || resolved.profile_name.is_empty());
+    // just check no panic
 }
 
 // ── Profile and loadout structure tests ───────────────────────────────────────

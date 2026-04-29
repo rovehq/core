@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::defaults::{default_wasm_fuel_limit, default_wasm_max_memory_mb, default_wasm_timeout_secs};
+use super::defaults::{
+    default_wasm_fuel_limit, default_wasm_max_memory_mb, default_wasm_timeout_secs,
+};
 
 /// Operator-tunable WASM plugin runtime defaults.
 ///

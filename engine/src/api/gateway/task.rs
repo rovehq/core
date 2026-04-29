@@ -97,7 +97,9 @@ impl Task {
 impl From<TaskSource> for crate::risk_assessor::OperationSource {
     fn from(source: TaskSource) -> Self {
         match source {
-            TaskSource::Cli | TaskSource::Subagent(_) => crate::risk_assessor::OperationSource::Local,
+            TaskSource::Cli | TaskSource::Subagent(_) => {
+                crate::risk_assessor::OperationSource::Local
+            }
             TaskSource::Telegram(_)
             | TaskSource::Channel(_)
             | TaskSource::WebUI

@@ -4,8 +4,8 @@ use std::sync::Mutex;
 
 use tempfile::TempDir;
 
-use rove_engine::system::daemon::{DaemonManager, Result};
 use rove_engine::config::Config;
+use rove_engine::system::daemon::{DaemonManager, Result};
 use sdk::errors::EngineError;
 
 // Daemon tests call start() which writes the current process PID. Serialise
@@ -61,7 +61,10 @@ async fn test_daemon_manager_creation() {
     let config = create_test_config(&temp_dir);
 
     let manager = DaemonManager::new(&config).unwrap();
-    assert!(manager.pid_file_path().to_string_lossy().contains("rove.pid"));
+    assert!(manager
+        .pid_file_path()
+        .to_string_lossy()
+        .contains("rove.pid"));
 }
 
 #[tokio::test]

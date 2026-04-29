@@ -120,7 +120,10 @@ fn scrub_telegram_bot_token() {
 
 #[test]
 fn scrub_telegram_token_in_url() {
-    let text = format!("https://api.telegram.org/bot1234567890:{}/sendMessage", "B".repeat(35));
+    let text = format!(
+        "https://api.telegram.org/bot1234567890:{}/sendMessage",
+        "B".repeat(35)
+    );
     let result = scrub_text(&text);
     assert!(result.contains("[REDACTED]"));
 }
@@ -222,10 +225,7 @@ fn scrub_with_values_multiple_occurrences() {
 #[test]
 fn scrub_with_values_multiple_different_secrets() {
     let text = "pass1=abc123 pass2=def456";
-    let result = scrub_text_with_values(
-        text,
-        &["abc123".to_string(), "def456".to_string()],
-    );
+    let result = scrub_text_with_values(text, &["abc123".to_string(), "def456".to_string()]);
     assert!(!result.contains("abc123"));
     assert!(!result.contains("def456"));
     assert_eq!(result.matches("[REDACTED]").count(), 2);

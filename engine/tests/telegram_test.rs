@@ -1,5 +1,7 @@
 use rove_engine::channels::telegram::approvals::{park_approval, resolve_approval};
-use rove_engine::channels::telegram::types::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramRateLimits};
+use rove_engine::channels::telegram::types::{
+    InlineKeyboardButton, InlineKeyboardMarkup, TelegramRateLimits,
+};
 use rove_engine::channels::telegram::TelegramBot;
 use rove_engine::secrets::SecretManager;
 

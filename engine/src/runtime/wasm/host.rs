@@ -375,12 +375,10 @@ impl WasmRuntime {
                 let request_handle = plugin
                     .memory_handle(request_offset)
                     .ok_or_else(|| extism::Error::msg("Invalid request offset"))?;
-                let request: HostMemoryReadRequest = serde_json::from_str(
-                    plugin.memory_str(request_handle)?,
-                )
-                .map_err(|error| {
-                    extism::Error::msg(format!("Invalid memory read request JSON: {}", error))
-                })?;
+                let request: HostMemoryReadRequest =
+                    serde_json::from_str(plugin.memory_str(request_handle)?).map_err(|error| {
+                        extism::Error::msg(format!("Invalid memory read request JSON: {}", error))
+                    })?;
                 let binding = user_data.get()?;
                 let context = binding.lock().map_err(|error| {
                     extism::Error::msg(format!("WASM host context lock poisoned: {}", error))
@@ -406,12 +404,10 @@ impl WasmRuntime {
                 let request_handle = plugin
                     .memory_handle(request_offset)
                     .ok_or_else(|| extism::Error::msg("Invalid request offset"))?;
-                let request: HostMemoryWriteRequest = serde_json::from_str(
-                    plugin.memory_str(request_handle)?,
-                )
-                .map_err(|error| {
-                    extism::Error::msg(format!("Invalid memory write request JSON: {}", error))
-                })?;
+                let request: HostMemoryWriteRequest =
+                    serde_json::from_str(plugin.memory_str(request_handle)?).map_err(|error| {
+                        extism::Error::msg(format!("Invalid memory write request JSON: {}", error))
+                    })?;
                 let binding = user_data.get()?;
                 let context = binding.lock().map_err(|error| {
                     extism::Error::msg(format!("WASM host context lock poisoned: {}", error))

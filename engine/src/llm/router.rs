@@ -637,10 +637,18 @@ impl LLMRouter {
                     return Ok((response, provider.name().to_string()));
                 }
                 Ok(Err(e)) => {
-                    failures.push(format!("{}: {}", provider.name(), scrub_text(&e.to_string())));
+                    failures.push(format!(
+                        "{}: {}",
+                        provider.name(),
+                        scrub_text(&e.to_string())
+                    ));
                 }
                 Err(_) => {
-                    failures.push(format!("{}: timed out after {}s", provider.name(), timeout_secs));
+                    failures.push(format!(
+                        "{}: timed out after {}s",
+                        provider.name(),
+                        timeout_secs
+                    ));
                 }
             }
         }

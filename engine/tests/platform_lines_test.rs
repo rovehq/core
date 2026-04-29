@@ -47,10 +47,7 @@ fn to_unix_no_newlines() {
 
 #[test]
 fn to_unix_multiple_crlf() {
-    assert_eq!(
-        to_unix_line_endings("a\r\nb\r\nc\r\n"),
-        "a\nb\nc\n"
-    );
+    assert_eq!(to_unix_line_endings("a\r\nb\r\nc\r\n"), "a\nb\nc\n");
 }
 
 #[test]
@@ -86,10 +83,7 @@ fn to_unix_leading_crlf() {
 
 #[test]
 fn to_unix_many_blank_lines() {
-    assert_eq!(
-        to_unix_line_endings("\r\n\r\n\r\n"),
-        "\n\n\n"
-    );
+    assert_eq!(to_unix_line_endings("\r\n\r\n\r\n"), "\n\n\n");
 }
 
 #[test]
@@ -125,10 +119,7 @@ fn to_windows_no_newlines() {
 
 #[test]
 fn to_windows_multiple_lf() {
-    assert_eq!(
-        to_windows_line_endings("a\nb\nc\n"),
-        "a\r\nb\r\nc\r\n"
-    );
+    assert_eq!(to_windows_line_endings("a\nb\nc\n"), "a\r\nb\r\nc\r\n");
 }
 
 #[test]
@@ -161,10 +152,7 @@ fn to_windows_leading_lf() {
 
 #[test]
 fn to_windows_many_blank_lines_lf() {
-    assert_eq!(
-        to_windows_line_endings("\n\n\n"),
-        "\r\n\r\n\r\n"
-    );
+    assert_eq!(to_windows_line_endings("\n\n\n"), "\r\n\r\n\r\n");
 }
 
 #[test]

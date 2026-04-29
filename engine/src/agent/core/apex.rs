@@ -13,9 +13,9 @@ use crate::conductor::{
     ApexSchedulingPolicy, HybridExecutor, PlanStep, StepRole,
 };
 use crate::config::agent::ExecutionPolicy;
-use crate::memory::conductor::hybrid::{should_compress, PlanMode};
 use crate::gateway::Task;
 use crate::llm::{Message, MessageRole};
+use crate::memory::conductor::hybrid::{should_compress, PlanMode};
 use crate::remote::{RemoteManager, RemoteSendResult, RemoteTaskEvent};
 use crate::security::secrets::scrub_text;
 use crate::system::worker_presets;
@@ -267,7 +267,11 @@ impl AgentCore {
             let compact = planner
                 .compress_context_locally(&task.input, &memory_block)
                 .await;
-            self.apex_envelope(task, orchestration, compact.as_deref().unwrap_or(&memory_block))
+            self.apex_envelope(
+                task,
+                orchestration,
+                compact.as_deref().unwrap_or(&memory_block),
+            )
         } else {
             self.apex_envelope(task, orchestration, &memory_block)
         };
@@ -284,7 +288,8 @@ impl AgentCore {
             context.sensitive,
             context.route,
         );
-        ApexRoutingPolicy::new(self.router.local_brain().is_some()).assign_routes(&mut graph, &plan);
+        ApexRoutingPolicy::new(self.router.local_brain().is_some())
+            .assign_routes(&mut graph, &plan);
 
         let runner = ApexRunner::with_persistence(
             self.task_repo.clone(),
@@ -351,7 +356,12 @@ impl AgentCore {
     }
 
     /// Assembles the final planning envelope: fixed header lines + memory block.
-    fn apex_envelope(&self, task: &Task, orchestration: &OrchestrationDecision, mem: &str) -> String {
+    fn apex_envelope(
+        &self,
+        task: &Task,
+        orchestration: &OrchestrationDecision,
+        mem: &str,
+    ) -> String {
         let mut lines = Vec::new();
         if let Some(workspace) = &task.workspace {
             lines.push(format!("Workspace: {}", workspace.display()));

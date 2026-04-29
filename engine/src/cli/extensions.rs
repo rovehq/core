@@ -853,12 +853,15 @@ fn inventory_item_from_plugin(
         },
     };
 
-    let wasm_limits = installed_plugin_wasm_limit_report(plugin, Some(wasm_defaults))?.map(|report| WasmLimitView {
-        timeout_secs: report.timeout_secs,
-        max_memory_mb: report.max_memory_mb,
-        fuel_limit: report.fuel_limit,
-        sidecar_path: report.sidecar_path,
-    });
+    let wasm_limits =
+        installed_plugin_wasm_limit_report(plugin, Some(wasm_defaults))?.map(|report| {
+            WasmLimitView {
+                timeout_secs: report.timeout_secs,
+                max_memory_mb: report.max_memory_mb,
+                fuel_limit: report.fuel_limit,
+                sidecar_path: report.sidecar_path,
+            }
+        });
 
     Ok(ExtensionInventoryItem {
         id: plugin.id.clone(),

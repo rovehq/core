@@ -153,8 +153,7 @@ impl DaemonManager {
         if !is_running {
             let bind_addr = config.webui.bind_addr.clone();
             if let Ok(addr) = bind_addr.parse::<std::net::SocketAddr>() {
-                if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
-                {
+                if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
                     tracing::warn!(
                         "Daemon port {} is answering but PID file is missing/stale — \
                          daemon is running without a valid PID record",

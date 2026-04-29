@@ -45,7 +45,9 @@ pub async fn handle_update(check_only: bool, format: OutputFormat) -> Result<()>
     let channel = Channel::current();
     let current = semver::Version::parse(VERSION).context("Failed to parse current version")?;
 
-    let client = reqwest::Client::builder().user_agent(user_agent()).build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(user_agent())
+        .build()?;
     let manifest_url = channel_manifest_url(channel);
     let signature_url = channel_manifest_signature_url(channel);
 
@@ -332,9 +334,7 @@ fn current_manifest_target() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        channel_manifest_signature_url, channel_manifest_url, verify_manifest_signature,
-    };
+    use super::{channel_manifest_signature_url, channel_manifest_url, verify_manifest_signature};
     use crate::config::channel::Channel;
 
     #[test]
@@ -358,8 +358,7 @@ mod tests {
 
     #[test]
     fn rejects_obviously_bad_signature() {
-        let err =
-            verify_manifest_signature(b"{}", "ed25519:00").expect_err("short sig must fail");
+        let err = verify_manifest_signature(b"{}", "ed25519:00").expect_err("short sig must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("Signature") || msg.contains("signature"),

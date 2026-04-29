@@ -3,8 +3,8 @@
 //! Coordinates task persistence, background memory extraction, and the
 //! iterative ReAct loop implemented in the child modules below.
 
-pub mod callable;
 mod apex;
+pub mod callable;
 mod events;
 mod r#loop;
 pub mod orchestration;
@@ -13,7 +13,9 @@ mod result;
 mod shortcuts;
 mod tools;
 
-pub use orchestration::{decide_execution_strategy, ExecutionStrategy, OrchestrationHistory, OrchestrationDecision};
+pub use orchestration::{
+    decide_execution_strategy, ExecutionStrategy, OrchestrationDecision, OrchestrationHistory,
+};
 pub use prompt::TaskContext;
 
 use anyhow::{Context, Result};

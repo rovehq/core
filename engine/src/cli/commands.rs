@@ -2224,8 +2224,8 @@ mod tests {
 
     #[test]
     fn doctor_accepts_json_flag() {
-        let cli = Cli::try_parse_from(["rove", "doctor", "--json"])
-            .expect("doctor --json should parse");
+        let cli =
+            Cli::try_parse_from(["rove", "doctor", "--json"]).expect("doctor --json should parse");
 
         match cli.command {
             Some(Command::Doctor { json }) => assert!(json),

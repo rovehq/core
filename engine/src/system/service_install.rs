@@ -442,11 +442,7 @@ fn deactivate_service(mode: ServiceInstallMode, descriptor: &ServiceDescriptor) 
             run_command("sc.exe", &["delete", &descriptor.label], true)?;
         }
         ServiceInstallMode::Login => {
-            run_command(
-                "schtasks.exe",
-                &["/End", "/TN", &descriptor.label],
-                true,
-            )?;
+            run_command("schtasks.exe", &["/End", "/TN", &descriptor.label], true)?;
             run_command(
                 "schtasks.exe",
                 &["/Delete", "/TN", &descriptor.label, "/F"],

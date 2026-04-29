@@ -361,7 +361,9 @@ impl RemoteManager {
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .and_then(|entry| {
-                peers.into_iter().find(|peer| peer.identity.node_id == *entry.key())
+                peers
+                    .into_iter()
+                    .find(|peer| peer.identity.node_id == *entry.key())
             })
     }
 
@@ -404,12 +406,11 @@ impl RemoteManager {
             .build()
             .unwrap_or_default();
         for peer in peers.iter().filter(|p| p.trusted) {
-            let signed_headers = match self
-                .signed_request_headers(&peer.identity.node_id, "presence", None)
-            {
-                Ok(h) => h,
-                Err(_) => continue,
-            };
+            let signed_headers =
+                match self.signed_request_headers(&peer.identity.node_id, "presence", None) {
+                    Ok(h) => h,
+                    Err(_) => continue,
+                };
             let url = format!(
                 "{}/v1/remote/presence",
                 self.peer_endpoint(peer).trim_end_matches('/')
@@ -939,9 +940,8 @@ impl RemoteManager {
         };
 
         // Prefer iroh QUIC when the peer advertises an iroh node id; fall back to HTTP.
-        let execute = if let Some(iroh_response) = self
-            .send_via_iroh(&peer, &request, &signed_headers)
-            .await
+        let execute = if let Some(iroh_response) =
+            self.send_via_iroh(&peer, &request, &signed_headers).await
         {
             iroh_response
         } else {
@@ -2219,12 +2219,10 @@ impl RemoteManager {
         let signed_headers =
             self.signed_request_headers(&peer.identity.node_id, "terminal", None)?;
 
-        let mut ws_url = reqwest::Url::parse(
-            &format!(
-                "{}/v1/remote/terminal",
-                self.peer_endpoint(peer).trim_end_matches('/')
-            ),
-        )
+        let mut ws_url = reqwest::Url::parse(&format!(
+            "{}/v1/remote/terminal",
+            self.peer_endpoint(peer).trim_end_matches('/')
+        ))
         .context("Invalid remote terminal URL")?;
         match ws_url.scheme() {
             "http" => ws_url
@@ -2236,9 +2234,7 @@ impl RemoteManager {
             _ => {}
         }
         if let Some(sh) = shell {
-            ws_url
-                .query_pairs_mut()
-                .append_pair("shell", sh);
+            ws_url.query_pairs_mut().append_pair("shell", sh);
         }
 
         let mut request = ws_url
@@ -2251,8 +2247,8 @@ impl RemoteManager {
             request.headers_mut().insert(AUTHORIZATION, header);
         }
         for (name, value) in signed_headers {
-            let header_name = HeaderName::from_bytes(name.as_bytes())
-                .context("Invalid signed header name")?;
+            let header_name =
+                HeaderName::from_bytes(name.as_bytes()).context("Invalid signed header name")?;
             let header_value =
                 HeaderValue::from_str(&value).context("Invalid signed header value")?;
             request.headers_mut().insert(header_name, header_value);
@@ -2316,8 +2312,16 @@ fn base64_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as usize;
-        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+        let b1 = if chunk.len() > 1 {
+            chunk[1] as usize
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            chunk[2] as usize
+        } else {
+            0
+        };
         let _ = write!(out, "{}", CHARS[b0 >> 2] as char);
         let _ = write!(out, "{}", CHARS[((b0 & 3) << 4) | (b1 >> 4)] as char);
         if chunk.len() > 1 {
@@ -2353,9 +2357,21 @@ fn base64_decode(s: &str) -> Result<Vec<u8>> {
     }
     for chunk in bytes.chunks(4) {
         let b0 = chunk[0] as usize;
-        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
-        let b3 = if chunk.len() > 3 { chunk[3] as usize } else { 0 };
+        let b1 = if chunk.len() > 1 {
+            chunk[1] as usize
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            chunk[2] as usize
+        } else {
+            0
+        };
+        let b3 = if chunk.len() > 3 {
+            chunk[3] as usize
+        } else {
+            0
+        };
         out.push(((b0 << 2) | (b1 >> 4)) as u8);
         if chunk.len() > 2 {
             out.push(((b1 & 15) << 4 | b2 >> 2) as u8);
@@ -3636,10 +3652,7 @@ auto_tag = ["office-workspace"]
             State(state): State<NodeBState>,
             AJson(body): AJson<serde_json::Value>,
         ) -> impl IntoResponse {
-            let challenge = body
-                .get("challenge")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let challenge = body.get("challenge").and_then(|v| v.as_str()).unwrap_or("");
             let proof = state.manager.sign_handshake(challenge).expect("sign");
             AJson(proof)
         }
@@ -3662,11 +3675,7 @@ auto_tag = ["office-workspace"]
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            state
-                .received
-                .lock()
-                .expect("lock")
-                .push((verified, input));
+            state.received.lock().expect("lock").push((verified, input));
             AJson(serde_json::json!({
                 "success": true,
                 "task_id": task_id,
@@ -3689,10 +3698,7 @@ auto_tag = ["office-workspace"]
                 "/v1/remote/handshake",
                 axum::routing::post(handshake_handler),
             )
-            .route(
-                "/v1/remote/execute",
-                axum::routing::post(execute_handler),
-            )
+            .route("/v1/remote/execute", axum::routing::post(execute_handler))
             .with_state(b_state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

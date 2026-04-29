@@ -78,12 +78,18 @@ fn rule_action_allow_eq() {
 
 #[test]
 fn rule_action_require_eq() {
-    assert_eq!(ApprovalRuleAction::RequireApproval, ApprovalRuleAction::RequireApproval);
+    assert_eq!(
+        ApprovalRuleAction::RequireApproval,
+        ApprovalRuleAction::RequireApproval
+    );
 }
 
 #[test]
 fn rule_action_allow_ne_require() {
-    assert_ne!(ApprovalRuleAction::Allow, ApprovalRuleAction::RequireApproval);
+    assert_ne!(
+        ApprovalRuleAction::Allow,
+        ApprovalRuleAction::RequireApproval
+    );
 }
 
 #[test]
@@ -135,7 +141,9 @@ fn rule_action_roundtrip_require() {
 
 #[test]
 fn decision_auto_allow_matches() {
-    let d = ApprovalDecision::AutoAllow { reason: "test".to_string() };
+    let d = ApprovalDecision::AutoAllow {
+        reason: "test".to_string(),
+    };
     assert!(matches!(d, ApprovalDecision::AutoAllow { .. }));
 }
 
@@ -147,7 +155,9 @@ fn decision_require_approval_matches() {
 
 #[test]
 fn decision_auto_allow_reason_accessible() {
-    let d = ApprovalDecision::AutoAllow { reason: "rule matched".to_string() };
+    let d = ApprovalDecision::AutoAllow {
+        reason: "rule matched".to_string(),
+    };
     if let ApprovalDecision::AutoAllow { reason } = d {
         assert_eq!(reason, "rule matched");
     } else {
@@ -157,7 +167,9 @@ fn decision_auto_allow_reason_accessible() {
 
 #[test]
 fn decision_require_approval_reason_some() {
-    let d = ApprovalDecision::RequireApproval { reason: Some("rule matched".to_string()) };
+    let d = ApprovalDecision::RequireApproval {
+        reason: Some("rule matched".to_string()),
+    };
     if let ApprovalDecision::RequireApproval { reason } = d {
         assert_eq!(reason.unwrap(), "rule matched");
     }
@@ -173,7 +185,9 @@ fn decision_require_approval_reason_none() {
 
 #[test]
 fn decision_debug_auto_allow() {
-    let d = ApprovalDecision::AutoAllow { reason: "x".to_string() };
+    let d = ApprovalDecision::AutoAllow {
+        reason: "x".to_string(),
+    };
     let s = format!("{:?}", d);
     assert!(s.contains("AutoAllow"));
 }
@@ -505,19 +519,17 @@ fn rules_file_default_empty() {
 #[test]
 fn rules_file_with_rules() {
     let f = ApprovalRulesFile {
-        rules: vec![
-            ApprovalRule {
-                id: "rule-1".to_string(),
-                action: ApprovalRuleAction::Allow,
-                tool: None,
-                commands: vec![],
-                paths: vec![],
-                nodes: vec![],
-                channels: vec![],
-                risk_tier: None,
-                effect: None,
-            },
-        ],
+        rules: vec![ApprovalRule {
+            id: "rule-1".to_string(),
+            action: ApprovalRuleAction::Allow,
+            tool: None,
+            commands: vec![],
+            paths: vec![],
+            nodes: vec![],
+            channels: vec![],
+            risk_tier: None,
+            effect: None,
+        }],
     };
     assert_eq!(f.rules.len(), 1);
 }
@@ -525,19 +537,17 @@ fn rules_file_with_rules() {
 #[test]
 fn rules_file_serialize() {
     let f = ApprovalRulesFile {
-        rules: vec![
-            ApprovalRule {
-                id: "r".to_string(),
-                action: ApprovalRuleAction::Allow,
-                tool: Some("read_file".to_string()),
-                commands: vec![],
-                paths: vec![],
-                nodes: vec![],
-                channels: vec![],
-                risk_tier: Some(0),
-                effect: None,
-            },
-        ],
+        rules: vec![ApprovalRule {
+            id: "r".to_string(),
+            action: ApprovalRuleAction::Allow,
+            tool: Some("read_file".to_string()),
+            commands: vec![],
+            paths: vec![],
+            nodes: vec![],
+            channels: vec![],
+            risk_tier: Some(0),
+            effect: None,
+        }],
     };
     let toml = toml::to_string(&f);
     assert!(toml.is_ok());

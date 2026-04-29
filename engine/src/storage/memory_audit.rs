@@ -493,22 +493,21 @@ pub async fn current_episodic_hash(pool: &SqlitePool, id: &str) -> Result<Option
     .bind(id)
     .fetch_optional(pool)
     .await?;
-    row
-        .map(|row| {
-            MemoryAuditRepository::episodic_snapshot_hash(
-                row.get::<String, _>("summary").as_str(),
-                row.get::<String, _>("entities").as_str(),
-                row.get::<String, _>("topics").as_str(),
-                row.get::<f32, _>("importance"),
-                row.get::<String, _>("domain").as_str(),
-                row.get::<String, _>("memory_kind").as_str(),
-                row.get::<i64, _>("sensitive") != 0,
-                row.get::<i64, _>("consolidated") != 0,
-                row.get::<Option<String>, _>("consolidation_id").as_deref(),
-            )
-            .map(|(hash, _)| hash)
-        })
-        .transpose()
+    row.map(|row| {
+        MemoryAuditRepository::episodic_snapshot_hash(
+            row.get::<String, _>("summary").as_str(),
+            row.get::<String, _>("entities").as_str(),
+            row.get::<String, _>("topics").as_str(),
+            row.get::<f32, _>("importance"),
+            row.get::<String, _>("domain").as_str(),
+            row.get::<String, _>("memory_kind").as_str(),
+            row.get::<i64, _>("sensitive") != 0,
+            row.get::<i64, _>("consolidated") != 0,
+            row.get::<Option<String>, _>("consolidation_id").as_deref(),
+        )
+        .map(|(hash, _)| hash)
+    })
+    .transpose()
 }
 
 pub async fn current_fact_hash(pool: &SqlitePool, key: &str) -> Result<Option<String>> {
@@ -520,16 +519,15 @@ pub async fn current_fact_hash(pool: &SqlitePool, key: &str) -> Result<Option<St
     .bind(key)
     .fetch_optional(pool)
     .await?;
-    row
-        .map(|row| {
-            MemoryAuditRepository::fact_snapshot_hash(
-                row.get::<String, _>("value").as_str(),
-                row.get::<Option<String>, _>("task_id").as_deref(),
-                row.get::<Option<String>, _>("memory_id").as_deref(),
-            )
-            .map(|(hash, _)| hash)
-        })
-        .transpose()
+    row.map(|row| {
+        MemoryAuditRepository::fact_snapshot_hash(
+            row.get::<String, _>("value").as_str(),
+            row.get::<Option<String>, _>("task_id").as_deref(),
+            row.get::<Option<String>, _>("memory_id").as_deref(),
+        )
+        .map(|(hash, _)| hash)
+    })
+    .transpose()
 }
 
 pub fn redact_value(label: &str) -> String {

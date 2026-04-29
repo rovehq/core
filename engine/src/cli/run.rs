@@ -269,12 +269,8 @@ async fn execute_local_task_request_with_source_and_id(
 
     let (providers, local_brain) = super::bootstrap::build_providers(&runtime_config).await?;
     let router = Arc::new(
-        LLMRouter::with_local_brain(
-            providers,
-            Arc::new(runtime_config.llm.clone()),
-            local_brain,
-        )
-        .with_plugin_brain(plugin_brain),
+        LLMRouter::with_local_brain(providers, Arc::new(runtime_config.llm.clone()), local_brain)
+            .with_plugin_brain(plugin_brain),
     );
     let rate_limiter = Arc::new(RateLimiter::new(db_pool.clone()));
     let risk_assessor = RiskAssessor::new();

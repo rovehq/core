@@ -5094,10 +5094,7 @@ pub async fn ingest_knowledge_upload(
     let mut errors: Vec<String> = Vec::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
-        let filename = field
-            .file_name()
-            .unwrap_or("upload")
-            .to_string();
+        let filename = field.file_name().unwrap_or("upload").to_string();
 
         let data = match field.bytes().await {
             Ok(b) => b,
@@ -5119,7 +5116,10 @@ pub async fn ingest_knowledge_upload(
         let content = match std::str::from_utf8(&data) {
             Ok(s) => s.to_string(),
             Err(_) => {
-                errors.push(format!("{}: binary file — only UTF-8 text supported", filename));
+                errors.push(format!(
+                    "{}: binary file — only UTF-8 text supported",
+                    filename
+                ));
                 continue;
             }
         };

@@ -4,13 +4,7 @@
 //! These tests exercise the full RemoteManager stack using two in-process
 //! instances sharing a temporary directory.
 
-use axum::{
-    extract::Json,
-    http::HeaderMap,
-    response::IntoResponse,
-    routing::post,
-    Router,
-};
+use axum::{extract::Json, http::HeaderMap, response::IntoResponse, routing::post, Router};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 

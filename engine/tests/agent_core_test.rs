@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use tempfile::TempDir;
 
-use rove_engine::agent::core::{decide_execution_strategy, ExecutionStrategy, OrchestrationHistory, TaskContext};
+use rove_engine::agent::core::{
+    decide_execution_strategy, ExecutionStrategy, OrchestrationHistory, TaskContext,
+};
 use rove_engine::agent::{AgentCore, TaskResult};
 use rove_engine::builtin_tools::{FilesystemTool, TerminalTool, ToolRegistry};
 use rove_engine::config::LLMConfig;

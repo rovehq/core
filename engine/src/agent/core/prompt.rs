@@ -211,7 +211,12 @@ impl AgentCore {
         let roster_lines: Vec<String> = self
             .current_callable_roster
             .iter()
-            .map(|ca| format!("  - id: \"{}\", name: \"{}\", role: \"{}\"", ca.id, ca.name, ca.role))
+            .map(|ca| {
+                format!(
+                    "  - id: \"{}\", name: \"{}\", role: \"{}\"",
+                    ca.id, ca.name, ca.role
+                )
+            })
             .collect();
 
         // If no other tools are registered, the schema builder never emits the
@@ -221,7 +226,8 @@ impl AgentCore {
             system_prompt.push_str("\n\nIMPORTANT RULES:\n");
             system_prompt.push_str("1. To call a tool, your ENTIRE response must be ONLY the JSON object — nothing else. No explanation, no markdown fences, no text before or after.\n");
             system_prompt.push_str("2. When you have the final answer (after receiving tool results), respond with plain text only — no JSON.\n");
-            system_prompt.push_str("\nTool call format (your entire response must be exactly this):\n");
+            system_prompt
+                .push_str("\nTool call format (your entire response must be exactly this):\n");
             system_prompt.push_str(r#"{"function": "tool_name", "arguments": {"arg1": "value1"}}"#);
             system_prompt.push_str("\n\nAvailable tools:");
         }

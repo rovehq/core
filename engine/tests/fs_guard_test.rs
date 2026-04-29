@@ -463,7 +463,11 @@ fn validate_path_multiple_files_all_ok() {
     for name in &files {
         let path = temp.path().join(name);
         fs::write(&path, "content").unwrap();
-        assert!(guard.validate_path(&path).is_ok(), "Expected ok for {}", name);
+        assert!(
+            guard.validate_path(&path).is_ok(),
+            "Expected ok for {}",
+            name
+        );
     }
 }
 
@@ -474,6 +478,10 @@ fn validate_path_many_denied_paths_all_fail() {
     let denied = [".env", "id_rsa", ".gnupg", ".ssh"];
     for name in &denied {
         let path = temp.path().join(name);
-        assert!(guard.validate_path(&path).is_err(), "Expected deny for {}", name);
+        assert!(
+            guard.validate_path(&path).is_err(),
+            "Expected deny for {}",
+            name
+        );
     }
 }

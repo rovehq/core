@@ -144,7 +144,10 @@ fn load_public_key(env_var: &str, bin_paths: &[&str], hex_paths: &[&str]) -> Vec
         }
     }
 
-    println!("cargo:warning=No key for {}, generating placeholder", env_var);
+    println!(
+        "cargo:warning=No key for {}, generating placeholder",
+        env_var
+    );
     generate_placeholder_key()
 }
 

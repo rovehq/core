@@ -789,9 +789,7 @@ fn build_memory_plan(
         // (which land in episodic store only, not in memory_facts) are still found.
         if !matches!(
             intent,
-            MemoryIntent::Warning
-                | MemoryIntent::StructuralCode
-                | MemoryIntent::RelationshipQuery
+            MemoryIntent::Warning | MemoryIntent::StructuralCode | MemoryIntent::RelationshipQuery
         ) {
             selected_sources.push("semantic_memory".to_string());
         }

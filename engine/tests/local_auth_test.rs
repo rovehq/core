@@ -121,11 +121,7 @@ fn verify_password_multiple_correct_roundtrips() {
     ];
     for pw in &passwords {
         let hash = hash_password(pw).unwrap();
-        assert!(
-            verify_password(pw, &hash).unwrap(),
-            "Failed for: {}",
-            pw
-        );
+        assert!(verify_password(pw, &hash).unwrap(), "Failed for: {}", pw);
     }
 }
 
@@ -141,12 +137,18 @@ fn protection_state_equality_uninitialized() {
 
 #[test]
 fn protection_state_equality_sealed() {
-    assert_eq!(PasswordProtectionState::Sealed, PasswordProtectionState::Sealed);
+    assert_eq!(
+        PasswordProtectionState::Sealed,
+        PasswordProtectionState::Sealed
+    );
 }
 
 #[test]
 fn protection_state_equality_tampered() {
-    assert_eq!(PasswordProtectionState::Tampered, PasswordProtectionState::Tampered);
+    assert_eq!(
+        PasswordProtectionState::Tampered,
+        PasswordProtectionState::Tampered
+    );
 }
 
 #[test]
@@ -266,7 +268,10 @@ fn setup_artifacts_protection_state_field_access() {
         protection_state: PasswordProtectionState::LegacyUnsealed,
         recovery_code: "RVE-ABCD-1234-5678".to_string(),
     };
-    assert_eq!(artifacts.protection_state, PasswordProtectionState::LegacyUnsealed);
+    assert_eq!(
+        artifacts.protection_state,
+        PasswordProtectionState::LegacyUnsealed
+    );
 }
 
 #[test]

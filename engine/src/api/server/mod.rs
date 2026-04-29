@@ -259,10 +259,7 @@ pub async fn start_daemon(
             "/v1/managed-agents/agents",
             get(api::list_managed_agents).post(api::create_managed_agent),
         )
-        .route(
-            "/v1/managed-agents/agents/:id",
-            get(api::get_managed_agent),
-        )
+        .route("/v1/managed-agents/agents/:id", get(api::get_managed_agent))
         .route(
             "/v1/managed-agents/environments",
             get(api::list_managed_agent_environments),
@@ -544,10 +541,7 @@ pub async fn start_daemon(
                 .delete(api::remove_agent),
         )
         .route("/api/v1/agents/:id/run", post(api::run_agent))
-        .route(
-            "/api/v1/agents/:id/threads",
-            get(api::list_agent_threads),
-        )
+        .route("/api/v1/agents/:id/threads", get(api::list_agent_threads))
         .route(
             "/api/v1/managed-agents",
             get(api::list_managed_agents).post(api::create_managed_agent),
@@ -581,14 +575,8 @@ pub async fn start_daemon(
             "/api/v1/managed-agents/sessions/:id/events",
             get(api::list_managed_agent_session_events),
         )
-        .route(
-            "/api/v1/agent-threads",
-            get(api::list_agent_threads_all),
-        )
-        .route(
-            "/api/v1/agent-threads/:id",
-            get(api::get_agent_thread),
-        )
+        .route("/api/v1/agent-threads", get(api::list_agent_threads_all))
+        .route("/api/v1/agent-threads/:id", get(api::get_agent_thread))
         .route(
             "/api/v1/agent-threads/:id/events",
             get(api::list_agent_thread_events),
@@ -741,18 +729,9 @@ pub async fn start_daemon(
         .route("/api/v1/remote/nodes/:name", delete(api::remote_unpair))
         .route("/api/v1/remote/rename", post(api::remote_rename))
         .route("/api/v1/remote/send", post(api::remote_send))
-        .route(
-            "/api/v1/knowledge",
-            get(api::list_knowledge),
-        )
-        .route(
-            "/api/v1/knowledge/stats",
-            get(api::knowledge_stats),
-        )
-        .route(
-            "/api/v1/knowledge/search",
-            get(api::search_knowledge),
-        )
+        .route("/api/v1/knowledge", get(api::list_knowledge))
+        .route("/api/v1/knowledge/stats", get(api::knowledge_stats))
+        .route("/api/v1/knowledge/search", get(api::search_knowledge))
         .route(
             "/api/v1/knowledge/ingest/upload",
             post(api::ingest_knowledge_upload),
@@ -777,14 +756,8 @@ pub async fn start_daemon(
             "/api/v1/knowledge/:id",
             get(api::get_knowledge).delete(api::remove_knowledge),
         )
-        .route(
-            "/api/v1/knowledge/jobs",
-            get(api::list_knowledge_jobs),
-        )
-        .route(
-            "/api/v1/knowledge/jobs/:id",
-            get(api::get_knowledge_job),
-        )
+        .route("/api/v1/knowledge/jobs", get(api::list_knowledge_jobs))
+        .route("/api/v1/knowledge/jobs/:id", get(api::get_knowledge_job))
         .route("/v1/chat/completions", post(mcp::mcp_chat_completions))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1199,11 +1172,7 @@ fn spawn_workflow_cron_scheduler(db: Arc<Database>, config: Config) {
                     }
                     let input = format!("Scheduled run: {}", workflow.name);
                     match crate::system::workflow_runtime::start_new_run(
-                        &repo,
-                        &fresh_db,
-                        &config,
-                        &workflow,
-                        &input,
+                        &repo, &fresh_db, &config, &workflow, &input,
                     )
                     .await
                     {

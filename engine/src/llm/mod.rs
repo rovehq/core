@@ -85,10 +85,7 @@ pub(crate) fn emit_stream_chunk(chunk: &str) {
 
 /// Returns true when a streaming sink is registered (i.e. caller wants streaming).
 pub(crate) fn streaming_active() -> bool {
-    STREAM_SINK
-        .lock()
-        .map(|g| g.is_some())
-        .unwrap_or(false)
+    STREAM_SINK.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
 /// LLM Provider trait that all providers must implement

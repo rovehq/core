@@ -1,4 +1,6 @@
-use super::{emit_stream_chunk, streaming_active, LLMError, LLMProvider, LLMResponse, Message, MessageRole};
+use super::{
+    emit_stream_chunk, streaming_active, LLMError, LLMProvider, LLMResponse, Message, MessageRole,
+};
 use crate::secrets::SecretCache;
 use async_trait::async_trait;
 use futures::StreamExt;

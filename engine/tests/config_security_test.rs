@@ -1,7 +1,8 @@
 //! Tests for config security and misc type coverage
 
-use rove_engine::config::{ApprovalMode, DaemonProfile, MemoryMode, MemoryRetrievalAssist,
-    SecretBackend};
+use rove_engine::config::{
+    ApprovalMode, DaemonProfile, MemoryMode, MemoryRetrievalAssist, SecretBackend,
+};
 
 // ── SecretBackend ─────────────────────────────────────────────────────────────
 

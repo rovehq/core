@@ -45,63 +45,90 @@ fn snapshot_clone_equals_original() {
 
 #[test]
 fn render_contains_tasks_total_metric() {
-    let snap = MetricsSnapshot { tasks_total: 5, ..Default::default() };
+    let snap = MetricsSnapshot {
+        tasks_total: 5,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("rove_tasks_total 5"));
 }
 
 #[test]
 fn render_contains_tasks_pending_metric() {
-    let snap = MetricsSnapshot { tasks_pending: 3, ..Default::default() };
+    let snap = MetricsSnapshot {
+        tasks_pending: 3,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("rove_tasks_pending 3"));
 }
 
 #[test]
 fn render_contains_tasks_running_metric() {
-    let snap = MetricsSnapshot { tasks_running: 2, ..Default::default() };
+    let snap = MetricsSnapshot {
+        tasks_running: 2,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("rove_tasks_running 2"));
 }
 
 #[test]
 fn render_contains_tasks_completed_metric() {
-    let snap = MetricsSnapshot { tasks_completed: 99, ..Default::default() };
+    let snap = MetricsSnapshot {
+        tasks_completed: 99,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("rove_tasks_completed_total 99"));
 }
 
 #[test]
 fn render_contains_tasks_failed_metric() {
-    let snap = MetricsSnapshot { tasks_failed: 7, ..Default::default() };
+    let snap = MetricsSnapshot {
+        tasks_failed: 7,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("rove_tasks_failed_total 7"));
 }
 
 #[test]
 fn render_contains_tool_calls_metric() {
-    let snap = MetricsSnapshot { tool_calls_total: 100, ..Default::default() };
+    let snap = MetricsSnapshot {
+        tool_calls_total: 100,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("rove_tool_calls_total 100"));
 }
 
 #[test]
 fn render_contains_error_rate_metric() {
-    let snap = MetricsSnapshot { task_error_rate: 0.25, ..Default::default() };
+    let snap = MetricsSnapshot {
+        task_error_rate: 0.25,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("rove_task_error_rate 0.250000"));
 }
 
 #[test]
 fn render_contains_latency_metric() {
-    let snap = MetricsSnapshot { task_latency_avg_ms: 500.0, ..Default::default() };
+    let snap = MetricsSnapshot {
+        task_latency_avg_ms: 500.0,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("rove_task_latency_avg_ms 500.000"));
 }
 
 #[test]
 fn render_contains_active_sessions_metric() {
-    let snap = MetricsSnapshot { active_sessions: 4, ..Default::default() };
+    let snap = MetricsSnapshot {
+        active_sessions: 4,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("rove_active_sessions 4"));
 }
@@ -182,14 +209,20 @@ fn render_zero_latency_format() {
 
 #[test]
 fn render_50pct_error_rate() {
-    let snap = MetricsSnapshot { task_error_rate: 0.5, ..Default::default() };
+    let snap = MetricsSnapshot {
+        task_error_rate: 0.5,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("0.500000"));
 }
 
 #[test]
 fn render_100pct_error_rate() {
-    let snap = MetricsSnapshot { task_error_rate: 1.0, ..Default::default() };
+    let snap = MetricsSnapshot {
+        task_error_rate: 1.0,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("1.000000"));
 }
@@ -209,7 +242,10 @@ fn render_large_numbers() {
 #[test]
 fn render_negative_would_still_format() {
     // Shouldn't happen but test edge case
-    let snap = MetricsSnapshot { tasks_total: -1, ..Default::default() };
+    let snap = MetricsSnapshot {
+        tasks_total: -1,
+        ..Default::default()
+    };
     let rendered = render_prometheus(&snap);
     assert!(rendered.contains("-1"));
 }

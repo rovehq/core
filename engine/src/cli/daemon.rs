@@ -27,11 +27,7 @@ pub fn start_background(port: u16, profile: Option<DaemonProfile>) -> Result<()>
 
     // Guard layer 2: something is already answering on this port (e.g. PID
     // file was clobbered by a previous bad start but the daemon is still up).
-    if std::net::TcpStream::connect_timeout(
-        &bind_addr.parse()?,
-        Duration::from_millis(300),
-    )
-    .is_ok()
+    if std::net::TcpStream::connect_timeout(&bind_addr.parse()?, Duration::from_millis(300)).is_ok()
     {
         println!("  Daemon already running (port {port} is in use)");
         return Ok(());

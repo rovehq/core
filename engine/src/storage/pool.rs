@@ -131,9 +131,7 @@ impl Database {
                 ))
                 .execute(&self.pool)
                 .await
-                .with_context(|| {
-                    format!("Failed to add knowledge_documents.{col} column")
-                })?;
+                .with_context(|| format!("Failed to add knowledge_documents.{col} column"))?;
             }
         }
         Ok(())

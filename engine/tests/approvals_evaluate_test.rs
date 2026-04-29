@@ -3,11 +3,11 @@
 use std::fs;
 use tempfile::TempDir;
 
+use rove_engine::config::{ApprovalMode, Config};
 use rove_engine::security::approvals::{
     add_rule, evaluate, load_rules, remove_rule, rules_path, save_rules, ApprovalDecision,
     ApprovalRule, ApprovalRuleAction, ApprovalRulesFile,
 };
-use rove_engine::config::{ApprovalMode, Config};
 use sdk::TaskSource;
 use serde_json::json;
 
@@ -55,28 +55,56 @@ fn require_rule(id: &str, tool: Option<&str>) -> ApprovalRule {
 #[test]
 fn open_mode_always_auto_allows_read_file() {
     let (_temp, config) = temp_config(ApprovalMode::Open);
-    let decision = evaluate(&config, "read_file", &json!({"path":"/tmp/x"}), &TaskSource::Cli, 0).unwrap();
+    let decision = evaluate(
+        &config,
+        "read_file",
+        &json!({"path":"/tmp/x"}),
+        &TaskSource::Cli,
+        0,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
 }
 
 #[test]
 fn open_mode_always_auto_allows_write_file() {
     let (_temp, config) = temp_config(ApprovalMode::Open);
-    let decision = evaluate(&config, "write_file", &json!({"path":"/tmp/x"}), &TaskSource::Cli, 1).unwrap();
+    let decision = evaluate(
+        &config,
+        "write_file",
+        &json!({"path":"/tmp/x"}),
+        &TaskSource::Cli,
+        1,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
 }
 
 #[test]
 fn open_mode_always_auto_allows_delete_file() {
     let (_temp, config) = temp_config(ApprovalMode::Open);
-    let decision = evaluate(&config, "delete_file", &json!({"path":"/tmp/x"}), &TaskSource::Cli, 2).unwrap();
+    let decision = evaluate(
+        &config,
+        "delete_file",
+        &json!({"path":"/tmp/x"}),
+        &TaskSource::Cli,
+        2,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
 }
 
 #[test]
 fn open_mode_auto_allows_run_command() {
     let (_temp, config) = temp_config(ApprovalMode::Open);
-    let decision = evaluate(&config, "run_command", &json!({"command": "ls -la"}), &TaskSource::Cli, 2).unwrap();
+    let decision = evaluate(
+        &config,
+        "run_command",
+        &json!({"command": "ls -la"}),
+        &TaskSource::Cli,
+        2,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
 }
 
@@ -89,7 +117,8 @@ fn open_mode_auto_allows_remote_source() {
         &json!({}),
         &TaskSource::Remote("node-1".to_string()),
         2,
-    ).unwrap();
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
 }
 
@@ -107,14 +136,28 @@ fn open_mode_reason_mentions_open() {
 #[test]
 fn default_mode_requires_approval() {
     let (_temp, config) = temp_config(ApprovalMode::Default);
-    let decision = evaluate(&config, "write_file", &json!({"path":"/tmp/x"}), &TaskSource::Cli, 1).unwrap();
+    let decision = evaluate(
+        &config,
+        "write_file",
+        &json!({"path":"/tmp/x"}),
+        &TaskSource::Cli,
+        1,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::RequireApproval { .. }));
 }
 
 #[test]
 fn default_mode_requires_approval_for_read() {
     let (_temp, config) = temp_config(ApprovalMode::Default);
-    let decision = evaluate(&config, "read_file", &json!({"path":"/tmp/x"}), &TaskSource::Cli, 0).unwrap();
+    let decision = evaluate(
+        &config,
+        "read_file",
+        &json!({"path":"/tmp/x"}),
+        &TaskSource::Cli,
+        0,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::RequireApproval { .. }));
 }
 
@@ -130,7 +173,14 @@ fn default_mode_requires_approval_for_delete() {
 #[test]
 fn allowlist_no_rules_requires_approval() {
     let (_temp, config) = temp_config(ApprovalMode::Allowlist);
-    let decision = evaluate(&config, "read_file", &json!({"path":"/tmp/x"}), &TaskSource::Cli, 0).unwrap();
+    let decision = evaluate(
+        &config,
+        "read_file",
+        &json!({"path":"/tmp/x"}),
+        &TaskSource::Cli,
+        0,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::RequireApproval { .. }));
 }
 
@@ -140,7 +190,14 @@ fn allowlist_no_rules_requires_approval() {
 fn allowlist_rule_matches_tool_auto_allows() {
     let (_temp, config) = temp_config(ApprovalMode::Allowlist);
     add_rule(&config, allow_rule("allow-read", Some("read_file"))).unwrap();
-    let decision = evaluate(&config, "read_file", &json!({"path":"/workspace/a.rs"}), &TaskSource::Cli, 0).unwrap();
+    let decision = evaluate(
+        &config,
+        "read_file",
+        &json!({"path":"/workspace/a.rs"}),
+        &TaskSource::Cli,
+        0,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
 }
 
@@ -346,36 +403,58 @@ fn save_rules_multiple_rules_roundtrip() {
 #[test]
 fn allowlist_effect_read_only_matches_read_file() {
     let (_temp, config) = temp_config(ApprovalMode::Allowlist);
-    add_rule(&config, ApprovalRule {
-        id: "effect-read".to_string(),
-        action: ApprovalRuleAction::Allow,
-        tool: Some("read_file".to_string()),
-        commands: vec![],
-        paths: vec![],
-        nodes: vec![],
-        channels: vec![],
-        risk_tier: None,
-        effect: Some("read_only".to_string()),
-    }).unwrap();
-    let decision = evaluate(&config, "read_file", &json!({"path": "/workspace/a.rs"}), &TaskSource::Cli, 0).unwrap();
+    add_rule(
+        &config,
+        ApprovalRule {
+            id: "effect-read".to_string(),
+            action: ApprovalRuleAction::Allow,
+            tool: Some("read_file".to_string()),
+            commands: vec![],
+            paths: vec![],
+            nodes: vec![],
+            channels: vec![],
+            risk_tier: None,
+            effect: Some("read_only".to_string()),
+        },
+    )
+    .unwrap();
+    let decision = evaluate(
+        &config,
+        "read_file",
+        &json!({"path": "/workspace/a.rs"}),
+        &TaskSource::Cli,
+        0,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
 }
 
 #[test]
 fn allowlist_effect_mismatch_does_not_match() {
     let (_temp, config) = temp_config(ApprovalMode::Allowlist);
-    add_rule(&config, ApprovalRule {
-        id: "effect-read".to_string(),
-        action: ApprovalRuleAction::Allow,
-        tool: Some("read_file".to_string()),
-        commands: vec![],
-        paths: vec![],
-        nodes: vec![],
-        channels: vec![],
-        risk_tier: None,
-        effect: Some("mutating".to_string()), // mismatch: read_file has read_only effect
-    }).unwrap();
-    let decision = evaluate(&config, "read_file", &json!({"path": "/workspace/a.rs"}), &TaskSource::Cli, 0).unwrap();
+    add_rule(
+        &config,
+        ApprovalRule {
+            id: "effect-read".to_string(),
+            action: ApprovalRuleAction::Allow,
+            tool: Some("read_file".to_string()),
+            commands: vec![],
+            paths: vec![],
+            nodes: vec![],
+            channels: vec![],
+            risk_tier: None,
+            effect: Some("mutating".to_string()), // mismatch: read_file has read_only effect
+        },
+    )
+    .unwrap();
+    let decision = evaluate(
+        &config,
+        "read_file",
+        &json!({"path": "/workspace/a.rs"}),
+        &TaskSource::Cli,
+        0,
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::RequireApproval { .. }));
 }
 
@@ -384,17 +463,21 @@ fn allowlist_effect_mismatch_does_not_match() {
 #[test]
 fn allowlist_risk_tier_matches_exactly() {
     let (_temp, config) = temp_config(ApprovalMode::Allowlist);
-    add_rule(&config, ApprovalRule {
-        id: "tier1-rule".to_string(),
-        action: ApprovalRuleAction::Allow,
-        tool: Some("write_file".to_string()),
-        commands: vec![],
-        paths: vec![],
-        nodes: vec![],
-        channels: vec![],
-        risk_tier: Some(1),
-        effect: None,
-    }).unwrap();
+    add_rule(
+        &config,
+        ApprovalRule {
+            id: "tier1-rule".to_string(),
+            action: ApprovalRuleAction::Allow,
+            tool: Some("write_file".to_string()),
+            commands: vec![],
+            paths: vec![],
+            nodes: vec![],
+            channels: vec![],
+            risk_tier: Some(1),
+            effect: None,
+        },
+    )
+    .unwrap();
     let decision = evaluate(&config, "write_file", &json!({}), &TaskSource::Cli, 1).unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
 }
@@ -402,17 +485,21 @@ fn allowlist_risk_tier_matches_exactly() {
 #[test]
 fn allowlist_risk_tier_mismatch_no_match() {
     let (_temp, config) = temp_config(ApprovalMode::Allowlist);
-    add_rule(&config, ApprovalRule {
-        id: "tier0-rule".to_string(),
-        action: ApprovalRuleAction::Allow,
-        tool: Some("read_file".to_string()),
-        commands: vec![],
-        paths: vec![],
-        nodes: vec![],
-        channels: vec![],
-        risk_tier: Some(0),
-        effect: None,
-    }).unwrap();
+    add_rule(
+        &config,
+        ApprovalRule {
+            id: "tier0-rule".to_string(),
+            action: ApprovalRuleAction::Allow,
+            tool: Some("read_file".to_string()),
+            commands: vec![],
+            paths: vec![],
+            nodes: vec![],
+            channels: vec![],
+            risk_tier: Some(0),
+            effect: None,
+        },
+    )
+    .unwrap();
     // Calling with tier 1 instead of 0
     let decision = evaluate(&config, "read_file", &json!({}), &TaskSource::Cli, 1).unwrap();
     assert!(matches!(decision, ApprovalDecision::RequireApproval { .. }));
@@ -423,48 +510,58 @@ fn allowlist_risk_tier_mismatch_no_match() {
 #[test]
 fn allowlist_command_pattern_matches() {
     let (_temp, config) = temp_config(ApprovalMode::Allowlist);
-    add_rule(&config, ApprovalRule {
-        id: "git-safe".to_string(),
-        action: ApprovalRuleAction::Allow,
-        tool: Some("run_command".to_string()),
-        commands: vec!["git status*".to_string()],
-        paths: vec![],
-        nodes: vec![],
-        channels: vec![],
-        risk_tier: None,
-        effect: None,
-    }).unwrap();
+    add_rule(
+        &config,
+        ApprovalRule {
+            id: "git-safe".to_string(),
+            action: ApprovalRuleAction::Allow,
+            tool: Some("run_command".to_string()),
+            commands: vec!["git status*".to_string()],
+            paths: vec![],
+            nodes: vec![],
+            channels: vec![],
+            risk_tier: None,
+            effect: None,
+        },
+    )
+    .unwrap();
     let decision = evaluate(
         &config,
         "run_command",
         &json!({"command": "git status --short"}),
         &TaskSource::Cli,
         1,
-    ).unwrap();
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::AutoAllow { .. }));
 }
 
 #[test]
 fn allowlist_command_mismatch_no_match() {
     let (_temp, config) = temp_config(ApprovalMode::Allowlist);
-    add_rule(&config, ApprovalRule {
-        id: "git-safe".to_string(),
-        action: ApprovalRuleAction::Allow,
-        tool: Some("run_command".to_string()),
-        commands: vec!["git status*".to_string()],
-        paths: vec![],
-        nodes: vec![],
-        channels: vec![],
-        risk_tier: None,
-        effect: None,
-    }).unwrap();
+    add_rule(
+        &config,
+        ApprovalRule {
+            id: "git-safe".to_string(),
+            action: ApprovalRuleAction::Allow,
+            tool: Some("run_command".to_string()),
+            commands: vec!["git status*".to_string()],
+            paths: vec![],
+            nodes: vec![],
+            channels: vec![],
+            risk_tier: None,
+            effect: None,
+        },
+    )
+    .unwrap();
     let decision = evaluate(
         &config,
         "run_command",
         &json!({"command": "rm -rf /tmp"}),
         &TaskSource::Cli,
         2,
-    ).unwrap();
+    )
+    .unwrap();
     assert!(matches!(decision, ApprovalDecision::RequireApproval { .. }));
 }
 

@@ -317,9 +317,10 @@ pub async fn handle_remote_terminal(
         return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
     }
 
-    let shell = query.shell.clone().unwrap_or_else(|| {
-        std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
-    });
+    let shell = query
+        .shell
+        .clone()
+        .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()));
 
     ws.on_upgrade(move |socket| async move {
         if let Err(error) = run_terminal_session(socket, &shell).await {
@@ -329,7 +330,7 @@ pub async fn handle_remote_terminal(
 }
 
 async fn run_terminal_session(mut socket: WebSocket, shell: &str) -> anyhow::Result<()> {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {

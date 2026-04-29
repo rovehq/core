@@ -68,7 +68,10 @@ fn rule_action_equality() {
         ApprovalRuleAction::RequireApproval,
         ApprovalRuleAction::RequireApproval
     );
-    assert_ne!(ApprovalRuleAction::Allow, ApprovalRuleAction::RequireApproval);
+    assert_ne!(
+        ApprovalRuleAction::Allow,
+        ApprovalRuleAction::RequireApproval
+    );
 }
 
 // ── ApprovalRule field defaults ────────────────────────────────────────────────
@@ -502,10 +505,7 @@ fn rules_file_empty_default() {
 #[test]
 fn rules_file_with_rules_roundtrip() {
     let file = rove_engine::security::approvals::ApprovalRulesFile {
-        rules: vec![
-            allow_rule("r1"),
-            require_rule("r2"),
-        ],
+        rules: vec![allow_rule("r1"), require_rule("r2")],
     };
     let json = serde_json::to_string(&file).unwrap();
     let back: rove_engine::security::approvals::ApprovalRulesFile =
@@ -616,9 +616,8 @@ fn approval_decision_auto_allow_has_reason() {
 
 #[test]
 fn approval_decision_require_approval_no_reason() {
-    let decision = rove_engine::security::approvals::ApprovalDecision::RequireApproval {
-        reason: None,
-    };
+    let decision =
+        rove_engine::security::approvals::ApprovalDecision::RequireApproval { reason: None };
     if let rove_engine::security::approvals::ApprovalDecision::RequireApproval { reason } =
         &decision
     {
@@ -752,11 +751,7 @@ fn multiple_rules_have_unique_ids() {
 
 #[test]
 fn rules_sorted_by_id() {
-    let mut rules = [
-        allow_rule("zzz"),
-        allow_rule("aaa"),
-        allow_rule("mmm"),
-    ];
+    let mut rules = [allow_rule("zzz"), allow_rule("aaa"), allow_rule("mmm")];
     rules.sort_by(|a, b| a.id.cmp(&b.id));
     assert_eq!(rules[0].id, "aaa");
     assert_eq!(rules[1].id, "mmm");

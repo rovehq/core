@@ -46,14 +46,22 @@ fn all_presets_have_nonempty_name() {
 #[test]
 fn all_presets_have_nonempty_description() {
     for p in list_worker_presets() {
-        assert!(!p.description.is_empty(), "empty description for id={}", p.id);
+        assert!(
+            !p.description.is_empty(),
+            "empty description for id={}",
+            p.id
+        );
     }
 }
 
 #[test]
 fn all_presets_have_nonempty_instructions() {
     for p in list_worker_presets() {
-        assert!(!p.instructions.is_empty(), "empty instructions for id={}", p.id);
+        assert!(
+            !p.instructions.is_empty(),
+            "empty instructions for id={}",
+            p.id
+        );
     }
 }
 
@@ -67,14 +75,22 @@ fn all_presets_have_at_least_one_tool() {
 #[test]
 fn all_presets_have_output_contract() {
     for p in list_worker_presets() {
-        assert!(p.output_contract.is_some(), "no output_contract for id={}", p.id);
+        assert!(
+            p.output_contract.is_some(),
+            "no output_contract for id={}",
+            p.id
+        );
     }
 }
 
 #[test]
 fn all_presets_have_max_iterations() {
     for p in list_worker_presets() {
-        assert!(p.max_iterations.is_some(), "no max_iterations for id={}", p.id);
+        assert!(
+            p.max_iterations.is_some(),
+            "no max_iterations for id={}",
+            p.id
+        );
     }
 }
 
@@ -392,7 +408,8 @@ fn subagent_filter_keeps_allowed_intersection() {
         "executor",
         "fix bug",
         vec!["read_file".to_string(), "write_file".to_string()],
-    ).unwrap();
+    )
+    .unwrap();
     assert!(spec.tools_allowed.contains(&"read_file".to_string()));
     assert!(spec.tools_allowed.contains(&"write_file".to_string()));
 }
@@ -403,7 +420,8 @@ fn subagent_filter_removes_tools_not_in_preset() {
         "summariser",
         "summarise",
         vec!["read_file".to_string(), "write_file".to_string()],
-    ).unwrap();
+    )
+    .unwrap();
     // summariser doesn't have write_file
     assert!(!spec.tools_allowed.contains(&"write_file".to_string()));
     assert!(spec.tools_allowed.contains(&"read_file".to_string()));

@@ -59,7 +59,9 @@ pub use hybrid::{ExecutionLocation, HybridExecutor, StepExecutionResult};
 pub use planner::Planner;
 pub use policy::StepExecutionPolicy;
 pub use routing::ApexRoutingPolicy;
-pub use runner::{ApexNodeExecution, ApexNodeExecutor, ApexRunReport, ApexRunner, ApexSchedulingPolicy};
+pub use runner::{
+    ApexNodeExecution, ApexNodeExecutor, ApexRunReport, ApexRunner, ApexSchedulingPolicy,
+};
 pub use session::SessionMemory;
 pub use system::MemorySystem;
 pub use types::{

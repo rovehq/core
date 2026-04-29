@@ -148,14 +148,10 @@ impl CryptoModule {
     /// Returns an error if either embedded public key is invalid or corrupted.
     /// This should never happen in a properly built binary.
     pub fn new() -> Result<Self, EngineError> {
-        let team_public_key = Self::parse_embedded_key(
-            TEAM_OFFICIAL_PUBLIC_KEY_BYTES,
-            "official team public key",
-        )?;
-        let community_public_key = Self::parse_embedded_key(
-            TEAM_COMMUNITY_PUBLIC_KEY_BYTES,
-            "community team public key",
-        )?;
+        let team_public_key =
+            Self::parse_embedded_key(TEAM_OFFICIAL_PUBLIC_KEY_BYTES, "official team public key")?;
+        let community_public_key =
+            Self::parse_embedded_key(TEAM_COMMUNITY_PUBLIC_KEY_BYTES, "community team public key")?;
 
         tracing::info!("CryptoModule initialized with official + community public keys");
 
@@ -1096,9 +1092,6 @@ mod tests {
             role_for_manifest(&serde_json::json!({"trust_tier": 0})),
             KeyRole::Official
         );
-        assert_eq!(
-            role_for_manifest(&serde_json::json!({})),
-            KeyRole::Official
-        );
+        assert_eq!(role_for_manifest(&serde_json::json!({})), KeyRole::Official);
     }
 }

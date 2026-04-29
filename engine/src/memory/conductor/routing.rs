@@ -87,7 +87,9 @@ impl ApexRoutingPolicy {
                 Route::Local if self.local_brain_available => Route::Local,
                 Route::Local => Route::Ollama,
                 // For complex tasks, prefer the reasoning-tuned LocalBrain over a small Ollama model.
-                Route::Ollama if self.local_brain_available && complexity == Complexity::Complex => {
+                Route::Ollama
+                    if self.local_brain_available && complexity == Complexity::Complex =>
+                {
                     Route::Local
                 }
                 Route::Ollama => Route::Ollama,

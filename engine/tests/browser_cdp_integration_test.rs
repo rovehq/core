@@ -84,7 +84,12 @@ fn browser_cdp_tool_catalog_declares_backend() {
     names.sort_unstable();
     assert_eq!(
         names,
-        ["browse_url", "click_element", "fill_form_field", "read_page_text"]
+        [
+            "browse_url",
+            "click_element",
+            "fill_form_field",
+            "read_page_text"
+        ]
     );
 }
 
@@ -831,7 +836,6 @@ async fn browser_cdp_smart_form_fill_test() {
     println!("\n✅ All smart tools working!");
 }
 
-
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires Chrome"]
 async fn test_extract_semantic_data_flipkart() {
@@ -859,18 +863,25 @@ async fn test_extract_semantic_data_flipkart() {
 
     // Test extract_semantic_data
     println!("\n📊 Extracting semantic data...");
-    let extract = tool.handle(
-        ToolInput::new("extract_semantic_data")
-            .with_param("keys", serde_json::json!(["price", "title", "rating", "product"]))
+    let extract = tool.handle(ToolInput::new("extract_semantic_data").with_param(
+        "keys",
+        serde_json::json!(["price", "title", "rating", "product"]),
+    ));
+
+    assert!(
+        extract.is_ok(),
+        "extract_semantic_data should succeed: {:?}",
+        extract.err()
     );
 
-    assert!(extract.is_ok(), "extract_semantic_data should succeed: {:?}", extract.err());
-    
     if let Ok(output) = extract {
         let data = output.data.as_str().unwrap_or("{}");
         println!("Extracted data:\n{}", data);
-        
+
         let parsed: serde_json::Value = serde_json::from_str(data).unwrap();
-        println!("\n✅ Successfully extracted {} fields", parsed.as_object().unwrap().len());
+        println!(
+            "\n✅ Successfully extracted {} fields",
+            parsed.as_object().unwrap().len()
+        );
     }
 }
