@@ -213,6 +213,7 @@ jobs:
   deploy:
     name: Sign & Deploy (${{ needs.changes.outputs.channel }})
     needs: [changes, build-engine, build-tools]
+    if: always() && (needs.build-engine.result == 'success' || needs.build-engine.result == 'failure') && needs.build-tools.result != 'cancelled'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -325,6 +326,7 @@ jobs:
   update-registry:
     name: Update Registry (${{ needs.changes.outputs.channel }})
     needs: [changes, build-engine, build-tools]
+    if: always() && (needs.build-engine.result == 'success' || needs.build-engine.result == 'failure') && needs.build-tools.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

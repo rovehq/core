@@ -101,10 +101,21 @@ if command -v b3sum >/dev/null 2>&1; then
     b3sum "${DIST_DIR}/${BINARY_NAME}.tar.gz" > "${DIST_DIR}/${BINARY_NAME}.tar.gz.blake3"
     HASH_LINE=$(b3sum "${DIST_DIR}/${BINARY_NAME}.tar.gz")
     HASH_ALGO=BLAKE3
-else
+elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${DIST_DIR}/${BINARY_NAME}.tar.gz" > "${DIST_DIR}/${BINARY_NAME}.tar.gz.sha256"
+    HASH_LINE=$(sha256sum "${DIST_DIR}/${BINARY_NAME}.tar.gz")
+    HASH_ALGO=SHA256
+elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "${DIST_DIR}/${BINARY_NAME}.tar.gz" > "${DIST_DIR}/${BINARY_NAME}.tar.gz.sha256"
     HASH_LINE=$(shasum -a 256 "${DIST_DIR}/${BINARY_NAME}.tar.gz")
     HASH_ALGO=SHA256
+elif command -v certutil >/dev/null 2>&1; then
+    certutil -hashfile "${DIST_DIR}/${BINARY_NAME}.tar.gz" SHA256 | grep -v "^SHA256\|CertUtil" > "${DIST_DIR}/${BINARY_NAME}.tar.gz.sha256"
+    HASH_LINE=$(cat "${DIST_DIR}/${BINARY_NAME}.tar.gz.sha256")
+    HASH_ALGO=SHA256
+else
+    HASH_LINE="(no hash tool available)"
+    HASH_ALGO=NONE
 fi
 
 echo ""
