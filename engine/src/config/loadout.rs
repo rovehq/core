@@ -28,7 +28,7 @@ pub struct ResolvedLoadout {
 
 impl ResolvedLoadout {
     pub fn compatibility_default() -> Self {
-        let builtins = ["filesystem", "terminal", "vision"]
+        let builtins = ["filesystem", "terminal"]
             .into_iter()
             .map(str::to_string)
             .collect();
@@ -62,7 +62,6 @@ impl ResolvedLoadout {
         BuiltinSelection {
             filesystem: self.builtins.contains("filesystem"),
             terminal: self.builtins.contains("terminal"),
-            vision: self.builtins.contains("vision"),
         }
     }
 }

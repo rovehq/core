@@ -435,7 +435,9 @@ mod tests {
 
     #[test]
     fn repository_seeds_default_agent() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();
@@ -445,7 +447,9 @@ mod tests {
 
     #[test]
     fn repository_rejects_step_with_agent_and_worker_preset() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();
@@ -477,7 +481,9 @@ mod tests {
 
     #[test]
     fn repository_rejects_branch_to_unknown_step() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();

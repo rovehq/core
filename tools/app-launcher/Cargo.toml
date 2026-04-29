@@ -1,7 +1,0 @@
-[package]
-name = "app-launcher"
-version.workspace = true
-edition.workspace = true
-
-[lib]
-crate-type = ["cdylib"]

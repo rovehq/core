@@ -32,7 +32,7 @@ use crate::security::fs_guard::FileSystemGuard;
 use crate::storage::Database;
 use crate::storage::InstalledPlugin;
 
-pub use builtin::{BrowserTool, FilesystemTool, TerminalTool, VisionTool};
+pub use builtin::{BrowserTool, FilesystemTool, TerminalTool};
 pub use manifest::*;
 pub use mcp::{
     McpSandbox, McpServer, McpServerConfig, McpSpawner, McpToolDescriptor, SandboxProfile,
@@ -1063,8 +1063,6 @@ mod tests {
         config.mcp.servers.clear();
         config.plugins.fs_editor = true;
         config.plugins.terminal = true;
-        config.plugins.screenshot = true;
-
         let runtime = RuntimeManager::build(&database, &config)
             .await
             .expect("runtime manager");
@@ -1072,10 +1070,8 @@ mod tests {
 
         assert!(runtime.registry.fs.is_some());
         assert!(runtime.registry.terminal.is_some());
-        assert!(runtime.registry.vision.is_some());
         assert!(schemas.iter().any(|schema| schema.name == "read_file"));
         assert!(schemas.iter().any(|schema| schema.name == "run_command"));
-        assert!(schemas.iter().any(|schema| schema.name == "capture_screen"));
     }
 
     #[tokio::test]
@@ -1311,7 +1307,6 @@ mod tests {
 
         assert!(runtime.registry.fs.is_some());
         assert!(runtime.registry.terminal.is_some());
-        assert!(runtime.registry.vision.is_none());
         assert!(schemas.iter().any(|schema| schema.name == "echo_text"));
         assert!(!schemas.iter().any(|schema| schema.name == "vision_scan"));
         assert!(!schemas.iter().any(|schema| schema.name == "capture_screen"));

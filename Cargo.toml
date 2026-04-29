@@ -1,18 +1,10 @@
 [workspace]
 members = [
-    "tools/file-watcher",
-    "tools/app-launcher",
     "tools/filesystem",
-    "tools/notification",
-    "tools/screenshot",
     "tools/terminal",
-    "tools/voice-native",
     "brain",
     "engine",
     "sdk",
-    "tools/remote",
-
-
 ]
 exclude = []
 resolver = "2"

@@ -61,12 +61,6 @@ impl ToolRegistry {
         .any(|keyword| query_lower.contains(keyword))
     }
 
-    fn should_offer_vision(query_lower: &str) -> bool {
-        ["screen", "screenshot", "image", "picture", "visual"]
-            .iter()
-            .any(|keyword| query_lower.contains(keyword))
-    }
-
     fn should_offer_browser(query_lower: &str) -> bool {
         [
             "browse",
@@ -169,8 +163,6 @@ impl ToolRegistry {
             && (include_all_core_tools || Self::should_offer_filesystem(&query_lower));
         let include_terminal = self.terminal.is_some()
             && (include_all_core_tools || Self::should_offer_terminal(&query_lower));
-        let include_vision = self.vision.is_some()
-            && (include_all_core_tools || Self::should_offer_vision(&query_lower));
         let include_web = (self.web_fetch_enabled || self.web_search_enabled)
             && (include_all_core_tools || Self::should_offer_web(&query_lower));
         let include_browser = self.browser.is_some()
@@ -178,7 +170,6 @@ impl ToolRegistry {
 
         let has_any_tool = include_fs
             || include_terminal
-            || include_vision
             || include_web
             || include_browser
             || !self.wasm_tools.is_empty()
@@ -293,13 +284,6 @@ impl ToolRegistry {
             parts.push(r#"Arguments: {"command": "shell command to run"}"#.to_string());
         }
 
-        if include_vision {
-            parts.push(String::new());
-            parts.push("## capture_screen".to_string());
-            parts.push("Capture a screenshot and save it to a file.".to_string());
-            parts.push(r#"Arguments: {"output_file": "screenshot.png"}"#.to_string());
-        }
-
         if include_web {
             if self.web_search_enabled {
                 parts.push(String::new());
@@ -397,9 +381,6 @@ impl ToolRegistry {
         }
         if self.terminal.is_some() {
             names.push("run_command".to_string());
-        }
-        if self.vision.is_some() {
-            names.push("capture_screen".to_string());
         }
         if self.browser.is_some() {
             names.extend_from_slice(&[

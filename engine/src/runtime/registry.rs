@@ -17,9 +17,7 @@ use crate::hooks::{
 use sdk::brain::Brain;
 use sdk::browser::BrowserBackend;
 
-use crate::runtime::{
-    FilesystemTool, McpSpawner, NativeRuntime, TerminalTool, VisionTool, WasmRuntime,
-};
+use crate::runtime::{FilesystemTool, McpSpawner, NativeRuntime, TerminalTool, WasmRuntime};
 use crate::security::approvals;
 use crate::security::command_executor::CommandExecutor;
 use crate::security::injection_detector::InjectionDetector;
@@ -67,7 +65,6 @@ impl BrainBackendSource {
 pub struct ToolRegistry {
     pub fs: Option<FilesystemTool>,
     pub terminal: Option<TerminalTool>,
-    pub vision: Option<VisionTool>,
     pub web_fetch_enabled: bool,
     pub web_search_enabled: bool,
     /// Browser backend — `None` when `browser.enabled` is false or no profile is configured.
@@ -96,7 +93,6 @@ impl ToolRegistry {
         Self {
             fs: None,
             terminal: None,
-            vision: None,
             web_fetch_enabled: false,
             web_search_enabled: false,
             browser: None,
@@ -123,7 +119,6 @@ impl ToolRegistry {
         Self {
             fs: None,
             terminal: None,
-            vision: None,
             web_fetch_enabled: false,
             web_search_enabled: false,
             browser: None,
@@ -285,18 +280,6 @@ impl ToolRegistry {
             parameters: serde_json::json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),
             source: ToolSource::Builtin,
             domains: vec!["shell".to_string(), "git".to_string(), "code".to_string(), "all".to_string()],
-        })
-        .await;
-    }
-
-    pub async fn register_builtin_vision(&mut self, tool: VisionTool) {
-        self.vision = Some(tool);
-        self.register(ToolSchema {
-            name: "capture_screen".to_string(),
-            description: "Capture a screenshot.".to_string(),
-            parameters: serde_json::json!({"type":"object","properties":{"output_file":{"type":"string"}}}),
-            source: ToolSource::Builtin,
-            domains: vec!["vision".to_string(), "all".to_string()],
         })
         .await;
     }
@@ -1029,21 +1012,6 @@ impl ToolRegistry {
                     .execute(command)
                     .await
                     .map(Value::String)
-                    .map_err(|error| EngineError::ToolError(error.to_string()))
-            }
-            "capture_screen" => {
-                let vision = self
-                    .vision
-                    .as_ref()
-                    .ok_or_else(|| EngineError::ToolNotFound(name.to_string()))?;
-                let output_file = args
-                    .get("output_file")
-                    .and_then(Value::as_str)
-                    .unwrap_or("screenshot.png");
-                vision
-                    .capture_screen(output_file)
-                    .await
-                    .map(|path| Value::String(path.display().to_string()))
                     .map_err(|error| EngineError::ToolError(error.to_string()))
             }
             "browse_url" => {

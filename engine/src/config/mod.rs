@@ -336,8 +336,8 @@ impl Config {
 
         // Expand and validate workspace path
         self.core.workspace = expand_path(&self.core.workspace)?;
-        reject_dangerous_workspace(&self.core.workspace)?;
         self.core.workspace = canonicalize_or_create(&self.core.workspace)?;
+        reject_dangerous_workspace(&self.core.workspace)?;
 
         if !self.core.workspace.is_dir() {
             return Err(EngineError::Config(format!(

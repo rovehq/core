@@ -20,8 +20,6 @@ pub struct PluginsConfig {
     pub fs_editor: bool,
     #[serde(default = "default_true")]
     pub terminal: bool,
-    #[serde(default)]
-    pub screenshot: bool,
     #[serde(default = "default_true")]
     pub git: bool,
 }
@@ -31,7 +29,6 @@ impl Default for PluginsConfig {
         Self {
             fs_editor: default_true(),
             terminal: default_true(),
-            screenshot: false,
             git: default_true(),
         }
     }

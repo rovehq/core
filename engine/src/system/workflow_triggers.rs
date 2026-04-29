@@ -435,7 +435,9 @@ mod tests {
 
     #[test]
     fn channel_matching_prefers_enabled_bindings() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();
@@ -465,7 +467,9 @@ mod tests {
 
     #[test]
     fn channel_matching_supports_specific_targets_and_wildcards() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();
@@ -500,7 +504,9 @@ mod tests {
 
     #[test]
     fn webhook_matching_requires_secret_when_configured() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();
@@ -524,7 +530,9 @@ mod tests {
 
     #[test]
     fn file_watch_matching_stays_out_of_general_workspace_paths() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();
@@ -561,7 +569,9 @@ mod tests {
 
     #[test]
     fn file_watch_registrations_resolve_relative_paths_against_workspace() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", temp_dir.path().join("config.toml"));
         let repo = SpecRepository::new().unwrap();

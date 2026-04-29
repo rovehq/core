@@ -162,29 +162,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "api-server"
-version = "0.0.3"
-dependencies = [
- "anyhow",
- "axum",
- "dirs",
- "rand 0.8.6",
- "reqwest 0.11.27",
- "sdk",
- "serde",
- "serde_json",
- "tokio",
- "toml 0.8.23",
- "tower 0.4.13",
- "tower-http 0.5.2",
- "tracing",
-]
-
-[[package]]
-name = "app-launcher"
-version = "0.0.3"
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2335,7 +2312,6 @@ dependencies = [
  "regex",
  "reqwest 0.11.27",
  "rpassword",
- "screenshot",
  "sdk",
  "secret-service",
  "security-framework 2.11.1",
@@ -2606,10 +2582,6 @@ name = "fiat-crypto"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
-
-[[package]]
-name = "file-watcher"
-version = "0.0.3"
 
 [[package]]
 name = "filedescriptor"
@@ -5206,10 +5178,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "notification"
-version = "0.0.3"
-
-[[package]]
 name = "notify"
 version = "6.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7212,17 +7180,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "screenshot"
-version = "0.0.3"
-dependencies = [
- "anyhow",
- "sdk",
- "serde_json",
- "tokio",
- "tracing",
-]
 
 [[package]]
 name = "scrypt"
@@ -9278,17 +9235,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "voice-native"
-version = "0.0.3"
-dependencies = [
- "anyhow",
- "sdk",
- "serde",
- "serde_json",
- "tracing",
-]
 
 [[package]]
 name = "wait-timeout"

@@ -1,7 +1,0 @@
-[package]
-name = "file-watcher"
-version.workspace = true
-edition.workspace = true
-
-[lib]
-crate-type = ["cdylib"]

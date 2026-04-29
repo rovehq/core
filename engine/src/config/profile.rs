@@ -121,7 +121,7 @@ impl Config {
             normalize_entry_list(&mut loadout.plugins)?;
 
             for builtin in &loadout.builtins {
-                if !matches!(builtin.as_str(), "filesystem" | "terminal" | "vision") {
+                if !matches!(builtin.as_str(), "filesystem" | "terminal") {
                     return Err(EngineError::Config(format!(
                         "Loadout '{}' references unknown builtin '{}'",
                         loadout_name, builtin

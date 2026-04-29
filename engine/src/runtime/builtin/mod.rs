@@ -2,7 +2,6 @@ pub mod browser;
 
 pub use browser::BrowserTool;
 pub use filesystem::FilesystemTool;
-pub use screenshot::VisionTool;
 pub use terminal::TerminalTool;
 
 use std::path::PathBuf;
@@ -15,7 +14,6 @@ use super::registry::ToolRegistry;
 pub struct BuiltinSelection {
     pub filesystem: bool,
     pub terminal: bool,
-    pub vision: bool,
 }
 
 impl BuiltinSelection {
@@ -23,7 +21,6 @@ impl BuiltinSelection {
         Self {
             filesystem: true,
             terminal: true,
-            vision: true,
         }
     }
 
@@ -31,7 +28,6 @@ impl BuiltinSelection {
         Self {
             filesystem: true,
             terminal: true,
-            vision: true,
         }
     }
 }
@@ -58,11 +54,6 @@ pub async fn register_selected(
     if selection.terminal {
         registry
             .register_builtin_terminal(TerminalTool::new(workspace.to_string_lossy().to_string()))
-            .await;
-    }
-    if selection.vision {
-        registry
-            .register_builtin_vision(VisionTool::new(workspace))
             .await;
     }
     Ok(())

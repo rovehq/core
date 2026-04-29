@@ -34,7 +34,6 @@ impl ToolRegistry {
             "glob_files" => self.dispatch_glob_files(&args).await,
             "grep_files" => self.dispatch_grep_files(&args).await,
             "run_command" => self.dispatch_run_command(&args).await,
-            "capture_screen" => self.dispatch_capture_screen(&args).await,
             "browse_url" => self.dispatch_browse_url(&args).await,
             "read_page_text" => self.dispatch_read_page_text().await,
             "click_element" => self.dispatch_click_element(&args).await,
@@ -299,22 +298,6 @@ impl ToolRegistry {
 
         match terminal.execute(command).await {
             Ok(output) => output,
-            Err(error) => format!("ERROR: {}", error),
-        }
-    }
-
-    async fn dispatch_capture_screen(&self, args: &serde_json::Value) -> String {
-        let Some(vision) = &self.vision else {
-            return "ERROR: capture_screen tool is not enabled".to_string();
-        };
-
-        let output_file = args
-            .get("output_file")
-            .and_then(|value| value.as_str())
-            .unwrap_or("screenshot.png");
-
-        match vision.capture_screen(output_file).await {
-            Ok(path) => format!("Screenshot saved to {}", path.display()),
             Err(error) => format!("ERROR: {}", error),
         }
     }
