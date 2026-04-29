@@ -153,56 +153,11 @@ jobs:
           path: artifacts/
           retention-days: 1
 
-  # ── Build core tools ─────────────────────────────
-  build-tools:
-    name: Build Tools (${{ needs.changes.outputs.channel }} · ${{ matrix.platform }})
-    needs: [changes]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            platform: linux-x86_64
-            lib_ext: so
-            lib_prefix: lib
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            platform: darwin-aarch64
-            lib_ext: dylib
-            lib_prefix: lib
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            platform: windows-x86_64
-            lib_ext: dll
-            lib_prefix: ""
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.target }}-${{ needs.changes.outputs.channel }}
-
-      - name: Stage tool artifacts
-        run: |
-          mkdir -p artifacts/core_tools/${{ matrix.platform }}
-        shell: bash
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tools-${{ needs.changes.outputs.channel }}-${{ matrix.platform }}
-          path: artifacts/
-          retention-days: 1
-
   # ── Sign & Deploy to R2 ─────────────────────────
   deploy:
     name: Sign & Deploy (${{ needs.changes.outputs.channel }})
-    needs: [changes, build-engine, build-tools]
-    if: always() && (needs.build-engine.result == 'success' || needs.build-engine.result == 'failure') && needs.build-tools.result != 'cancelled'
+    needs: [changes, build-engine]
+    if: always() && (needs.build-engine.result == 'success' || needs.build-engine.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -314,8 +269,8 @@ jobs:
   # ── Update Registry (per-channel manifests) ─────
   update-registry:
     name: Update Registry (${{ needs.changes.outputs.channel }})
-    needs: [changes, build-engine, build-tools]
-    if: always() && (needs.build-engine.result == 'success' || needs.build-engine.result == 'failure') && needs.build-tools.result != 'cancelled'
+    needs: [changes, build-engine]
+    if: always() && (needs.build-engine.result == 'success' || needs.build-engine.result == 'failure')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
