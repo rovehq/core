@@ -168,7 +168,13 @@ impl ToolRegistry {
     }
 
     pub async fn register(&self, schema: ToolSchema) {
-        self.tools.write().await.insert(schema.name.clone(), schema);
+        let mut tools = self.tools.write().await;
+        if let Some(existing) = tools.get(&schema.name) {
+            if matches!(existing.source, ToolSource::Builtin) {
+                return;
+            }
+        }
+        tools.insert(schema.name.clone(), schema);
     }
 
     pub async fn register_builtin_filesystem(&mut self, tool: FilesystemTool) {

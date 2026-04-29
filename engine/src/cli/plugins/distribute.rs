@@ -416,7 +416,7 @@ mod tests {
                     "memory_write": false,
                     "tools": []
                 },
-                "trust_tier": "Community",
+                "trust_tier": "Reviewed",
                 "min_model": null,
                 "description": "Sample plugin",
                 "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"

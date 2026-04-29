@@ -10,7 +10,7 @@
     "memory_write": false,
     "tools": []
   },
-  "trust_tier": "Community",
+  "trust_tier": "Reviewed",
   "min_model": null,
   "description": "Reference plugin package for registry and authoring docs",
   "signature": "LOCAL_DEV_MANIFEST_SIGNATURE"

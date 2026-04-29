@@ -669,7 +669,7 @@ mod tests {
             package_dir.path(),
             &signing_key,
             "Vision Plus",
-            "Plugin",
+            "Brain",
             "Official",
             "0.1.0",
         );
@@ -688,7 +688,7 @@ mod tests {
             .await
             .expect("install driver");
 
-        assert_eq!(installed.plugin_type, "Plugin");
+        assert_eq!(installed.plugin_type, "Brain");
         assert!(data_dir
             .path()
             .join("plugins")

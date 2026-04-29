@@ -320,19 +320,17 @@ mod tests {
 
     #[test]
     fn export_and_restore_round_trip_selected_files() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
         let config_root = temp_dir.path().join("config-root");
         let data_dir = temp_dir.path().join("data");
+        let workspace_dir = temp_dir.path().join("workspace");
+        fs::create_dir_all(&workspace_dir).unwrap();
         std::env::set_var("ROVE_CONFIG_PATH", config_root.join("config.toml"));
         std::env::set_var("ROVE_DATA_DIR", &data_dir);
+        std::env::set_var("ROVE_WORKSPACE", &workspace_dir);
 
         let mut config = Config::load_or_create().unwrap();
-        config.core.workspace = PathBuf::from(format!(
-            "/tmp/rove-backup-test-workspace-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&config.core.workspace).unwrap();
         config.core.data_dir = data_dir.clone();
         config.policy.policy_dir = temp_dir.path().join("policy");
         fs::create_dir_all(&config.policy.policy_dir).unwrap();
@@ -368,5 +366,6 @@ mod tests {
 
         std::env::remove_var("ROVE_CONFIG_PATH");
         std::env::remove_var("ROVE_DATA_DIR");
+        std::env::remove_var("ROVE_WORKSPACE");
     }
 }

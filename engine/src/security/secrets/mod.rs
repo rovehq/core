@@ -670,7 +670,7 @@ backend = "{backend}"
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn vault_roundtrip_and_delete() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = TempDir::new().expect("temp dir");
         let config_path = configure_temp_root(&temp, "vault");
         let manager = SecretManager::new("rove");
@@ -692,7 +692,7 @@ backend = "{backend}"
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn env_backend_is_read_only() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = TempDir::new().expect("temp dir");
         let config_path = configure_temp_root(&temp, "env");
         std::env::set_var("ROVE_SECRET_BACKEND", "env");

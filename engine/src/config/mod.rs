@@ -369,6 +369,11 @@ impl Config {
         {
             self.core.data_dir = PathBuf::from(data_dir);
         }
+        if let Some(workspace) =
+            std::env::var_os("ROVE_WORKSPACE").filter(|value| !value.is_empty())
+        {
+            self.core.workspace = PathBuf::from(workspace);
+        }
     }
 
     /// Apply the built-in preset defaults for the selected daemon profile.
