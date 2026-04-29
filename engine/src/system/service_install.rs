@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -493,7 +493,7 @@ fn run_systemctl(user: bool, args: &[&str], ignore_failure: bool) -> Result<()> 
 }
 
 #[allow(unused_variables)]
-fn lock_down_service_file(path: &PathBuf) -> Result<()> {
+fn lock_down_service_file(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use blake3::Hasher;
@@ -192,7 +192,7 @@ fn identity_root(config: &Config) -> PathBuf {
 }
 
 #[allow(unused_variables)]
-fn lock_down_path(path: &PathBuf) -> Result<()> {
+fn lock_down_path(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
