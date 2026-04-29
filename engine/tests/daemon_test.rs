@@ -5,7 +5,10 @@ use std::sync::Mutex;
 use tempfile::TempDir;
 
 use rove_engine::config::Config;
-use rove_engine::system::daemon::{DaemonManager, Result};
+#[cfg(unix)]
+use rove_engine::system::daemon::Result;
+use rove_engine::system::daemon::DaemonManager;
+#[cfg(unix)]
 use sdk::errors::EngineError;
 
 // Daemon tests call start() which writes the current process PID. Serialise
