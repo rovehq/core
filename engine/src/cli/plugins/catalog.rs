@@ -25,12 +25,8 @@ use super::registry::{
 const PUBLIC_EXTENSION_CATALOG_BASE: &str = "https://registry.roveai.co";
 const CATALOG_REFRESH_INTERVAL_SECS: i64 = 15 * 60;
 
-fn public_catalog_url_for_channel(channel: crate::config::channel::Channel) -> String {
-    format!(
-        "{}/{}/extensions",
-        PUBLIC_EXTENSION_CATALOG_BASE,
-        channel.as_str()
-    )
+fn public_catalog_url_for_channel(_channel: crate::config::channel::Channel) -> String {
+    PUBLIC_EXTENSION_CATALOG_BASE.to_string()
 }
 
 #[derive(Debug, Deserialize)]

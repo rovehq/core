@@ -438,3 +438,30 @@ jobs:
             --exclude "*" \
             --include "*/engine/manifest*" \
             --include "*/core-tools/manifest*"
+
+  # ── Deploy to Homebrew & Winget ─────────────────
+  deploy-packages:
+    name: Deploy Packages
+    needs: [deploy]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger Homebrew and Winget updates
+        env:
+          GH_TOKEN: ${{ secrets.REGISTRY_PAT }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          echo "Triggering Homebrew and Winget updates for release $VERSION..."
+          
+          # Trigger Homebrew update
+          gh api repos/rovehq/homebrew-rove/dispatches \
+            -f event_type=update_formula \
+            -f client_payload[version]="${VERSION#v}" || echo "Homebrew tap not found or no access"
+          
+          # Trigger Winget update  
+          gh api repos/rovehq/winget-pkgs/dispatches \
+            -f event_type=update_manifest \
+            -f client_payload[version]="${VERSION#v}" || echo "Winget repository not found or no access"
+          
+          echo "Done."
