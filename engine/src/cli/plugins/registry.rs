@@ -701,6 +701,16 @@ pub(super) fn sign_registry_json(value: &mut serde_json::Value, signed_at: i64) 
         bail!("Registry metadata must be a JSON object");
     };
     object.insert("signed_at".to_string(), serde_json::json!(signed_at));
+
+    if let Some((_, role)) = load_registry_signing_key()? {
+        if matches!(role, crate::security::crypto::KeyRole::Community) {
+            object.insert(
+                "trust_tier".to_string(),
+                serde_json::json!("Community"),
+            );
+        }
+    }
+
     let signature = resolve_registry_signature(value)?;
     let Some(object) = value.as_object_mut() else {
         bail!("Registry metadata must be a JSON object");
@@ -710,16 +720,37 @@ pub(super) fn sign_registry_json(value: &mut serde_json::Value, signed_at: i64) 
 }
 
 fn resolve_registry_signature(value: &serde_json::Value) -> Result<String> {
-    let Some(signing_key) = load_registry_signing_key()? else {
+    let Some((signing_key, _)) = load_registry_signing_key()? else {
         return Ok(LOCAL_DEV_REGISTRY_SIGNATURE.to_string());
     };
     let canonical = CryptoModule::canonicalize_manifest(
-        serde_json::to_vec(value).context("Failed to serialize registry metadata for signing")?.as_slice(),
+        serde_json::to_vec(value)
+            .context("Failed to serialize registry metadata for signing")?
+            .as_slice(),
     )?;
     Ok(hex::encode(signing_key.sign(&canonical).to_bytes()))
 }
 
-pub(super) fn load_registry_signing_key() -> Result<Option<SigningKey>> {
+pub(super) fn load_registry_signing_key(
+) -> Result<Option<(SigningKey, crate::security::crypto::KeyRole)>> {
+    use crate::security::crypto::KeyRole;
+
+    if let Ok(raw) = std::env::var("ROVE_TEAM_OFFICIAL_PRIVATE_KEY") {
+        let bytes = hex::decode(raw.trim()).context("Failed to decode official signing key hex")?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Official signing key must be 32 bytes"))?;
+        return Ok(Some((SigningKey::from_bytes(&bytes), KeyRole::Official)));
+    }
+
+    if let Ok(raw) = std::env::var("ROVE_TEAM_COMMUNITY_PRIVATE_KEY") {
+        let bytes = hex::decode(raw.trim()).context("Failed to decode community signing key hex")?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Community signing key must be 32 bytes"))?;
+        return Ok(Some((SigningKey::from_bytes(&bytes), KeyRole::Community)));
+    }
+
     let Some(raw) = std::env::var("ROVE_REGISTRY_PRIVATE_KEY")
         .ok()
         .or_else(|| std::env::var("ROVE_TEAM_PRIVATE_KEY").ok())
@@ -727,8 +758,10 @@ pub(super) fn load_registry_signing_key() -> Result<Option<SigningKey>> {
         return Ok(None);
     };
     let bytes = hex::decode(raw.trim()).context("Failed to decode registry signing key hex")?;
-    let bytes: [u8; 32] = bytes.try_into().map_err(|_| anyhow::anyhow!("Registry signing key must be 32 bytes"))?;
-    Ok(Some(SigningKey::from_bytes(&bytes)))
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Registry signing key must be 32 bytes"))?;
+    Ok(Some((SigningKey::from_bytes(&bytes), KeyRole::Official)))
 }
 
 pub(crate) fn verify_signed_registry_json(raw: &str, label: &str) -> Result<()> {

@@ -222,7 +222,7 @@ pub(super) async fn prepare_distribution_bundle(
         let hash = compute_file_hash(&artifact_path)?;
         normalized_package["payload_hash"] = serde_json::Value::String(hash.clone());
 
-        if let Some(signing_key) = load_registry_signing_key()? {
+        if let Some((signing_key, _)) = load_registry_signing_key()? {
             let signature = hex::encode(signing_key.sign(hash.as_bytes()).to_bytes());
             normalized_package["payload_signature"] = serde_json::Value::String(signature);
         } else {
