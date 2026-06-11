@@ -74,7 +74,7 @@ impl ExtensionSurface {
     fn expected_type(&self) -> PluginType {
         match self {
             Self::Plugin => PluginType::Plugin,
-            Self::Native => PluginType::Plugin,
+            Self::Native => PluginType::Brain,
             Self::Channel => PluginType::Channel,
         }
     }
