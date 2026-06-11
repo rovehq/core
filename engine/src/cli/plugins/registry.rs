@@ -453,7 +453,10 @@ fn write_v2_registry_metadata(
     fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
 
     // Generate manifest.json for dev/plugins or dev/drivers depending on plugin_type
-    let artifact_type = if manifest.plugin_type.as_str() == "Workspace" { "drivers" } else { "plugins" };
+    let artifact_type = match manifest.plugin_type {
+        crate::runtime::PluginType::Brain => "drivers",
+        _ => "plugins",
+    };
     let v2_manifest_dir = registry_dir.join("dev").join(artifact_type);
     fs::create_dir_all(&v2_manifest_dir)?;
     
