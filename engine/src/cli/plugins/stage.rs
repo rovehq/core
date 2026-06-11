@@ -149,8 +149,14 @@ pub async fn verify_and_store(
     crypto
         .verify_file(&verify_path, &record.binary_hash)
         .with_context(|| format!("Payload hash verification failed for '{}'", record.name))?;
+    let role = if record.trust_tier == 2 {
+        crate::security::crypto::KeyRole::Community
+    } else {
+        crate::security::crypto::KeyRole::Official
+    };
+
     crypto
-        .verify_file_signature(&verify_path, &record.signature)
+        .verify_file_signature(&verify_path, &record.signature, role)
         .with_context(|| {
             format!(
                 "Payload signature verification failed for '{}'",

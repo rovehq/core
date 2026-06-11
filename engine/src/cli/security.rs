@@ -447,8 +447,14 @@ fn integrity_label(plugin: &InstalledPlugin) -> String {
         return "hash-mismatch".to_string();
     }
 
+    let role = if plugin.trust_tier == 2 {
+        crate::security::crypto::KeyRole::Community
+    } else {
+        crate::security::crypto::KeyRole::Official
+    };
+
     match crate::security::crypto::CryptoModule::new() {
-        Ok(crypto) => match crypto.verify_file_signature(path, &plugin.signature) {
+        Ok(crypto) => match crypto.verify_file_signature(path, &plugin.signature, role) {
             Ok(()) => "verified".to_string(),
             Err(_) => "invalid-signature".to_string(),
         },

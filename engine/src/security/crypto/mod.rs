@@ -301,8 +301,9 @@ impl CryptoModule {
         &self,
         path: &Path,
         signature_hex: &str,
+        role: KeyRole,
     ) -> Result<(), EngineError> {
-        tracing::debug!("Verifying file signature: {}", path.display());
+        tracing::debug!(?role, "Verifying file signature: {}", path.display());
 
         if signature_hex.contains("PLACEHOLDER") || signature_hex.contains("LOCAL_DEV") {
             if Self::is_production() {
@@ -321,13 +322,14 @@ impl CryptoModule {
         // Parse signature
         let signature = self.parse_signature(signature_hex)?;
 
-        // File signatures (core-tool dylibs, driver binaries, etc.) always
-        // verify under the Official key. Community artifacts are WASM and
-        // signed at the manifest level, not per-file.
-        self.team_public_key
+        // Verify with the requested key role. Official binaries (dylibs,
+        // native drivers) use the Official key. Community WASM payloads
+        // use the Community key if they are self-signed.
+        self.key_for(role)
             .verify(file_hash.as_bytes(), &signature)
             .map_err(|e| {
                 tracing::error!(
+                    ?role,
                     "File signature verification failed for {}: {}",
                     path.display(),
                     e
@@ -335,7 +337,7 @@ impl CryptoModule {
                 EngineError::InvalidSignature
             })?;
 
-        tracing::info!("File signature verified: {}", path.display());
+        tracing::info!(?role, "File signature verified successfully: {}", path.display());
         Ok(())
     }
 
@@ -719,7 +721,8 @@ mod tests {
         temp_file.write_all(b"dev payload").unwrap();
         temp_file.flush().unwrap();
 
-        let result = crypto.verify_file_signature(temp_file.path(), "LOCAL_DEV_PAYLOAD_SIGNATURE");
+        let result =
+            crypto.verify_file_signature(temp_file.path(), "LOCAL_DEV_PAYLOAD_SIGNATURE", KeyRole::Official);
         assert!(result.is_ok());
     }
 
@@ -859,7 +862,7 @@ mod tests {
         let sig_hex = hex::encode(signature.to_bytes());
 
         // Verify
-        let result = crypto.verify_file_signature(temp_file.path(), &sig_hex);
+        let result = crypto.verify_file_signature(temp_file.path(), &sig_hex, KeyRole::Official);
         assert!(result.is_ok());
     }
 

@@ -42,7 +42,7 @@ impl NativeRuntime {
         tracing::info!("Gate 3 PASSED: Manifest signature verified");
 
         self.crypto
-            .verify_file_signature(&tool_path, &tool_entry.signature)
+            .verify_file_signature(&tool_path, &tool_entry.signature, crate::security::crypto::KeyRole::Official)
             .map_err(|error| {
                 tracing::error!(
                     "Gate 4 FAILED: Tool signature verification failed for '{}': {}",
@@ -83,7 +83,7 @@ impl NativeRuntime {
             })?;
 
         self.crypto
-            .verify_file_signature(&tool_path, &registration.signature)
+            .verify_file_signature(&tool_path, &registration.signature, crate::security::crypto::KeyRole::Official)
             .map_err(|error| {
                 tracing::error!(
                     "Native signature verification failed for '{}': {}",
