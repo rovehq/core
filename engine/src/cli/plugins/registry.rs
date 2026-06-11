@@ -648,19 +648,44 @@ async fn fetch_bytes_into(
 }
 
 async fn fetch_remote_text(url: &str) -> Result<String> {
-    let response = reqwest::get(url).await.with_context(|| format!("Failed to fetch '{}'", url))?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch '{}'", url))?;
     if response.status() == StatusCode::NOT_FOUND {
         bail!("Remote plugin registry entry '{}' was not found", url);
     }
-    response.error_for_status().with_context(|| format!("Failed to fetch '{}'", url))?.text().await.with_context(|| format!("Failed to read response body from '{}'", url))
+    response
+        .error_for_status()
+        .with_context(|| format!("Failed to fetch '{}'", url))?
+        .text()
+        .await
+        .with_context(|| format!("Failed to read response body from '{}'", url))
 }
 
 async fn fetch_remote_bytes(url: &str) -> Result<Vec<u8>> {
-    let response = reqwest::get(url).await.with_context(|| format!("Failed to fetch '{}'", url))?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300)) // 5 minute timeout for large artifacts
+        .build()?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch '{}'", url))?;
     if response.status() == StatusCode::NOT_FOUND {
         bail!("Remote plugin artifact '{}' was not found", url);
     }
-    response.error_for_status().with_context(|| format!("Failed to fetch '{}'", url))?.bytes().await.map(|bytes| bytes.to_vec()).with_context(|| format!("Failed to read response body from '{}'", url))
+    response
+        .error_for_status()
+        .with_context(|| format!("Failed to fetch '{}'", url))?
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .with_context(|| format!("Failed to read response body from '{}'", url))
 }
 
 fn join_remote(base: &str, relative: &str) -> String {
