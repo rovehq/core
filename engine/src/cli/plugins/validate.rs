@@ -9,7 +9,7 @@ use crate::runtime::{Manifest, McpServerConfig, PluginType, ToolCatalog, TrustTi
 use super::package::{PluginPackage, RUNTIME_FILE};
 
 pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> Result<()> {
-    if matches!(manifest.plugin_type, PluginType::Brain | PluginType::Plugin)
+    if matches!(manifest.plugin_type, PluginType::Brain)
         && matches!(manifest.trust_tier, TrustTier::Community)
     {
         bail!(
