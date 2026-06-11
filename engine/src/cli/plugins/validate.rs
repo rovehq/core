@@ -9,15 +9,6 @@ use crate::runtime::{Manifest, McpServerConfig, PluginType, ToolCatalog, TrustTi
 use super::package::{PluginPackage, RUNTIME_FILE};
 
 pub fn validate_plugin_shape(manifest: &Manifest, runtime_raw: Option<&str>) -> Result<()> {
-    if matches!(manifest.plugin_type, PluginType::Brain)
-        && matches!(manifest.trust_tier, TrustTier::Community)
-    {
-        bail!(
-            "Native plugins require trust tier Official or Reviewed. '{}' is Community.",
-            manifest.name
-        );
-    }
-
     for path in &manifest.permissions.filesystem {
         if path.0.trim().is_empty() {
             bail!(
