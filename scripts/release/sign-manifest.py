@@ -28,7 +28,15 @@ PEM_PATH = "/tmp/rove_official.pem"
 
 def make_pem(key_hex: str) -> None:
     cleaned = key_hex.strip()
-    raw = bytes.fromhex(cleaned)
+    if cleaned.startswith("-----BEGIN"):
+        Path(PEM_PATH).write_text(cleaned + "\n")
+        print(f"PEM written to {PEM_PATH}")
+        return
+    try:
+        raw = bytes.fromhex(cleaned)
+    except ValueError:
+        raw = base64.b64decode(cleaned)
+    
     if len(raw) == 48 and raw[:16] == PKCS8_PREFIX:
         raw = raw[16:]
     elif len(raw) != 32:
