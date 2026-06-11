@@ -1,9 +1,12 @@
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
+use ed25519_dalek::Signer;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::runtime::{Manifest, PluginType};
 
@@ -12,7 +15,9 @@ use super::package::{
     manifest_from_signed_json, read_required_file, resolve_package_root, MANIFEST_FILE,
     PACKAGE_FILE, RUNTIME_FILE,
 };
-use super::registry::{sign_registry_json, update_registry_metadata, PublishedBundle};
+use super::registry::{
+    load_registry_signing_key, sign_registry_json, update_registry_metadata, PublishedBundle,
+};
 use super::test::{ensure_wasm_target_installed, run_cargo};
 use super::validate::{resolve_payload_source, review_manifest_permissions, validate_plugin_shape};
 
@@ -211,7 +216,19 @@ pub(super) async fn prepare_distribution_bundle(
     }
 
     if let Some(artifact_name) = artifact_name {
-        normalized_package["artifact"] = serde_json::Value::String(artifact_name);
+        normalized_package["artifact"] = serde_json::Value::String(artifact_name.clone());
+
+        let artifact_path = bundle_dir.join(&artifact_name);
+        let hash = compute_file_hash(&artifact_path)?;
+        normalized_package["payload_hash"] = serde_json::Value::String(hash.clone());
+
+        if let Some(signing_key) = load_registry_signing_key()? {
+            let signature = hex::encode(signing_key.sign(hash.as_bytes()).to_bytes());
+            normalized_package["payload_signature"] = serde_json::Value::String(signature);
+        } else {
+            normalized_package["payload_signature"] =
+                serde_json::Value::String("LOCAL_DEV_PAYLOAD_SIGNATURE".to_string());
+        }
     }
 
     fs::write(
@@ -387,6 +404,20 @@ fn release_artifact_name(bundle_dir: &Path) -> Option<String> {
         .get("artifact")
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
+}
+
+fn compute_file_hash(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 #[cfg(test)]

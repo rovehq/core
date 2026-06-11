@@ -694,7 +694,7 @@ fn resolve_registry_signature(value: &serde_json::Value) -> Result<String> {
     Ok(hex::encode(signing_key.sign(&canonical).to_bytes()))
 }
 
-fn load_registry_signing_key() -> Result<Option<SigningKey>> {
+pub(super) fn load_registry_signing_key() -> Result<Option<SigningKey>> {
     let Some(raw) = std::env::var("ROVE_REGISTRY_PRIVATE_KEY")
         .ok()
         .or_else(|| std::env::var("ROVE_TEAM_PRIVATE_KEY").ok())
